@@ -1,12 +1,19 @@
 # Periodicity
 
-A cross-platform C++ UI component library implementing Material Design 3 on top of
-**Qt Widgets**, with every visual produced by `QPainter` rather than Qt Style Sheets or
-platform theme engines.
+English | [简体中文](README.zh-CN.md)
 
-The architecture — layering, module responsibilities, core abstractions and the
-dependency matrix — is specified in [framework.md](framework.md). Read it before
-changing a module boundary.
+Periodicity is a cross-platform C++ library of user-interface components for desktop
+applications, modelled on Material Design 3 and built on Qt Widgets. It paints every visual
+itself through `QPainter`; it does not restyle widgets with Qt Style Sheets, and it does not
+fall back on the platform theme engine. The only things it takes from the host system are
+the fonts and the native window frame, so a layout that looks right on Windows looks right
+on macOS and Linux as well. Development happens at
+[github.com/eloyhere/periodicity-cmake](https://github.com/eloyhere/periodicity-cmake).
+
+The library is arranged as a stack of layers, from units and geometry at the bottom to the
+public widgets at the top. [framework.md](framework.md) sets that architecture out in full —
+the layering, the responsibility of each module, the core abstractions and the matrix of
+permitted dependencies. Read it before changing a module boundary.
 
 ## Layout
 
@@ -35,18 +42,27 @@ Each module has the same internal shape:
 └── src/*.cpp
 ```
 
+The headers under `include/` are the installed, public face of a module and the only part
+of it that another module may include; the sources under `src/` stay private. The gallery
+application in `apps/gallery/` is assembled from the public targets alone, which keeps that
+promise honest.
+
 ## Requirements
 
-- Qt **6.8.3** (MSVC 2022 x64), installed at `R:/Qt/6.8.3/msvc2022_64`
-- Visual Studio 2022 (toolset 14.51) and its bundled CMake/Ninja
-- CMake ≥ 3.21, C++20
+Periodicity needs Qt **6.8.3**, built for MSVC 2022 x64 and installed at
+`R:/Qt/6.8.3/msvc2022_64`, together with Visual Studio 2022 (toolset 14.51) and the CMake
+and Ninja that ship with it. The project itself asks for CMake 3.21 or newer and compiles
+as C++20.
 
-The Qt path is pinned in `CMakePresets.json`; change `CMAKE_PREFIX_PATH` there if your
-installation differs.
+The Qt installation path is pinned in `CMakePresets.json`. If yours sits somewhere else,
+the tidiest fix is a `CMakeUserPresets.json` that inherits from `windows-base` and sets its
+own `CMAKE_PREFIX_PATH`; that file is ignored by Git, so the committed preset stays
+portable for everyone else.
 
 ## Build
 
-Run from a Visual Studio developer environment so that `cl.exe` is on `PATH`:
+Configure and build from a Visual Studio developer environment, so that `cl.exe` is on
+`PATH`:
 
 ```bat
 call "R:\visual\ide\VC\Auxiliary\Build\vcvars64.bat"
@@ -60,24 +76,34 @@ From a plain shell, wrap the same commands:
 cmd /c "call R:\visual\ide\VC\Auxiliary\Build\vcvars64.bat >nul && R:\visual\ide\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin\cmake.exe --preset x64-debug && R:\visual\ide\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin\cmake.exe --build --preset x64-debug"
 ```
 
+Both presets build into `out/build/<preset>`. `x64-release` compiles the same targets with
+optimisation on and without debug information.
+
 ## Test
+
+The tests are Qt Test suites, one directory per module, and CTest runs them:
 
 ```powershell
 cmd /c "call R:\visual\ide\VC\Auxiliary\Build\vcvars64.bat >nul && R:\visual\ide\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin\ctest.exe --test-dir out/build/x64-debug --output-on-failure"
 ```
 
-Tests run with `QT_QPA_PLATFORM=offscreen`, so no display is required.
+The suites run with `QT_QPA_PLATFORM=offscreen`, so they need no display and behave the
+same on a desktop and on a build machine.
 
 ## Layering check
+
+The dependency rules in `framework.md` are enforced by a small CMake script:
 
 ```powershell
 R:\visual\ide\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin\cmake.exe -DSOURCE_DIR=R:/project/periodicity-cmake -P tools/check_layering.cmake
 ```
 
-The check fails if a public header includes a module that its layer is not allowed to
-depend on, or if `core`/`tokens` pull in `QtWidgets`.
+It fails if a public header includes a module that its own layer is not allowed to depend
+on, or if `core` or `tokens` reach for Qt Widgets.
 
 ## Status
 
-Under construction, layer by layer. The token values in `framework.md` §3 are verified
-against Google's reference token sources; dynamic colour and M3 Expressive are deferred.
+Periodicity is under construction, built up layer by layer. The token values recorded in
+`framework.md` §3 have been verified against Google's reference token sources. Dynamic
+colour and Material 3 Expressive are deliberately postponed until the layers beneath them
+have settled.
