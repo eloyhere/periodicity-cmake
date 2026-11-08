@@ -1,0 +1,45 @@
+# CMake build trees
+/out/
+/build/
+/CMakeFiles/
+CMakeCache.txt
+CMakeUserPresets.json
+compile_commands.json
+
+# Visual Studio / VS Code
+/.vs/
+*.suo
+*.user
+*.vcxproj*
+/.vscode/
+
+# Ninja / compiler leftovers
+*.ninja
+*.obj
+*.pdb
+*.ilk
+*.exp
+*.lib
+*.dll
+*.exe
+*.log
+
+# Qt generated sources
+moc_*.cpp
+qrc_*.cpp
+ui_*.h
+*.moc
+*_autogen/
+
+# Test and coverage output
+/Testing/
+*.gcda
+*.gcno
+*.profraw
+
+# Local harness state
+/.deepseek-coordination/
+
+# OS junk
+Thumbs.db
+.DS_Store
