@@ -1,0 +1,85 @@
+# Windows CI: configure with CMake's "Visual Studio 17 2022" generator, then
+# build the generated solution with MSBuild in both Debug and Release.
+#
+# Qt is fetched at build time with aqtinstall (install-qt-action) rather than
+# taken from a preinstalled copy, so the version here stays in step with the
+# requirement recorded in README.md and CMakeLists.txt.
+name: MSBuild
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  QT_VERSION: '6.8.3'
+  BUILD_DIR: out/build/msbuild
+
+jobs:
+  # The dependency matrix of framework.md §13 is a property of the sources, not
+  # of a toolchain, so it is checked once on the cheapest runner available.
+  layering:
+    name: Layering check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check the dependency matrix
+        run: cmake -DSOURCE_DIR="$GITHUB_WORKSPACE" -P tools/check_layering.cmake
+
+  build:
+    name: ${{ matrix.configuration }} / x64
+    # Windows Server 2022 still ships Visual Studio 2022, which is the toolset
+    # README.md asks for and the one the Qt msvc2022_64 binaries are built
+    # with. Since June 2026 windows-latest runs Visual Studio 2026 instead, so
+    # the label is pinned until the project itself moves forward.
+    runs-on: windows-2022
+    timeout-minutes: 60
+    strategy:
+      # Let both configurations report, so one failure never hides the other.
+      fail-fast: false
+      matrix:
+        configuration: [Debug, Release]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Qt
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: ${{ env.QT_VERSION }}
+          arch: win64_msvc2022_64
+          cache: true
+
+      - name: Configure
+        shell: pwsh
+        run: >
+          cmake -S . -B $env:BUILD_DIR
+          -G "Visual Studio 17 2022" -A x64
+          -DCMAKE_PREFIX_PATH="$env:QT_ROOT_DIR"
+
+      - name: Add MSBuild to PATH
+        uses: microsoft/setup-msbuild@v2
+
+      - name: Build
+        shell: pwsh
+        run: |
+          # CMake writes Periodicity.sln for Visual Studio 2022 and Periodicity.slnx
+          # once the toolchain can consume the newer XML solution format, so take
+          # whichever the generator produced.
+          $solution = Get-ChildItem "$env:BUILD_DIR\Periodicity.sln*" -File | Select-Object -First 1
+          if (-not $solution) { throw "CMake produced no solution file in $env:BUILD_DIR" }
+          Write-Host "Building $($solution.Name)"
+          msbuild $solution.FullName /m /nologo /verbosity:minimal /p:Configuration=${{ matrix.configuration }} /p:Platform=x64
+
+      - name: Test
+        shell: pwsh
+        working-directory: ${{ env.BUILD_DIR }}
+        run: ctest -C ${{ matrix.configuration }} --output-on-failure --no-tests=error

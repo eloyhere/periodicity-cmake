@@ -29,7 +29,9 @@
 // each handler the dispatcher recomputes it with
 // `node.mapPointFrom(originalTarget, originalPosition)`, so every handler sees
 // the point in its own coordinates and the capture and bubble passes agree.
-// The original target itself receives the caller's position unchanged.
+// The original target itself receives the caller's position unchanged, and the
+// caller's position is restored when dispatch ends so the same PointerEvent
+// can be reused.
 //
 // Event::resetForDispatch() is called first, so one Event instance may be
 // reused for successive dispatches.

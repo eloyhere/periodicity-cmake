@@ -17,10 +17,14 @@
 //   * Moving further than the slop, before the long-press deadline, starts a
 //     drag: onDragStart runs once and onDrag follows with the total delta from
 //     the press position.
-//   * Reaching the long-press deadline while still inside the slop reports
-//     onLongPress from that move or up event; later events only reset it.
+//   * If the long-press deadline was reached before the pointer left the slop,
+//     the move or release that reveals this reports onLongPress — even when
+//     that event has itself moved beyond the slop, because the press had
+//     already been held long enough. Later events only reset it.
 //   * Releasing inside the slop before the deadline reports onTap.
-//   * Releasing while dragging reports onDragEnd.
+//   * Releasing while dragging reports onDragEnd. A release that leaves the
+//     slop without an intervening move is reported as a complete drag:
+//     onDragStart, onDrag and onDragEnd in that order.
 //
 // handle() returns true when the event belongs to the active gesture and
 // should be consumed. PointerDown always starts a gesture; moves and releases

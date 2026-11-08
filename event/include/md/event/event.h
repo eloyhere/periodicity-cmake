@@ -86,6 +86,10 @@ protected:
     virtual void resetForDispatch();
 
 private:
+    // resetForDispatch() is protected, yet the dispatcher is the one component
+    // that must call it; the friendship keeps the operation off the public API.
+    friend class EventDispatcher;
+
     EventType m_type;
     EventPhase m_phase = EventPhase::Target;
     EventTarget* m_target = nullptr;
