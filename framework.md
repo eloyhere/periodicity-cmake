@@ -188,6 +188,24 @@ Durations and easings verified from `MotionTokens.kt`:
 
 Note that the reference export defines `emphasized` identically to `standard`; the distinguishing behaviour of the emphasised family comes from the accelerate/decelerate variants and from longer durations. The implementation keeps them as distinct names so that a future specification revision can diverge without touching call sites.
 
+**Semantic levels.** Components usually choose by the size of the change rather than by an
+exact token, so the scheme also exposes a fixed duration ladder. Every rung is 250 ms apart and
+uses the standard curve, so comparing two levels compares speed and nothing else:
+
+| Level | Duration | Typical use |
+| --- | ---: | --- |
+| `Level0` | 0 ms | A state swap with no transition |
+| `Level1` | 250 ms | Hover, focus, small state changes |
+| `Level2` | 500 ms | The default transition |
+| `Level3` | 750 ms | Entrance and exit of prominent content |
+| `Level4` | 1000 ms | Sheets and dialogs |
+| `Level5` | 1250 ms | Full-screen or hero transitions |
+
+The ladder needs 750 ms and 1250 ms, which the reference export does not contain; they are
+declared as `Extended1` and `Extended2` in the duration enum and marked as Periodicity
+extensions. Under reduced motion every level except `Level0` collapses to zero duration;
+`Level0` is zero in both cases because a caller that asked for no transition must get none.
+
 ### 3.6 State layers
 
 Interaction feedback is a translucent overlay of the content colour, at fixed opacities:
@@ -233,10 +251,11 @@ These are **state-layer** opacities, not component colours: a widget never hard-
 | Layer | Owns | Must not |
 | --- | --- | --- |
 | L0 `core` | Density, `MeasureSpec`, `ViewStates`, geometry helpers, logging categories | Include `QWidget`, `QPainter` or any token type |
+| L1 `schedule` | Task priority queue: ordering, coalescing, budgeted flushes | Know about widgets, painting or tokens |
 | L1 `tokens` | Immutable colour scheme, type scale, shape scale, elevation scale, motion specs, state opacities | Know about widgets, painting or Qt Widgets |
 | L2 `theme` | The token bundle, scoped resolution, light/dark switching, `QPalette` bridge | Paint anything |
 | L3 `event` | Event values, dispatch chain, capture/intercept/bubble, gesture recognition | Know about widgets, painting or tokens |
-| L3 `drawable` / `layer` / `animation` | Drawing primitives, composited layers, tweening | Contain component-specific policy (a button's padding is not a drawable) |
+| L3 `drawable` / `layer` / `animation` / `ripple` | Drawing primitives, composited layers, tweening, pointer-origin feedback | Contain component-specific policy (a button's padding is not a drawable) |
 | L4 `view` | Measure/arrange/paint template, event-to-state mapping, focus, hit testing | Know any concrete component |
 | L5 `layout` | Containers, spacing, window size classes, RTL arrangement | Paint beyond backgrounds |
 | L6 `components` | Public widgets and their anatomy | Introduce new token values or bypass the view template |
@@ -380,7 +399,7 @@ class ForegroundLayer : public Layer { /* state layer, ripple, outline */ };
 
 `SurfaceContext` carries the resolved theme, the current `ViewStates`, the shape and the elevation, so that layers never resolve tokens themselves.
 
-**Why layers rather than one `paint()` per component:** ordering, hit testing and animation become uniform. A ripple is a foreground layer with `isAnimated() == true`; a focus ring is a foreground layer with no animation; a shadow is an elevation layer that paints before the background.
+**Why layers rather than one `paint()` per component:** ordering, hit testing and animation become uniform. A focus ring is a foreground layer; a shadow is an elevation layer that paints before the background; the ripple is its own stage (`RippleLayer`) between the state overlay and the focus ring, so a surface composes it like any other stage instead of calling a controller from its `paintEvent`.
 
 ### 5.6 `animation` — motion as a specification
 
@@ -639,6 +658,123 @@ that knows Qt's event classes and keeps `view` free of that translation.
 
 ---
 
+### 5.11 `ripple` — pointer-origin feedback
+
+A ripple is a circle that grows from the exact pointer position: a low-opacity one acknowledges
+hover, a stronger one acknowledges a press. Each is a **one-shot animation** — it expands until
+it covers the whole component, then fades out and is removed. Nothing follows the pointer and no
+static circle is left behind. Both are clipped to the widget's shape, so the effect never bleeds
+outside a rounded card or button.
+
+```cpp
+namespace md::ripple {
+
+struct RippleSpec {
+    MotionSpec expansion;                 // radius growth
+    MotionSpec fade;                      // fade-out
+    qreal hoverOpacity = 0.08;
+    qreal pressedOpacity = 0.12;
+    qreal hoverFollowThresholdDp = 4.0;
+    qreal maxRadiusScale = 1.0;
+    static RippleSpec fromTheme(const Theme&);
+};
+
+class RippleController : public QObject
+{
+    Q_OBJECT
+public:
+    void setTheme(Theme theme);
+    void setBounds(const QRectF& bounds);
+    void setCornerRadius(qreal radius);
+
+    void pointerEntered(const QPointF& position);
+    void pointerMoved(const QPointF& position);
+    void pointerPressed(const QPointF& position);
+    void pointerReleased(const QPointF& position);
+    void pointerLeft();
+
+    void paint(QPainter& painter) const;
+
+signals:
+    void repaintRequested();
+};
+
+}
+```
+
+Rules:
+
+1. **Centred on the pointer, never on the widget.** The maximum radius is the distance to the
+   farthest corner of the bounds, so the circle finishes by filling the shape whichever edge the
+   pointer entered from.
+2. **One shot, not a marker.** A hover entry plays a single expansion and fade; `pointerMoved`
+   does nothing. The feedback acknowledges the interaction rather than painting something that
+   trails the pointer.
+3. **Opacity comes from tokens.** Hover uses the hover state-layer opacity and press uses the
+   pressed opacity; no component hard-codes an alpha value.
+3. **The controller is widget-agnostic.** The host forwards pointer positions and calls `paint`
+   from its own paint pipeline; `repaintRequested` tells the host when to `update()`.
+4. **Clipping follows the shape.** Rounded geometry clips the ripple, so a card's corner stays
+   clean rather than showing a square flash.
+
+### 5.12 `schedule` — task priority queue
+
+Every deferred action — a repaint requested by an animation, a hover notification, a background
+icon decode — goes through one queue per thread instead of being posted to the event loop
+directly. That makes "respond to the user first" a property of the framework rather than a habit
+each component has to remember.
+
+| Priority | Value | Typical work |
+| --- | ---: | --- |
+| `UserInput` | 0 | press, click, key activation, scroll, ripple start |
+| `UiUpdate` | 1 | layout and paint invalidation |
+| `UiEvent` | 2 | hover, synthetic notifications, animation ticks |
+| `Background` | 3 | decoding, prefetching, cache warming |
+| `Idle` | 4 | cleanup, metrics |
+
+```cpp
+namespace md::schedule {
+
+enum class Priority : quint8 { UserInput, UiUpdate, UiEvent, Background, Idle };
+
+class TaskQueue : public QObject
+{
+    Q_OBJECT
+public:
+    explicit TaskQueue(QObject* parent = nullptr);
+    [[nodiscard]] static TaskQueue& main();      // the GUI-thread instance
+
+    void post(Priority priority, std::function<void()> task);
+    void postCoalesced(Priority priority, quint64 key, std::function<void()> task);
+    void cancel(quint64 key);
+
+    [[nodiscard]] bool isEmpty() const noexcept;
+    [[nodiscard]] int pending(Priority priority) const noexcept;
+
+    void setBatchTimeBudget(std::chrono::microseconds budget);
+    int flush(int maxTasks = 256);
+signals:
+    void drained();
+};
+
+}
+```
+
+Rules:
+
+1. **Priority order, re-checked after every task.** A user task posted while a UI batch is
+   draining runs before the rest of that batch; the queue never finishes a low-priority sweep
+   first out of politeness.
+2. **Coalescing by key.** Repeated invalidation or repaint requests for the same target collapse
+   into one pending task, so a burst of property changes paints once.
+3. **Budgeted flush.** A flush stops after its time budget and reschedules itself, which bounds
+   the latency a background burst can add to input.
+4. **Reentrancy-safe.** Posting from inside a task appends to the appropriate queue; it never
+   recurses into the drain loop.
+5. **One queue per thread.** Widgets use `TaskQueue::main()`; workers may own their own.
+
+---
+
 ## 6. Core abstractions in detail
 
 ### 6.1 The three contracts
@@ -879,16 +1015,18 @@ periodicity/
 ├── CMakeLists.txt              # top level: find_package(Qt6), add_subdirectory per module
 ├── CMakePresets.json           # extended with library and test presets
 ├── core/                       # md::core
+├── schedule/                   # md::schedule    (task priority queue)
 ├── tokens/                     # md::tokens
 ├── theme/                      # md::theme
 ├── event/                      # md::event       (dispatch, propagation, gestures)
 ├── drawable/                   # md::drawable
 ├── layer/                      # md::layer       (layer.h, background.h, foreground.h, elevation.h)
 ├── animation/                  # md::animation
+├── ripple/                     # md::ripple      (pointer-origin hover and press feedback)
 ├── view/                       # md::view
 ├── layout/                     # md::layout
 ├── components/                 # md::components
-├── apps/gallery/               # demo application (replaces the current main.cpp)
+├── demo/                       # documentation application (periodicity_demo)
 ├── tests/                      # unit, golden, interaction, a11y
 ├── tools/                      # layering check, token export, image diff
 └── docs/                       # architecture notes; this file lives at the root
@@ -908,12 +1046,14 @@ Each module follows the same internal shape:
 | Target | Type | Links |
 | --- | --- | --- |
 | `periodicity::core` | STATIC | `Qt6::Core`, `Qt6::Gui` |
+| `periodicity::schedule` | STATIC | `periodicity::core`, `Qt6::Core` |
 | `periodicity::tokens` | STATIC | `periodicity::core` |
 | `periodicity::theme` | STATIC | `periodicity::core`, `periodicity::tokens` |
 | `periodicity::event` | STATIC | `periodicity::core`, `Qt6::Core`, `Qt6::Gui` |
 | `periodicity::drawable` | STATIC | core, tokens, theme, `Qt6::Gui` |
-| `periodicity::layer` | STATIC | core, tokens, theme, drawable |
+| `periodicity::layer` | STATIC | core, tokens, theme, drawable, ripple |
 | `periodicity::animation` | STATIC | core, tokens, `Qt6::Core` |
+| `periodicity::ripple` | STATIC | core, tokens, theme, animation, `Qt6::Gui` |
 | `periodicity::view` | STATIC | core, tokens, theme, event, drawable, layer, animation, `Qt6::Widgets` |
 | `periodicity::layout` | STATIC | view |
 | `periodicity::components` | STATIC | all of the above |
@@ -941,18 +1081,20 @@ The repository currently contains a Visual Studio CMake template: a `main()` tha
 
 Rows are consumers; columns are dependencies. A tick means the include and the link are permitted.
 
-| ↓ depends on → | core | tokens | theme | event | drawable | layer | animation | view | layout | components |
-| --- | :-: | :-: | :-: | :-: | :-: | :-: | :-: | :-: | :-: | :-: |
-| **core** | — | | | | | | | | | |
-| **tokens** | ✓ | — | | | | | | | | |
-| **theme** | ✓ | ✓ | — | | | | | | | |
-| **event** | ✓ | | | — | | | | | | |
-| **drawable** | ✓ | ✓ | ✓ | | — | | | | | |
-| **layer** | ✓ | ✓ | ✓ | | ✓ | — | | | | |
-| **animation** | ✓ | ✓ | | | | | — | | | |
-| **view** | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | — | | |
-| **layout** | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | — | |
-| **components** | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | — |
+| ↓ depends on → | core | schedule | tokens | theme | event | ripple | drawable | layer | animation | view | layout | components |
+| --- | :-: | :-: | :-: | :-: | :-: | :-: | :-: | :-: | :-: | :-: | :-: | :-: |
+| **core** | — | | | | | | | | | | | |
+| **schedule** | ✓ | — | | | | | | | | | | |
+| **tokens** | ✓ | | — | | | | | | | | | |
+| **theme** | ✓ | | ✓ | — | | | | | | | | |
+| **event** | ✓ | | | | — | | | | | | | |
+| **ripple** | ✓ | | ✓ | ✓ | | — | | | | | | |
+| **drawable** | ✓ | | ✓ | ✓ | | | — | | | | | |
+| **layer** | ✓ | | ✓ | ✓ | | ✓ | ✓ | — | | | | |
+| **animation** | ✓ | | ✓ | | | | | | — | | | |
+| **view** | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | — | | |
+| **layout** | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | — | |
+| **components** | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | — |
 
 ### 13.2 Forbidden dependencies
 

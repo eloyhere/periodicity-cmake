@@ -20,12 +20,16 @@ core → tokens → event → theme → animation → drawable → layer → vie
 | Batch | Scope | Files | Status |
 | --- | --- | --- | --- |
 | 0 | event layer: dispatch, capture/intercept/bubble, gestures, Qt bridge | `event/**`, `tests/event/**` | done |
-| 1 | theme + animation | `theme/**`, `animation/**`, `tests/theme/**`, `tests/animation/**` | queued |
-| 2 | drawable + layer | `drawable/**`, `layer/**`, `tests/drawable/**`, `tests/layer/**` | queued |
+| 0b | ripple layer: pointer-origin hover and press feedback | `ripple/**`, `tests/ripple/**` | done |
+| 0c | demo application (Element-Plus-style showcase) | `demo/**` | done |
+| 0d | schedule layer: priority queue (user input before UI) | `schedule/**`, `tests/schedule/**` | done |
+| 1 | theme + animation | `theme/**`, `animation/**`, `tests/theme/**`, `tests/animation/**` | done |
+| 2 | drawable + layer | `drawable/**`, `layer/**`, `tests/drawable/**`, `tests/layer/**` | running |
 | 3 | view kernel | `view/**`, `tests/view/**` | queued |
 | 4 | layouts | `layout/**`, `tests/layout/**` | queued |
-| 5 | basic widgets | `components/**` (see 5a) | queued |
+| 5 | basic widgets | `components/**` (see 5a) | running |
 | 6 | input widgets | `components/**` (see 6a) | queued |
+| 6b | Form + FormField | `components/**` (Form/FormField) | queued |
 | 7 | overlays and surfaces | `components/**` (see 7a) | queued |
 | 8 | RecyclerView infrastructure | `components/recycler/**` | queued |
 | 9 | gallery | `apps/gallery/**` | queued |
@@ -84,7 +88,7 @@ core → tokens → event → theme → animation → drawable → layer → vie
 | --- | --- |
 | `Toolbar` | Top app bar: title, navigation icon, actions, overflow menu, scroll elevation |
 | `Snackbar` | Transient bottom message with action, queueing, swipe/auto dismiss |
-| `Dialog` | Modal scrim, title/content/actions, focus trap, Escape handling |
+| `Dialog` | Modal family: Message, Confirm, SingleChoice, MultipleChoice, Input — see "Dialog variants" below |
 | `Popover` | Anchored floating surface with arrow, placement flipping, outside-click dismissal |
 | `Tooltip` | Hover/focus triggered label with delay, placement, plain or rich text |
 | `Menu` | Anchored menu with items, separators, submenus, keyboard navigation, checkable items |
@@ -99,6 +103,93 @@ core → tokens → event → theme → animation → drawable → layer → vie
 Rules: only visible items plus a small prefetch margin are realised; recycled holders are
 returned to the pool; layout managers own positioning and scrolling; decorations are drawn
 before and after items; no per-item heap allocation in the steady-state scroll path.
+
+## Dialog variants
+
+`Dialog` is a family, not one configurable box. All variants share the same shell — scrim,
+`extraLarge` (28 dp) container, title, body, action row, Escape/backdrop dismissal flags and a
+focus trap — and differ in body and result:
+
+| Variant | Body | Result | Notes |
+| --- | --- | --- | --- |
+| `MessageDialog` | Text (optionally rich) | `Accepted` only | Single confirming action; used for information and errors |
+| `ConfirmDialog` | Text | `Accepted` / `Rejected` | Positive and negative actions; optional `destructive` styling for the positive action; default action is the negative one |
+| `SingleChoiceDialog` | Radio list | selected index (`-1` when cancelled) | Optional preselection; list scrolls beyond ~6 items |
+| `MultipleChoiceDialog` | Checkbox list | sorted list of selected indices | Optional minimum/maximum selection with the action disabled until satisfied |
+| `InputDialog` | One text field (single or multi-line) | entered text | Optional validator returning an error string; helper/error text below the field; the action stays disabled while invalid |
+
+Rules that apply to every variant:
+
+1. The dialog is modal and owns a scrim layer (`scrim` role at the framework's scrim opacity).
+2. Return values are delivered through a result type, not through mutable out-parameters.
+3. Static convenience helpers (`message()`, `confirm()`, `singleChoice()`, `multipleChoice()`,
+   `input()`) run the dialog modally and return the result, so callers do not manage lifetimes.
+4. Keyboard: Escape maps to the negative result, Return to the default action; Tab cycles inside
+   the dialog only (focus trap).
+5. Width is capped (about 560 dp) and the body scrolls instead of the dialog growing without bound.
+
+### Customising a dialog
+
+Every variant derives from a base `Dialog` that can be composed by hand, so the convenience
+helpers are a shortcut rather than the only entry point:
+
+| API | Effect |
+| --- | --- |
+| `setTitle(QString)` / `setTitleView(QWidget*)` | Plain title, or a custom title area (icon + text, rich text, close button) |
+| `setView(QWidget*)` | Arbitrary body content; the dialog takes ownership, replaces and deletes the previous body on the next event-loop turn so a widget can never be deleted while it is painting |
+| `setPositiveButton(QString)`, `setNegativeButton(QString)`, `setNeutralButton(QString)` | Action labels; an empty text hides that action |
+| `setPositiveAction(std::function<void()>)` etc. | Callbacks instead of only a modal result, for non-blocking (modeless) use |
+| `setCancelable(bool)`, `setDismissOnBackdrop(bool)` | Whether Escape / clicking the scrim closes the dialog |
+| `setWidthDp(qreal)` | Overrides the 560 dp cap for a deliberately narrow or wide dialog |
+| `setIcon(const QIcon&)` | Optional leading icon in the title row |
+
+`setView` is what makes the dialog a container: the Input and choice variants are just the base
+dialog with a text field or a list installed as the body.
+
+## Component lifecycle
+
+Every widget inherits a lifecycle from `md::View`; components do not invent their own states.
+
+```
+Created ──attach()──▶ Attached ──show()──▶ Shown ⇄ Hidden ──hide()──▶ Detached ──▶ Destroyed
+```
+
+| Hook | Called when | A component uses it for |
+| --- | --- | --- |
+| `onAttached()` | The widget enters a parent (first show or reparenting) | Resolve the theme, allocate caches, connect to the model |
+| `onShown()` | `QEvent::Show` | Start animations (Ring, indeterminate Progress), subscribe to timers |
+| `onHidden()` | `QEvent::Hide` | Stop animations and timers, pause heavy work |
+| `onDetached()` | `QEvent::ParentChange` away from a parent | Release caches and disconnect |
+| `onThemeChanged()` | `QEvent::ThemeChange` | Re-resolve colours, invalidate pixmaps |
+| `onEnabledChanged(bool)` | `QEvent::EnabledChange` | Cancel in-flight interaction, disable ripples |
+
+Rules:
+
+1. A component must not paint before `onAttached()`; the base class only guarantees a paint after
+   the widget is parented.
+2. Animations and timers run only between `onShown()` and `onHidden()` — a hidden Progress must not
+   keep a timer alive.
+3. `onDetached()` releases caches, not the widget's model links; destruction follows Qt ownership.
+4. Destructors stay empty of side effects: everything must be reversible in `onDetached()`.
+5. `lifecycleState()` is readable, so a component can assert its own invariants.
+
+## Form and FormField
+
+`FormField` wraps one control and owns its label, helper text, validation state and required
+marker; `Form` owns a list of fields, validates them together and emits a submit signal only when
+every field passes.
+
+| Type | API | Notes |
+| --- | --- | --- |
+| `FormField` | `setLabel(QString)`, `setControl(QWidget*)`, `setHelperText(QString)`, `setRequired(bool)`, `setValidator(std::function<QString(const QVariant&)>)`, `validate()`, `setError(QString)`, `isValid()`, `value()` / `setValue(QVariant)` | The validator returns an empty string for valid input; the error text is shown below the control and the control gets the `Invalid` state bit |
+| `Form` | `addField(FormField*)`, `removeField(FormField*)`, `fields()`, `validate()`, `submit()`, `reset()`, `isDirty()`, signal `submitted()` | Validates top-to-bottom, focuses the first invalid field, and does not emit `submitted()` while invalid |
+
+Layout: a field is label, control, helper/error line, in that order, with the error line reserving
+its height so validation does not jump the form. A `Form` stacks fields vertically with the token
+spacing and stops at a scroll boundary rather than growing without bound.
+
+Both follow the component lifecycle: `FormField` re-validates on its control's value change, and
+`Form` releases validation state in `onDetached()`.
 
 ## Cross-batch rules
 

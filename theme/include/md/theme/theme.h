@@ -57,7 +57,7 @@ public:
     //
     // Mapping: Window→surface, WindowText→onSurface,
     // Base→surfaceContainerLowest, Text→onSurface, Button→surfaceContainer,
-    // ButtonText→onPrimary, Highlight→primary, HighlightedText→onPrimary,
+    // ButtonText→onSurface, Highlight→primary, HighlightedText→onPrimary,
     // ToolTipBase→inverseSurface, ToolTipText→inverseOnSurface,
     // PlaceholderText→onSurfaceVariant. Disabled Text and ButtonText are the
     // same colours at 38% alpha. Roles not named here keep Qt's defaults;
@@ -73,8 +73,9 @@ public:
 
     // Resolves the theme that applies to `widget`:
     //   nearest ThemeScope ancestor → application theme → baseline light.
-    // A null widget resolves to the application theme. The reference stays
-    // valid until the scope or the application theme is replaced.
+    // A null widget resolves to the application theme. The reference belongs
+    // to the scope or to the application and stays valid while that scope is
+    // installed (the application storage lives for the process).
     [[nodiscard]] static const Theme& forWidget(const QWidget* widget);
 
     // Replaces the application theme and posts QEvent::ThemeChange to every

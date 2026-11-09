@@ -1,4 +1,631 @@
-// Periodicity — view module (L4).
+// Periodicity — the component kernel (framework.md §5.7, §6, §7).
 //
-// Anchor translation unit: the target needs at least one source file.
-// Implementations are added in src/*.cpp alongside this file.
+// View is where Qt stops and the framework starts. Qt's geometry questions are
+// answered by the measure contract, Qt's events are converted into md::Events
+// and dispatched through the EventDispatcher, and Qt's paint event is replaced
+// by the fixed pipeline. Everything a subclass can influence is a virtual hook
+// called by that pipeline; nothing lets it skip a stage.
+//
+// The Qt event handlers accept their event after dispatch. Qt would otherwise
+// keep propagating a press to the parent widget, and the same press would reach
+// the framework twice — once through the child's EventTarget chain and once
+// through Qt's own parent chain.
+
+#include <md/view/view.h>
+
+#include <md/event/event_dispatcher.h>
+#include <md/event/key_event.h>
+#include <md/event/pointer_event.h>
+#include <md/event/qt_bridge.h>
+#include <md/layer/surface_context.h>
+#include <md/schedule/task_queue.h>
+#include <md/theme/theme.h>
+
+#include <QEnterEvent>
+#include <QFocusEvent>
+#include <QKeyEvent>
+#include <QMouseEvent>
+#include <QPainter>
+#include <QPointer>
+#include <QResizeEvent>
+#include <QtMath>
+
+#include <algorithm>
+#include <atomic>
+#include <chrono>
+#include <memory>
+
+namespace md {
+namespace {
+
+// The coalescing key space belongs to the process-wide task queue, so every
+// View draws from one monotonically increasing sequence. A per-instance key is
+// what makes "a burst of state changes paints once" hold without a timer.
+std::atomic<quint64> nextUpdateKey{1};
+
+[[nodiscard]] quint64 allocateUpdateKey() noexcept
+{
+    return nextUpdateKey.fetch_add(1, std::memory_order_relaxed);
+}
+
+// Qt timestamps are milliseconds since an unspecified epoch and QEvent does
+// not expose one; the framework only needs a monotonic value when a caller has
+// one. Events synthesised from Qt's handlers therefore carry zero, and the
+// bridge remains a pure function of the event payload.
+constexpr std::chrono::milliseconds kNoTimestamp{0};
+
+// The ripple controller clips to a single radius, so an asymmetric shape uses
+// its largest corner as the clip. That keeps a pill and a rounded card clean;
+// a shape whose corners differ by more than the clip radius is an edge case
+// the controller's contract does not cover.
+[[nodiscard]] qreal largestRadius(const CornerRadii& radii) noexcept
+{
+    return std::max({radii.topStart, radii.topEnd, radii.bottomEnd, radii.bottomStart});
+}
+
+// Space, Return and Enter activate a focused component (framework.md §6.4).
+[[nodiscard]] bool isActivationKey(int key) noexcept
+{
+    return key == Qt::Key_Space || key == Qt::Key_Return || key == Qt::Key_Enter;
+}
+
+} // namespace
+
+View::View(QWidget* parent)
+    : QWidget(parent)
+    , state_(ViewState::Enabled)
+    , ripple_(this)
+    , updateKey_(allocateUpdateKey())
+{
+    // The state overlay and the outline are context-driven and stateless, so
+    // they can be built once. The focus ring stays out of the stack: it paints
+    // last, above the ripple, and only on the paint path that checks both
+    // focusable() and hasFocus().
+    foreground_.add(std::make_unique<layer::StateOverlayLayer>());
+    foreground_.add(std::make_unique<layer::OutlineLayer>());
+
+    syncRippleAppearance();
+    ripple_.setEnabled(isEnabled());
+    updateRippleGeometry();
+
+    connect(&ripple_, &ripple::RippleController::repaintRequested, this,
+            [this] { requestUpdate(); });
+}
+
+View::~View() = default;
+
+void View::measure(MeasureSpec width, MeasureSpec height)
+{
+    measureOverride(width, height);
+}
+
+void View::arrange(const QRect& geometry)
+{
+    if (this->geometry() != geometry)
+        setGeometry(geometry);
+
+    // The arrangement must run even when the rectangle did not change: a
+    // container re-arranges its children after a measure pass that changed a
+    // child's size but not the parent's geometry.
+    arrangeOverride(contentRect());
+}
+
+QSizeF View::measuredSize() const noexcept
+{
+    return measuredSize_;
+}
+
+QRectF View::contentRect() const noexcept
+{
+    // A View has no padding of its own yet; the content rectangle is the whole
+    // widget. Subclasses that reserve a shadow inset or padding will override
+    // the rectangle rather than the pipeline.
+    return QRectF(rect());
+}
+
+ViewStates View::state() const noexcept
+{
+    return state_;
+}
+
+void View::setState(ViewState flag, bool on)
+{
+    if (flag == ViewState::Enabled) {
+        // Enabled mirrors the widget, not the other way round: QWidget owns
+        // that bit and changeEvent() copies it back into the state set.
+        if (isEnabled() != on)
+            setEnabled(on);
+        else if (state_.testFlag(ViewState::Enabled) != on) {
+            state_.setFlag(ViewState::Enabled, on);
+            requestUpdate();
+        }
+        return;
+    }
+
+    if (state_.testFlag(flag) == on)
+        return;
+
+    state_.setFlag(flag, on);
+    requestUpdate();
+}
+
+void View::setElevation(Elevation level)
+{
+    if (elevation_ == level)
+        return;
+
+    elevation_ = level;
+
+    // The elevation layer reads the level from the SurfaceContext on every
+    // paint, so there is no layer state to synchronise here.
+    requestUpdate();
+}
+
+Elevation View::elevation() const noexcept
+{
+    return elevation_;
+}
+
+void View::setShape(Shape shape)
+{
+    if (shape_ == shape)
+        return;
+
+    shape_ = shape;
+    updateRippleGeometry();
+    requestUpdate();
+}
+
+Shape View::shape() const noexcept
+{
+    return shape_;
+}
+
+void View::setBackgroundColour(const QColor& colour)
+{
+    if (backgroundColour_ == colour)
+        return;
+
+    backgroundColour_ = colour;
+    requestUpdate();
+}
+
+void View::setContentColour(const QColor& colour)
+{
+    if (contentColour_ == colour)
+        return;
+
+    contentColour_ = colour;
+
+    // The controller keeps its colour explicit once set, so the View always
+    // republishes the resolved value instead of leaving it to the theme.
+    const Theme& theme = Theme::forWidget(this);
+    ripple_.setContentColour(colour.isValid() ? colour : theme.colours().onSurface);
+    requestUpdate();
+}
+
+QSize View::sizeHint() const
+{
+    // The measure contract is non-const because it caches; the cache is the
+    // only thing this const method changes, so the cast is safe.
+    const_cast<View*>(this)->measure(MeasureSpec::unspecified(),
+                                     MeasureSpec::unspecified());
+    return QSize(qCeil(measuredSize_.width()), qCeil(measuredSize_.height()));
+}
+
+QSize View::minimumSizeHint() const
+{
+    const_cast<View*>(this)->measure(MeasureSpec::atMost(0.0), MeasureSpec::atMost(0.0));
+    return QSize(qCeil(measuredSize_.width()), qCeil(measuredSize_.height()));
+}
+
+bool View::hasHeightForWidth() const
+{
+    return true;
+}
+
+int View::heightForWidth(int width) const
+{
+    const_cast<View*>(this)->measure(MeasureSpec::exactly(qreal(width)),
+                                     MeasureSpec::unspecified());
+    return qCeil(measuredSize_.height());
+}
+
+EventTarget* View::parentTarget() const noexcept
+{
+    for (QWidget* widget = parentWidget(); widget != nullptr;
+         widget = widget->parentWidget()) {
+        if (auto* view = qobject_cast<View*>(widget))
+            return view;
+    }
+
+    return nullptr;
+}
+
+QPointF View::mapPointFrom(const EventTarget& source, const QPointF& point) const
+{
+    if (&source == this)
+        return point;
+
+    // The visual tree is the widget tree, so Qt's own conversion is the
+    // authoritative mapping; it accounts for the scroll offset of every
+    // ancestor and for the device pixel ratio. mapFrom() is the direction the
+    // contract needs: a point in the source's system, expressed here.
+    const auto* sourceView = dynamic_cast<const View*>(&source);
+    if (sourceView == nullptr)
+        return point;
+
+    return mapFrom(sourceView, point);
+}
+
+bool View::onEvent(Event& event)
+{
+    // Capture and bubble see the same event on their way to and from the
+    // target. A View has no gesture of its own to add there, and accepting in
+    // the capture phase would suppress the bubble for everyone else.
+    if (event.phase() != EventPhase::Target)
+        return event.isAccepted();
+
+    if (!isEnabled())
+        return false;
+
+    switch (event.type()) {
+    case EventType::PointerEnter:
+        if (auto* pointer = dynamic_cast<PointerEvent*>(&event)) {
+            lastPointerPosition_ = pointer->localPosition();
+            setState(ViewState::Hovered, true);
+            ripple_.pointerEntered(pointer->localPosition());
+        }
+        break;
+
+    case EventType::PointerLeave:
+        setState(ViewState::Pressed, false);
+        setState(ViewState::Hovered, false);
+        setState(ViewState::Dragged, false);
+        ripple_.pointerLeft();
+        break;
+
+    case EventType::PointerDown:
+        if (auto* pointer = dynamic_cast<PointerEvent*>(&event)) {
+            lastPointerPosition_ = pointer->localPosition();
+            if (pointer->button() == Qt::LeftButton) {
+                setState(ViewState::Pressed, true);
+                ripple_.pointerPressed(pointer->localPosition());
+            }
+        }
+        break;
+
+    case EventType::PointerUp:
+        setState(ViewState::Pressed, false);
+        ripple_.pointerReleased(lastPointerPosition_);
+        break;
+
+    case EventType::PointerMove:
+        if (auto* pointer = dynamic_cast<PointerEvent*>(&event)) {
+            lastPointerPosition_ = pointer->localPosition();
+            ripple_.pointerMoved(pointer->localPosition());
+        }
+        break;
+
+    case EventType::KeyDown:
+        if (auto* key = dynamic_cast<KeyEvent*>(&event)) {
+            if (isActivationKey(key->key()))
+                setState(ViewState::Pressed, true);
+        }
+        break;
+
+    case EventType::KeyUp:
+        setState(ViewState::Pressed, false);
+        break;
+
+    case EventType::FocusIn:
+        setState(ViewState::Focused, focusable());
+        break;
+
+    case EventType::FocusOut:
+        setState(ViewState::Focused, false);
+        break;
+
+    case EventType::Wheel:
+    case EventType::None:
+        break;
+    }
+
+    event.accept();
+    return true;
+}
+
+bool View::onInterceptEvent(Event&)
+{
+    // The base View never claims a descendant's gesture. A container that
+    // scrolls will override this to steal a drag.
+    return false;
+}
+
+void View::paintEvent(QPaintEvent*)
+{
+    // Keep the ripple's clip in step with the widget even if the geometry
+    // changed without a resize event reaching this path.
+    updateRippleGeometry();
+
+    QPainter painter(this);
+    painter.setRenderHint(QPainter::Antialiasing, true);
+    painter.setRenderHint(QPainter::TextAntialiasing, true);
+
+    const QRectF content = contentRect();
+    const layer::SurfaceContext context{Theme::forWidget(this), state_, shape_,
+                                        elevation_, backgroundColour_, contentColour_};
+
+    // 1. The shadow, outside the bounds and unclipped by the layer.
+    if (elevation_ != Elevation::Level0)
+        elevationLayer_.paint(painter, content, context);
+
+    // 2. The container, clipped to the shape.
+    backgroundLayer_.paint(painter, content, context);
+
+    // 3. The component's content.
+    paintContent(painter, content);
+
+    // 4. The children, for a container.
+    paintChildren(painter);
+
+    // 5. The state overlay and the outline.
+    foreground_.paint(painter, content, context);
+
+    // 6. Pointer feedback.
+    ripple_.paint(painter);
+
+    // 7. The focus ring last, so neither the state layer nor a ripple can
+    //    obscure the keyboard indicator. FocusRingLayer itself checks the
+    //    Focused bit; the extra focusable() guard keeps a state flag set by
+    //    hand on a non-interactive view from drawing a ring.
+    if (hasFocus() && focusable())
+        focusRing_.paint(painter, content, context);
+}
+
+void View::resizeEvent(QResizeEvent* event)
+{
+    QWidget::resizeEvent(event);
+    updateRippleGeometry();
+}
+
+void View::enterEvent(QEnterEvent* event)
+{
+    QWidget::enterEvent(event);
+
+    lastPointerPosition_ = event->position();
+    dispatchPointer(EventType::PointerEnter, event->position(), event->globalPosition(),
+                    Qt::NoButton, Qt::NoButton, event->modifiers(), kNoTimestamp);
+    event->accept();
+}
+
+void View::leaveEvent(QEvent* event)
+{
+    QWidget::leaveEvent(event);
+
+    // A Qt leave event carries no position. The last known position gives the
+    // framework a meaningful local point; no ripple uses it, but a listener
+    // that does must not see a bogus origin.
+    dispatchPointer(EventType::PointerLeave, lastPointerPosition_,
+                    mapToGlobal(lastPointerPosition_), Qt::NoButton, Qt::NoButton,
+                    Qt::NoModifier, kNoTimestamp);
+    event->accept();
+}
+
+void View::mousePressEvent(QMouseEvent* event)
+{
+    if (!isEnabled()) {
+        event->ignore();
+        return;
+    }
+
+    PointerEvent mdEvent =
+        pointerEventFromMouse(*event, event->position(), kNoTimestamp);
+    EventDispatcher::dispatch(mdEvent, *this);
+    event->accept();
+}
+
+void View::mouseReleaseEvent(QMouseEvent* event)
+{
+    if (!isEnabled()) {
+        event->ignore();
+        return;
+    }
+
+    PointerEvent mdEvent =
+        pointerEventFromMouse(*event, event->position(), kNoTimestamp);
+    EventDispatcher::dispatch(mdEvent, *this);
+    event->accept();
+}
+
+void View::mouseMoveEvent(QMouseEvent* event)
+{
+    if (!isEnabled()) {
+        event->ignore();
+        return;
+    }
+
+    lastPointerPosition_ = event->position();
+    PointerEvent mdEvent =
+        pointerEventFromMouse(*event, event->position(), kNoTimestamp);
+    EventDispatcher::dispatch(mdEvent, *this);
+    event->accept();
+}
+
+void View::keyPressEvent(QKeyEvent* event)
+{
+    KeyEvent mdEvent = keyEventFrom(*event, kNoTimestamp);
+    EventDispatcher::dispatch(mdEvent, *this);
+
+    // Only the activation keys are consumed here. Swallowing every key would
+    // break Tab traversal, which Qt implements by letting the event bubble out
+    // of keyPressEvent.
+    if (isActivationKey(event->key()))
+        event->accept();
+    else
+        QWidget::keyPressEvent(event);
+}
+
+void View::keyReleaseEvent(QKeyEvent* event)
+{
+    KeyEvent mdEvent = keyEventFrom(*event, kNoTimestamp);
+    EventDispatcher::dispatch(mdEvent, *this);
+
+    if (isActivationKey(event->key()))
+        event->accept();
+    else
+        QWidget::keyReleaseEvent(event);
+}
+
+void View::focusInEvent(QFocusEvent* event)
+{
+    QWidget::focusInEvent(event);
+
+    FocusEvent focusEvent(true);
+    EventDispatcher::dispatch(focusEvent, *this);
+    event->accept();
+}
+
+void View::focusOutEvent(QFocusEvent* event)
+{
+    QWidget::focusOutEvent(event);
+
+    FocusEvent focusEvent(false);
+    EventDispatcher::dispatch(focusEvent, *this);
+    event->accept();
+}
+
+void View::changeEvent(QEvent* event)
+{
+    QWidget::changeEvent(event);
+
+    switch (event->type()) {
+    case QEvent::EnabledChange: {
+        const bool on = isEnabled();
+        state_.setFlag(ViewState::Enabled, on);
+
+        if (!on) {
+            // A disabled view must not keep a highlight whose result the user
+            // can no longer see.
+            state_.setFlag(ViewState::Hovered, false);
+            state_.setFlag(ViewState::Pressed, false);
+            state_.setFlag(ViewState::Focused, false);
+            state_.setFlag(ViewState::Dragged, false);
+        }
+
+        ripple_.setEnabled(on);
+        onEnabledChanged(on);
+        requestUpdate();
+        break;
+    }
+
+    case QEvent::ThemeChange:
+        // A new theme may come from a ThemeScope as well as from the
+        // application, so the controller is refreshed from forWidget().
+        syncRippleAppearance();
+        onThemeChanged();
+        requestUpdate();
+        break;
+
+    default:
+        break;
+    }
+}
+
+bool View::event(QEvent* event)
+{
+    // Attach/detach are parent transitions, not show/hide transitions: a widget
+    // can be hidden and shown again without re-resolving its theme or caches.
+    if (event->type() == QEvent::ParentChange) {
+        const bool attachedNow = parentWidget() != nullptr;
+
+        if (attachedNow && lifecycle_ == LifecycleState::Detached) {
+            lifecycle_ = LifecycleState::Attached;
+            onAttached();
+        } else if (!attachedNow && lifecycle_ != LifecycleState::Created
+                   && lifecycle_ != LifecycleState::Detached) {
+            lifecycle_ = LifecycleState::Detached;
+            onDetached();
+        }
+    }
+
+    return QWidget::event(event);
+}
+
+void View::showEvent(QShowEvent* event)
+{
+    // The constructor may already have a parent, in which case no ParentChange
+    // arrives; the first show is the point at which the view becomes usable.
+    if (lifecycle_ == LifecycleState::Created || lifecycle_ == LifecycleState::Detached) {
+        lifecycle_ = LifecycleState::Attached;
+        onAttached();
+    }
+
+    if (lifecycle_ != LifecycleState::Shown) {
+        lifecycle_ = LifecycleState::Shown;
+        onShown();
+    }
+
+    QWidget::showEvent(event);
+}
+
+void View::hideEvent(QHideEvent* event)
+{
+    if (lifecycle_ == LifecycleState::Shown) {
+        lifecycle_ = LifecycleState::Hidden;
+        onHidden();
+    }
+
+    QWidget::hideEvent(event);
+}
+
+LifecycleState View::lifecycleState() const noexcept
+{
+    return lifecycle_;
+}
+
+void View::setMeasuredSize(QSizeF size)
+{
+    measuredSize_ = QSizeF(std::max(qreal(0.0), size.width()),
+                           std::max(qreal(0.0), size.height()));
+}
+
+void View::requestUpdate()
+{
+    // The guard makes a destroyed view a no-op instead of a dangling update.
+    // The coalescing key is per instance, so a burst of property changes
+    // leaves exactly one pending task.
+    const QPointer<View> guard(this);
+    schedule::TaskQueue::main().postCoalesced(schedule::Priority::UiUpdate, updateKey_,
+                                              [guard] {
+                                                  if (guard)
+                                                      guard->update();
+                                              });
+}
+
+void View::updateRippleGeometry()
+{
+    const QRectF bounds = contentRect();
+    ripple_.setBounds(bounds);
+    ripple_.setCornerRadius(largestRadius(shape_.resolved(bounds)));
+}
+
+void View::syncRippleAppearance()
+{
+    const Theme& theme = Theme::forWidget(this);
+
+    ripple_.setTheme(theme);
+    ripple_.setContentColour(contentColour_.isValid() ? contentColour_
+                                                      : theme.colours().onSurface);
+}
+
+void View::dispatchPointer(EventType type, const QPointF& local, const QPointF& global,
+                           Qt::MouseButton button, Qt::MouseButtons buttons,
+                           Qt::KeyboardModifiers modifiers,
+                           std::chrono::milliseconds timestamp)
+{
+    PointerEvent event(type, local, global, button, buttons, modifiers, timestamp);
+    EventDispatcher::dispatch(event, *this);
+}
+
+} // namespace md

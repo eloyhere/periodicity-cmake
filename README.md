@@ -20,16 +20,18 @@ permitted dependencies. Read it before changing a module boundary.
 | Path | Layer | Target |
 | --- | --- | --- |
 | `core/` | L0 — units, geometry, state flags | `periodicity::core` |
+| `schedule/` | L1 — task priority queue (input before UI) | `periodicity::schedule` |
 | `tokens/` | L1 — colour, type, shape, elevation, motion, state | `periodicity::tokens` |
 | `theme/` | L2 — theme bundle and scoped resolution | `periodicity::theme` |
 | `event/` | L3 — event values, dispatch, propagation, gestures | `periodicity::event` |
 | `drawable/` | L3a — painting primitives | `periodicity::drawable` |
 | `layer/` | L3b — background, elevation and foreground stages | `periodicity::layer` |
 | `animation/` | L3c — tweening driven by motion tokens | `periodicity::animation` |
+| `ripple/` | L3 — pointer-origin hover and press feedback | `periodicity::ripple` |
 | `view/` | L4 — measure/arrange/paint kernel and state machine | `periodicity::view` |
 | `layout/` | L5 — containers, spacing, window size classes | `periodicity::layout` |
 | `components/` | L6 — public Material widgets | `periodicity::components` |
-| `apps/gallery/` | demo application | `periodicity::gallery` |
+| `demo/` | documentation application (Element-Plus-style showcase) | `periodicity_demo` |
 | `tests/` | Qt Test suites, one directory per module | — |
 | `tools/` | layering check and other tooling | — |
 

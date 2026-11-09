@@ -105,7 +105,7 @@ QPalette Theme::toPalette() const
     palette.setColor(QPalette::Base, colours_.surfaceContainerLowest);
     palette.setColor(QPalette::Text, colours_.onSurface);
     palette.setColor(QPalette::Button, colours_.surfaceContainer);
-    palette.setColor(QPalette::ButtonText, colours_.onPrimary);
+    palette.setColor(QPalette::ButtonText, colours_.onSurface);
     palette.setColor(QPalette::Highlight, colours_.primary);
     palette.setColor(QPalette::HighlightedText, colours_.onPrimary);
     palette.setColor(QPalette::ToolTipBase, colours_.inverseSurface);
@@ -115,11 +115,11 @@ QPalette Theme::toPalette() const
     // Disabled content is the ordinary content colour at the token opacity,
     // not a separately chosen grey (framework.md §3.6).
     QColor disabledText = colours_.onSurface;
-    disabledText.setAlphaF(kDisabledContentOpacity);
+    disabledText.setAlphaF(static_cast<float>(kDisabledContentOpacity));
     palette.setColor(QPalette::Disabled, QPalette::Text, disabledText);
 
-    QColor disabledButtonText = colours_.onPrimary;
-    disabledButtonText.setAlphaF(kDisabledContentOpacity);
+    QColor disabledButtonText = colours_.onSurface;
+    disabledButtonText.setAlphaF(static_cast<float>(kDisabledContentOpacity));
     palette.setColor(QPalette::Disabled, QPalette::ButtonText, disabledButtonText);
 
     return palette;

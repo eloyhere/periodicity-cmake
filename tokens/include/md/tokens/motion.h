@@ -48,6 +48,11 @@ enum class Duration {
     ExtraLong2,
     ExtraLong3,
     ExtraLong4,
+    // Periodicity extensions: the reference export stops at 1000 ms, but the
+    // duration ladder below needs 750 ms and 1250 ms rungs so that every level
+    // is exactly 250 ms apart.
+    Extended1,
+    Extended2,
 };
 
 enum class Easing {
@@ -61,6 +66,21 @@ enum class Easing {
     Legacy,
     LegacyDecelerate,
     LegacyAccelerate,
+};
+
+// Semantic motion levels: a fixed ladder of durations, 250 ms apart.
+//
+// Every level is a pure duration; the easing stays standard so that comparing
+// two levels compares speed and nothing else. The ladder is deliberately
+// arithmetic rather than "small/medium/large": a designer can point at a rung
+// and say "that one" without translating a name into a time.
+enum class MotionLevel : quint8 {
+    Level0, // 0 ms — no transition
+    Level1, // 250 ms
+    Level2, // 500 ms
+    Level3, // 750 ms
+    Level4, // 1000 ms
+    Level5, // 1250 ms
 };
 
 // Duration of `duration` in milliseconds.
@@ -101,6 +121,10 @@ enum class Easing {
         return Ms(900);
     case Duration::ExtraLong4:
         return Ms(1000);
+    case Duration::Extended1:
+        return Ms(750);
+    case Duration::Extended2:
+        return Ms(1250);
     }
     return Ms(0);
 }
@@ -194,6 +218,28 @@ struct MotionScheme
     [[nodiscard]] constexpr MotionSpec emphasizedMedium2() const noexcept
     {
         return spec(Duration::Medium2, Easing::Emphasized);
+    }
+
+    // The duration ladder. Level0 stays instantaneous even when the scheme is
+    // not reduced: a caller that asked for no transition must get none.
+    [[nodiscard]] constexpr MotionSpec level(MotionLevel value) const noexcept
+    {
+        switch (value) {
+        case MotionLevel::Level0:
+            return MotionSpec{std::chrono::milliseconds{0}, easingCurve(Easing::Linear),
+                              std::chrono::milliseconds{0}};
+        case MotionLevel::Level1:
+            return spec(Duration::Medium1);
+        case MotionLevel::Level2:
+            return spec(Duration::Long2);
+        case MotionLevel::Level3:
+            return spec(Duration::Extended1);
+        case MotionLevel::Level4:
+            return spec(Duration::ExtraLong4);
+        case MotionLevel::Level5:
+            return spec(Duration::Extended2);
+        }
+        return spec(Duration::Medium2);
     }
 
     [[nodiscard]] static constexpr MotionScheme baseline() noexcept { return MotionScheme{}; }

@@ -23,15 +23,17 @@ enable_testing()
 
 # Layers in dependency order (framework.md §4).
 add_subdirectory(core)
+add_subdirectory(schedule)
 add_subdirectory(tokens)
 add_subdirectory(theme)
 add_subdirectory(event)
 add_subdirectory(drawable)
 add_subdirectory(layer)
 add_subdirectory(animation)
+add_subdirectory(ripple)
 add_subdirectory(view)
 add_subdirectory(layout)
 add_subdirectory(components)
 
 add_subdirectory(tests)
-add_subdirectory(apps/gallery)
+add_subdirectory(demo)
