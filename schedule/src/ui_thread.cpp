@@ -278,12 +278,18 @@ bool UiThread::runFrame()
     inFrame_.store(false, std::memory_order_release);
 
     // A request made while this frame ran starts the next event-loop turn; it
-    // must never be folded into this one. Idle work waits for the frame queue
-    // to be empty.
-    if (framePending_.load(std::memory_order_acquire))
+    // must never be folded into this one. Work that the budget left queued gets
+    // the same follow-up turn instead of waiting forever for another caller.
+    int frameWork = 0;
+    for (int priority = 0; priority < kPriorityCount; ++priority)
+        frameWork += pending(static_cast<Priority>(priority));
+
+    if (framePending_.load(std::memory_order_acquire) || frameWork > 0) {
+        framePending_.store(true, std::memory_order_release);
         scheduleFrame();
-    else
+    } else {
         scheduleIdle();
+    }
 
     return true;
 }
@@ -293,7 +299,9 @@ void UiThread::runPaint()
     std::vector<std::function<void()>> callbacks;
     {
         std::lock_guard lock(mutex_);
-        callbacks.swap(paintCallbacks_);
+        // Paint hooks are persistent: unlike frame boundary callbacks they run
+        // on every frame until the runtime is destroyed.
+        callbacks = paintCallbacks_;
     }
 
     const Clock::time_point started = now();
@@ -425,7 +433,7 @@ bool UiThread::popTask(std::deque<Task>& queue, Task& out, bool& expiredTask)
 
 bool UiThread::expired(const Task& task) const
 {
-    return task.deadline != Clock::time_point{} && now() > task.deadline;
+    return now() > task.deadline;
 }
 
 UiThread::Clock::time_point UiThread::now() const

@@ -198,7 +198,7 @@ private:
     {
         quint64 id = 0;
         std::function<void()> task;
-        Clock::time_point deadline{};
+        Clock::time_point deadline{Clock::time_point::max()};
     };
 
     void scheduleFrame();

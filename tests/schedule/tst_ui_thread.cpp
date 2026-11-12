@@ -214,9 +214,14 @@ void TestUiThread::budgetOverrunRecordedOnceAndFrameFinishes()
     QCOMPARE(ui.stats().droppedFrames, quint64(1));
     QCOMPARE(ui.stats().frames, quint64(1));
 
-    // A later frame has a fresh budget and does not inherit the overrun.
+    // A later frame has a fresh budget and does not inherit the overrun; the
+    // work the budget left queued runs on that follow-up turn.
+    QVERIFY(ui.framePending());
     QVERIFY(ui.runFrame());
     QCOMPARE(ui.stats().overruns, quint64(1));
+    QCOMPARE(phases,
+             (QStringList{QStringLiteral("Build"), QStringLiteral("Paint"),
+                          QStringLiteral("Paint"), QStringLiteral("PostFrame")}));
 }
 
 void TestUiThread::frameCallbacksAreOneShot()
