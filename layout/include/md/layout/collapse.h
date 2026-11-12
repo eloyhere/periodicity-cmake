@@ -37,6 +37,9 @@ public:
     void setTitle(QString title);
     [[nodiscard]] QString title() const { return title_; }
 
+    // The header row's height (default 48). Zero is a legal height — the
+    // section shows its content without a header — so only a negative or
+    // non-finite value is ignored, leaving the current height.
     void setHeaderHeight(qreal height);
     [[nodiscard]] qreal headerHeight() const noexcept { return headerHeight_; }
 

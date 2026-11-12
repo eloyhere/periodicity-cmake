@@ -18,6 +18,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <exception>
 
 namespace md {
 
@@ -67,12 +68,23 @@ void AppBar::setNavigationButton(View* button)
         });
     }
 
-    if (navigationButton_ == button) {
+    View* const previous = navigationButton_;
+    if (previous == button) {
         relayoutNow();
         return;
     }
 
     navigationButton_ = button;
+
+    // The role is visibility: a button that loses it is hidden so that it is
+    // neither painted at its last rectangle nor mistaken for a trailing action,
+    // and a button that takes it is shown again. The bar never deletes the
+    // view; it stays the caller's.
+    if (previous != nullptr)
+        previous->hide();
+    if (button != nullptr)
+        button->show();
+
     relayoutNow();
 }
 
@@ -87,9 +99,11 @@ void AppBar::addAction(View* action)
 
 QList<View*> AppBar::actions() const
 {
+    // The run is the visible children apart from the navigation button: a
+    // hidden action takes no space, and a hidden child is never an action.
     QList<View*> result;
     for (View* child : views()) {
-        if (child != nullptr && child != navigationButton_)
+        if (child != nullptr && child != navigationButton_ && !child->isHidden())
             result.append(child);
     }
     return result;
@@ -108,7 +122,10 @@ void AppBar::setActionsAlignment(Qt::Alignment alignment)
 
 void AppBar::setExpandedHeight(qreal height)
 {
-    const qreal value = layout_detail::length(height, 56.0);
+    // Zero is a legal height (a bar that occupies nothing); a negative or
+    // non-finite value is ignored instead of being replaced by a different
+    // number the caller never asked for.
+    const qreal value = layout_detail::length(height, expandedHeight_);
     if (expandedHeight_ == value)
         return;
 
@@ -118,7 +135,7 @@ void AppBar::setExpandedHeight(qreal height)
 
 void AppBar::setCollapsedHeight(qreal height)
 {
-    const qreal value = layout_detail::length(height, 56.0);
+    const qreal value = layout_detail::length(height, collapsedHeight_);
     if (collapsedHeight_ == value)
         return;
 
@@ -134,13 +151,12 @@ void AppBar::setScrollRange(qreal range)
 
     scrollRange_ = value;
 
-    // A shorter range may leave the offset outside it.
-    const qreal clamped = qMin(scrollOffset_, scrollRange_);
-    if (clamped != scrollOffset_) {
-        scrollOffset_ = clamped;
-        syncElevation();
-    }
-
+    // A shorter range can leave the offset outside it. The clamp goes through
+    // setScrollOffset(), so the repair is announced exactly like an explicit
+    // offset change. A longer range can expand the bar without moving the
+    // offset at all, so the collapsed state is re-derived here as well.
+    setScrollOffset(scrollOffset_);
+    syncCollapsed();
     relayoutNow();
 }
 
@@ -153,12 +169,7 @@ void AppBar::setScrollOffset(qreal offset)
     scrollOffset_ = clamped;
     syncElevation();
     relayoutNow();
-
-    const bool collapsedNow = collapseFraction() >= 1.0;
-    if (collapsedNow != collapsed_) {
-        collapsed_ = collapsedNow;
-        emit collapsedChanged(collapsed_);
-    }
+    syncCollapsed();
 
     emit offsetChanged(scrollOffset_);
 }
@@ -193,6 +204,18 @@ void AppBar::syncElevation()
     setElevation(scrollOffset_ > 0.0 ? scrolledElevation_ : Elevation::Level0);
 }
 
+void AppBar::syncCollapsed()
+{
+    // The flag is derived from the fraction, never stored by the setters: a
+    // range change can flip it while the offset itself stays where it was.
+    const bool collapsedNow = collapseFraction() >= 1.0;
+    if (collapsedNow == collapsed_)
+        return;
+
+    collapsed_ = collapsedNow;
+    emit collapsedChanged(collapsed_);
+}
+
 void AppBar::relayoutNow()
 {
     updateGeometry();
@@ -207,6 +230,19 @@ qreal AppBar::barHeight() const noexcept
 }
 
 void AppBar::measureOverride(MeasureSpec width, MeasureSpec height)
+{
+    // The bar measures its children through their own hooks, which is user
+    // code: one throw must not unwind through Qt's frame.
+    try {
+        measureBar(width, height);
+    } catch (const std::exception& error) {
+        layout_detail::reportFailure("AppBar::measureOverride", error.what());
+    } catch (...) {
+        layout_detail::reportFailure("AppBar::measureOverride", nullptr);
+    }
+}
+
+void AppBar::measureBar(MeasureSpec width, MeasureSpec height)
 {
     const Theme& theme = Theme::forWidget(this);
 
@@ -236,6 +272,19 @@ void AppBar::measureOverride(MeasureSpec width, MeasureSpec height)
 }
 
 void AppBar::arrangeChildren(const QRectF& content)
+{
+    // Placing a child runs its measure()/arrange() hooks, which is user code:
+    // one throw must not unwind through Qt's frame.
+    try {
+        arrangeBar(content);
+    } catch (const std::exception& error) {
+        layout_detail::reportFailure("AppBar::arrangeChildren", error.what());
+    } catch (...) {
+        layout_detail::reportFailure("AppBar::arrangeChildren", nullptr);
+    }
+}
+
+void AppBar::arrangeBar(const QRectF& content)
 {
     const Theme& theme = Theme::forWidget(this);
     const bool rightToLeft = layoutDirection() == Qt::RightToLeft;

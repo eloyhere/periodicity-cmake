@@ -38,8 +38,15 @@ void LayerDrawable::draw(QPainter& painter, const QRectF& bounds) const
         return;
 
     for (const auto& child : children_) {
-        if (child != nullptr)
+        if (child == nullptr)
+            continue;
+
+        // A child is responsible for its own painter save/restore, but one
+        // broken child must not take down the siblings above and below it.
+        try {
             child->draw(painter, bounds);
+        } catch (...) {
+        }
     }
 }
 

@@ -14,6 +14,7 @@
 #include <md/view/view_group.h>
 
 #include <QPainter>
+#include <QPointer>
 #include <QRegion>
 
 #include <algorithm>
@@ -105,8 +106,24 @@ void ViewGroup::arrangeOverride(const QRectF& content)
 
 void ViewGroup::paintChildren(QPainter& painter)
 {
-    for (View* view : views_) {
+    // render() runs arbitrary child code: a child may add, remove or delete a
+    // sibling from its own paintContent(), which mutates views_ and can
+    // reallocate it. Paint a guarded snapshot and re-check membership before
+    // touching an entry: a destroyed child is null in the snapshot, and a
+    // child that was reparented away is simply not painted by this pass.
+    QList<QPointer<View>> snapshot;
+    snapshot.reserve(static_cast<qsizetype>(views_.size()));
+    for (View* view : views_)
+        snapshot.append(QPointer<View>(view));
+
+    for (const QPointer<View>& entry : snapshot) {
+        View* view = entry.data();
         if (view == nullptr || !view->isVisible())
+            continue;
+
+        // The child may have been removed (not destroyed) while an earlier
+        // entry painted; it is no longer part of this group's paint order.
+        if (std::find(views_.begin(), views_.end(), view) == views_.end())
             continue;
 
         // Draw only the child itself: a nested group paints its own children

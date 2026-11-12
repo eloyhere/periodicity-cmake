@@ -60,9 +60,14 @@ void StateLayerDrawable::draw(QPainter& painter, const QRectF& bounds) const
     overlay.setAlphaF(static_cast<float>(contentColour_.alphaF() * opacity));
 
     painter.save();
-    // fillRect obeys the painter's clip, so a component that wants a rounded
-    // overlay clips once (or uses layer::StateOverlayLayer, which does).
-    painter.fillRect(bounds, overlay);
+    try {
+        // fillRect obeys the painter's clip, so a component that wants a
+        // rounded overlay clips once (or uses layer::StateOverlayLayer, which
+        // does).
+        painter.fillRect(bounds, overlay);
+    } catch (...) {
+        // A failed primitive is skipped; the painter state is restored below.
+    }
     painter.restore();
 }
 

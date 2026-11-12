@@ -29,6 +29,11 @@
 // far, so a component can reserve an inset and never clip its own shadow
 // (framework.md §7.3). The layer above (layer::ElevationLayer) paints this
 // before the background, which covers the solid interior.
+//
+// The raster is bounded: a mask whose device-pixel extent exceeds 8192 pixels
+// per side (a corrupt or effectively unbounded rectangle) is refused rather
+// than allocated, and an allocation that Qt cannot satisfy is skipped. A
+// failed shadow paints nothing; it never aborts the composite.
 
 #pragma once
 
@@ -64,7 +69,8 @@ public:
 
     // Multiplies the blur extent and the vertical offset. 1.0 is the token
     // geometry; a larger value makes a softer, wider shadow. Non-positive
-    // values disable the blur and the offset, leaving only the silhouette.
+    // values disable the blur and the offset, leaving only the silhouette;
+    // negative and non-finite values are clamped to zero.
     void setBlurScale(qreal scale);
     [[nodiscard]] qreal blurScale() const noexcept { return blurScale_; }
 

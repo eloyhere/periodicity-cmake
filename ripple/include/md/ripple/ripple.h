@@ -84,8 +84,16 @@ struct RippleSpec
 // A host forwards pointer positions in widget-local coordinates (the same
 // coordinate system as setBounds) and calls paint() after painting its own
 // background. The controller keeps at most one hover ripple and at most eight
-// simultaneous press ripples; each ripple owns one animator parented to the
-// controller, so destroying the controller cancels every run.
+// simultaneous press ripples. Each ripple drives one animator parented to the
+// controller, so destroying the controller cancels every run; a ripple that
+// ends returns its animator to a small idle pool, which means the cap also
+// bounds the number of animators the controller ever allocates.
+//
+// A surface that cannot show a pixel — no bounds, zero opacity, a non-positive
+// maxRadiusScale, a transparent content colour — produces no ripple at all:
+// pointer input is rejected, and a surface that becomes empty or hidden drops
+// the ripples already in flight. The host does not need to poll isAnimating()
+// to keep an invisible animation alive.
 class RippleController : public QObject
 {
     Q_OBJECT
@@ -101,13 +109,15 @@ public:
     // refreshes the motion specification from RippleSpec::fromTheme. The
     // content colour follows the theme's onSurface unless setContentColour was
     // called explicitly. Ripples that are already running keep their geometry
-    // and pick up the new colours and motion on their next transition.
+    // and pick up the new colours and motion on their next transition; a theme
+    // whose spec paints nothing drops them instead.
     void setTheme(Theme theme);
 
     // The widget-local rectangle the ripple is clipped to, normally the host's
     // rect() in floating-point form. Ripples whose origin lies outside are
     // still clipped rather than dropped, so a growing circle can enter the
-    // visible area from any edge.
+    // visible area from any edge. Setting empty or non-finite bounds drops every
+    // ripple that is in flight: the surface has nothing to show them on.
     void setBounds(const QRectF& bounds);
 
     // Rounded clip radius in device-independent pixels; 0 keeps the clip
@@ -124,14 +134,28 @@ public:
     void setEnabled(bool enabled);
     [[nodiscard]] bool isEnabled() const noexcept;
 
+    // Stops every in-flight ripple and ignores pointer input until the surface
+    // is visible again, without changing isEnabled(). A host calls this from
+    // its hide path (or setSurfaceVisible(false)) so a hidden surface stops
+    // animating and a re-show cannot reveal a stale circle. Unlike a disable,
+    // suspension is a property of the surface rather than of the interaction:
+    // the enabled flag, the spec and the theme stay as they are.
+    void suspend();
+    void setSurfaceVisible(bool visible);
+    [[nodiscard]] bool isSurfaceVisible() const noexcept;
+
     // Replaces the painting specification. setTheme() also replaces it (with
     // RippleSpec::fromTheme), so configure a custom spec after a theme change.
+    // A spec that cannot produce a visible circle (a non-positive or non-finite
+    // maxRadiusScale, or a zero opacity) drops the ripples already running.
     void setSpec(const RippleSpec& spec);
     [[nodiscard]] const RippleSpec& spec() const noexcept;
 
     // The pointer entered the surface at `position`. Plays one hover ripple:
     // expansion from that point to full coverage, then a fade. A second entry
-    // replaces the previous hover ripple rather than stacking circles.
+    // replaces the previous hover ripple rather than stacking circles. Input is
+    // ignored when the surface cannot show the ripple: disabled, suspended, no
+    // drawable bounds, or an effective opacity of zero.
     void pointerEntered(const QPointF& position);
 
     // Accepted for interface completeness; hover ripples no longer follow the
@@ -139,7 +163,8 @@ public:
     void pointerMoved(const QPointF& position);
 
     // A press started at `position`. Plays one press ripple with
-    // spec.pressedOpacity, expanding to full coverage and fading out.
+    // spec.pressedOpacity, expanding to full coverage and fading out. Subject
+    // to the same visibility rule as pointerEntered().
     void pointerPressed(const QPointF& position);
 
     // Accepted for interface completeness; a press ripple is one-shot and does
@@ -161,8 +186,15 @@ public:
     void paint(QPainter& painter) const;
 
 signals:
-    // Emitted on every animation value change and whenever a ripple is created
-    // or removed, so the host can call update() exactly as often as needed.
+    // Emitted whenever the painted frame changed: on animation value changes
+    // and when a ripple is created or removed, so the host can call update()
+    // exactly as often as needed.
+    //
+    // The signal is coalesced onto the next event-loop turn — one emission per
+    // turn at most — and is never emitted from inside an animation callback.
+    // A connected slot may therefore disable or suspend the controller without
+    // re-entering the state that emitted it, and a frame burst costs one
+    // repaint request rather than one per value.
     void repaintRequested();
 
 private:

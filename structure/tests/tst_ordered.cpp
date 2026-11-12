@@ -11,6 +11,7 @@
 
 #include <algorithm>
 #include <functional>
+#include <memory>
 #include <numeric>
 #include <random>
 #include <vector>
@@ -82,6 +83,7 @@ private slots:
     void avlBalancesSortedInput();
     void avlSurvivesChurn();
     void honoursCustomCompare();
+    void plainTreeSurvivesDeepChain();
 };
 
 void TestOrdered::insertsAndFinds()
@@ -257,6 +259,49 @@ void TestOrdered::honoursCustomCompare()
     std::vector<int> descending = ascending(500);
     std::reverse(descending.begin(), descending.end());
     QVERIFY((balanced.toInorder() == descending));
+}
+
+void TestOrdered::plainTreeSurvivesDeepChain()
+{
+    // Sorted inserts into a plain search tree produce a chain by design. Doing
+    // that through insert() costs O(n^2) ancestor bookkeeping, so the same
+    // 100k-node shape is assembled directly and adopted through setRoot():
+    // refresh(), size(), height(), the traversals and teardown must all be
+    // independent of the chain's depth.
+    constexpr int chainLength = 100000;
+    using node_type = BinarySearchTree<int>::node_type;
+
+    auto root = std::make_unique<node_type>(0);
+    node_type* tail = root.get();
+    for (int value = 1; value < chainLength; ++value) {
+        tail->right = std::make_unique<node_type>(value);
+        tail->right->parent = tail;
+        tail = tail->right.get();
+    }
+
+    BinarySearchTree<int> tree;
+    tree.setRoot(std::move(root));
+    QCOMPARE(tree.size(), std::size_t(chainLength));
+    QCOMPARE(tree.height(), chainLength);
+    QVERIFY(tree.isValidOrder());
+    QCOMPARE(tree.selectInorder(std::size_t(chainLength - 1))->value, chainLength - 1);
+    QCOMPARE(tree.min(), 0);
+    QCOMPARE(tree.max(), chainLength - 1);
+
+    const std::vector<int> inorder = tree.toInorder();
+    QCOMPARE(inorder.size(), std::size_t(chainLength));
+    QCOMPARE(inorder.front(), 0);
+    QCOMPARE(inorder.back(), chainLength - 1);
+
+    // The deep copy is built and released iteratively as well.
+    const BinarySearchTree<int> copy = tree;
+    QCOMPARE(copy.size(), std::size_t(chainLength));
+    QCOMPARE(copy.height(), chainLength);
+    QVERIFY(copy.equals(tree));
+
+    tree.clear();
+    QVERIFY(tree.empty());
+    QCOMPARE(tree.size(), std::size_t(0));
 }
 
 QTEST_APPLESS_MAIN(TestOrdered)

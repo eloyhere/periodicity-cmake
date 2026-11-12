@@ -23,6 +23,9 @@ private slots:
     void paintsAfterPointerPress();
     void reportsAnimationState();
     void clipsToBounds();
+    void emptyPaintBoundsAreIgnored();
+    void clipsToPaintBounds();
+    void nonNullParentIsNotOwned();
 };
 
 namespace {
@@ -97,3 +100,97 @@ void TestRippleLayer::clipsToBounds()
 
 QTEST_MAIN(TestRippleLayer)
 #include "tst_ripple_layer.moc"
+
+// The layer, not the controller, owns the paint rectangle: an empty paint rect
+// contributes nothing even when the controller's cached bounds are not empty.
+void TestRippleLayer::emptyPaintBoundsAreIgnored()
+{
+    const Theme theme = lightTheme();
+    layer::RippleLayer rippleLayer(theme);
+    rippleLayer.setBounds(QRectF(0, 0, 200, 200));
+    rippleLayer.setCornerRadius(0.0);
+
+    rippleLayer.controller().pointerPressed(QPointF(100, 100));
+    QTest::qWait(300);
+
+    // The controller does have a visible ripple; only the empty paint rectangle
+    // hides it.
+    QVERIFY(render(rippleLayer, theme).pixelColor(100, 100).alpha() > 0);
+
+    QImage image(200, 200, QImage::Format_ARGB32_Premultiplied);
+    image.fill(Qt::transparent);
+
+    layer::SurfaceContext context{theme, ViewState::Enabled, Shape::medium(),
+                                  Elevation::Level0, QColor(), QColor()};
+
+    QPainter painter(&image);
+    rippleLayer.paint(painter, QRectF(), context);
+    painter.end();
+
+    QCOMPARE(image.pixelColor(100, 100).alpha(), 0);
+}
+
+// A stale or larger controller bound must not let the ripple escape the
+// rectangle the stack asked the stage to paint.
+void TestRippleLayer::clipsToPaintBounds()
+{
+    const Theme theme = lightTheme();
+    layer::RippleLayer rippleLayer(theme);
+    rippleLayer.setBounds(QRectF(0, 0, 200, 200));
+    rippleLayer.setCornerRadius(0.0);
+
+    // Slow the expansion so the sample lands with a radius well past the paint
+    // rectangle's right edge.
+    md::ripple::RippleSpec spec = md::ripple::RippleSpec::fromTheme(theme);
+    spec.expansion.duration = std::chrono::milliseconds(1000);
+    spec.fade.duration = std::chrono::milliseconds(1000);
+    rippleLayer.controller().setSpec(spec);
+
+    rippleLayer.controller().pointerPressed(QPointF(50, 50));
+    QTest::qWait(600);
+
+    // By now the unrestricted ripple has grown past x = 100, so the layer's
+    // paint rectangle is the only thing that can keep that pixel clear.
+    QVERIFY(render(rippleLayer, theme).pixelColor(101, 50).alpha() > 0);
+
+    QImage image(200, 200, QImage::Format_ARGB32_Premultiplied);
+    image.fill(Qt::transparent);
+
+    layer::SurfaceContext context{theme, ViewState::Enabled, Shape::medium(),
+                                  Elevation::Level0, QColor(), QColor()};
+
+    QPainter painter(&image);
+    rippleLayer.paint(painter, QRectF(0, 0, 100, 100), context);
+    painter.end();
+
+    QVERIFY(image.pixelColor(50, 50).alpha() > 0);
+
+    // The controller still has 200x200 bounds; only the layer's clip keeps this
+    // pixel transparent.
+    QCOMPARE(image.pixelColor(101, 50).alpha(), 0);
+}
+
+// Regression for the P1 ownership bug: a non-null parent must not adopt the
+// controller value member. Destroying that parent first previously destroyed
+// the controller and left the layer's destructor to free it a second time.
+void TestRippleLayer::nonNullParentIsNotOwned()
+{
+    const Theme theme = lightTheme();
+
+    auto* parent = new QObject;
+    layer::RippleLayer rippleLayer(theme, parent);
+
+    QVERIFY(rippleLayer.controller().parent() == nullptr);
+
+    // The external parent dies first, before the layer.
+    delete parent;
+
+    rippleLayer.setBounds(QRectF(0, 0, 200, 200));
+    rippleLayer.setCornerRadius(0.0);
+    rippleLayer.controller().pointerPressed(QPointF(100, 100));
+    QTest::qWait(300);
+
+    // The controller is still alive and paints; the layer destroys it once.
+    const QImage image = render(rippleLayer, theme);
+    QVERIFY(image.pixelColor(100, 100).alpha() > 0);
+}

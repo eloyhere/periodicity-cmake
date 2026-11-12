@@ -6,8 +6,12 @@
 // focus ring. That keeps the z-order in one place instead of letting each
 // component decide when to stamp a ripple on top.
 //
-// The controller is owned by the layer, so a surface needs one object per
-// ripple stage rather than a controller plus a paint call in its own paintEvent.
+// The controller is a value member, so its lifetime is exactly the layer's: a
+// surface needs one object per ripple stage rather than a controller plus a
+// paint call in its own paintEvent. The constructor's `parent` argument is
+// accepted for source compatibility but is deliberately ignored — handing it to
+// the controller would let an external QObject own a subobject and delete it
+// before (or after) the layer does.
 
 #pragma once
 
@@ -23,6 +27,9 @@ namespace md::layer {
 class RippleLayer : public Layer
 {
 public:
+    // The controller is owned by value and is never re-parented; `parent` is
+    // ignored (see the file comment) and may be null. Do not use it to extend
+    // the controller's lifetime beyond this layer's.
     explicit RippleLayer(Theme theme, QObject* parent = nullptr);
     ~RippleLayer() override;
 
@@ -41,10 +48,14 @@ public:
 
     // The controller the host forwards pointer events to. Kept accessible so a
     // widget can connect repaintRequested without the layer needing to be a
-    // QObject.
+    // QObject. Never re-parent it: it is a value member and its lifetime is
+    // exactly this layer's.
     [[nodiscard]] ripple::RippleController& controller() noexcept;
     [[nodiscard]] const ripple::RippleController& controller() const noexcept;
 
+    // Paints the controller's ripples clipped to `bounds`, which is the
+    // rectangle the caller asked this stage to paint. An empty bounds or an
+    // inactive painter paints nothing, like every other stage.
     void paint(QPainter& painter, const QRectF& bounds,
                const SurfaceContext& context) const override;
 

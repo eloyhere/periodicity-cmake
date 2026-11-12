@@ -18,7 +18,9 @@
 // shadowMargins(context) resolves the effective configuration and is the
 // overload a widget should use when it reserves geometry.
 //
-// Level0 draws nothing and reports zero margins.
+// Level0 draws nothing and reports zero margins. An out-of-range level (for
+// example static_cast<Elevation>(6), which stored data can produce) is
+// normalised to Level0 by every entry point.
 
 #pragma once
 
@@ -43,8 +45,9 @@ public:
     ElevationLayer() = default;
 
     // The explicit elevation. Level0 disables the shadow; unset means "use the
-    // context". Each setter keeps the owned ShadowDrawable in sync so
-    // shadowMargins() is correct before the first paint.
+    // context". An out-of-range level is normalised to Level0. Each setter
+    // keeps the owned ShadowDrawable in sync so shadowMargins() is correct
+    // before the first paint.
     void setElevation(Elevation elevation);
     [[nodiscard]] Elevation elevation() const noexcept;
 

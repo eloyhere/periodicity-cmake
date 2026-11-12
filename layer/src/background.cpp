@@ -25,9 +25,18 @@ void BackgroundLayer::paint(QPainter& painter, const QRectF& bounds,
         return;
 
     painter.save();
-    painter.setRenderHint(QPainter::Antialiasing, true);
-    painter.setClipPath(context.shape.path(bounds));
-    painter.fillRect(bounds, fill);
+    try {
+        painter.setRenderHint(QPainter::Antialiasing, true);
+        // IntersectClip, not ReplaceClip: the caller's damage region, viewport
+        // or pre-set clip must remain an upper bound on the fill. Replacing it
+        // would paint the whole shape into a painter that had already excluded
+        // most of it.
+        painter.setClipPath(context.shape.path(bounds), Qt::IntersectClip);
+        painter.fillRect(bounds, fill);
+    } catch (...) {
+        // A malformed shape or an allocation failure must not abort the rest
+        // of the composite; the painter state is restored below.
+    }
     painter.restore();
 }
 

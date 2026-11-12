@@ -26,6 +26,8 @@ class TestCompound : public QObject
 private slots:
     void multiTreeKeepsArity();
     void multiTreeEditsChildren();
+    void multiTreeRejectsFullParent();
+    void multiTreeSurvivesDeepChain();
     void multiTreeCopies();
     void segmentTreeAnswersRanges();
     void segmentTreeUpdatesAndRebuilds();
@@ -47,11 +49,12 @@ void TestCompound::multiTreeKeepsArity()
     QVERIFY(root.isLeaf());
     QVERIFY(!root.isFull());
 
-    auto& childA = tree.appendChild(&root, 2);
+    auto* childA = tree.appendChild(&root, 2);
+    QVERIFY(childA != nullptr);
     tree.appendChild(&root, 3);
     tree.appendChild(&root, 4);
-    tree.appendChild(&childA, 5);
-    tree.appendChild(&childA, 6);
+    tree.appendChild(childA, 5);
+    tree.appendChild(childA, 6);
 
     QVERIFY(root.isFull());
     QCOMPARE(root.childCount, std::size_t(3));
@@ -93,6 +96,65 @@ void TestCompound::multiTreeEditsChildren()
     binary.appendChild(&binaryRoot, 2);
     binary.appendChild(&binaryRoot, 3);
     QVERIFY(binary.isSaturated());
+}
+
+void TestCompound::multiTreeRejectsFullParent()
+{
+    MultiTree<int, 2> tree;
+    auto& root = tree.insertRoot(1);
+
+    auto* left = tree.appendChild(&root, 2);
+    auto* right = tree.appendChild(&root, 3);
+    QVERIFY(left != nullptr);
+    QVERIFY(right != nullptr);
+    QVERIFY(root.isFull());
+
+    // A full parent is a recoverable failure: the rejected value is destroyed,
+    // the tree is unchanged and no reference into freed storage is returned.
+    QVERIFY(tree.appendChild(&root, 4) == nullptr);
+    QCOMPARE(root.childCount, std::size_t(2));
+    QCOMPARE(tree.size(), std::size_t(3));
+    QVERIFY((tree.toPreorder() == std::vector<int>{1, 2, 3}));
+
+    // Capacity is per node, so a child with a free slot still accepts.
+    auto* grandchild = tree.appendChild(left, 4);
+    QVERIFY(grandchild != nullptr);
+    QCOMPARE(grandchild->value, 4);
+    QCOMPARE(tree.size(), std::size_t(4));
+}
+
+void TestCompound::multiTreeSurvivesDeepChain()
+{
+    // A chain of single children is a legal shape at any depth: the
+    // measurements, traversals, copy and the teardown at scope exit must all be
+    // independent of that depth.
+    constexpr int chainLength = 100000;
+
+    MultiTree<int, 2> chain;
+    auto& root = chain.insertRoot(0);
+    MultiTree<int, 2>::node_type* parent = &root;
+    for (int value = 1; value < chainLength; ++value)
+        parent = chain.appendChild(parent, value);
+
+    QCOMPARE(chain.size(), std::size_t(chainLength));
+    QCOMPARE(chain.height(), chainLength);
+    QCOMPARE(chain.countLeaves(), std::size_t(1));
+    QVERIFY(!chain.isSaturated());
+
+    const std::vector<int> preorder = chain.toPreorder();
+    QCOMPARE(preorder.size(), std::size_t(chainLength));
+    QCOMPARE(preorder.front(), 0);
+    QCOMPARE(preorder.back(), chainLength - 1);
+
+    std::vector<int> levels;
+    chain.forEachLevelOrder([&levels](int value) { levels.push_back(value); });
+    QCOMPARE(levels.size(), std::size_t(chainLength));
+    QCOMPARE(levels.front(), 0);
+
+    // The copy walks the shape iteratively and is released iteratively too.
+    const MultiTree<int, 2> copy = chain;
+    QCOMPARE(copy.size(), std::size_t(chainLength));
+    QVERIFY(copy.equals(chain));
 }
 
 void TestCompound::multiTreeCopies()

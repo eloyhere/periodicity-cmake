@@ -14,6 +14,12 @@
 //   free list  free blocks are threaded through their own storage (the first
 //              `sizeof(void*)` bytes of a free block hold the next pointer), so
 //              the free list costs no memory of its own;
+//   ownership  one bit per block records what is checked out, so a second
+//              release of the same block — or a release of a block this pool
+//              does not own — is refused instead of linking the block into the
+//              free list twice. The check is part of the hot path in every build
+//              because the corruption it prevents is a release-build bug, not a
+//              debug-only one;
 //   reuse      LIFO, so a block that was just released is the first one handed
 //              out again — the best case for the cache and for the branch
 //              predictor;
@@ -80,12 +86,13 @@ public:
     BlockPool(BlockPool&& other) noexcept
         : options_(other.options_), stride_(other.stride_), chunks_(std::move(other.chunks_)),
           freeHead_(other.freeHead_), capacity_(other.capacity_), inUse_(other.inUse_),
-          highWaterMark_(other.highWaterMark_)
+          highWaterMark_(other.highWaterMark_), rejectedReleases_(other.rejectedReleases_)
     {
         other.freeHead_ = nullptr;
         other.capacity_ = 0;
         other.inUse_ = 0;
         other.highWaterMark_ = 0;
+        other.rejectedReleases_ = 0;
     }
 
     BlockPool& operator=(BlockPool&& other) noexcept
@@ -101,11 +108,13 @@ public:
             capacity_ = other.capacity_;
             inUse_ = other.inUse_;
             highWaterMark_ = other.highWaterMark_;
+            rejectedReleases_ = other.rejectedReleases_;
 
             other.freeHead_ = nullptr;
             other.capacity_ = 0;
             other.inUse_ = 0;
             other.highWaterMark_ = 0;
+            other.rejectedReleases_ = 0;
         }
         return *this;
     }
@@ -122,7 +131,13 @@ public:
             return nullptr;
 
         void* block = freeHead_;
+        size_type index = 0;
+        Chunk* chunk = findChunk(block, &index);
+        assert(chunk != nullptr && "the free list references a foreign block");
+
         freeHead_ = *static_cast<void**>(block);
+        if (chunk != nullptr)
+            mark(*chunk, index, true);
 
         ++inUse_;
         if (inUse_ > highWaterMark_)
@@ -131,15 +146,23 @@ public:
     }
 
     // Returns a block to the pool. The block must come from this pool and must
-    // not already be free; both are asserted in debug builds.
+    // not already be free; a release that violates either rule is refused and
+    // counted in rejectedReleases(). It is never linked into the free list, in
+    // debug and release builds alike: a second link would hand the same storage
+    // to two owners later.
     void release(void* block) noexcept
     {
-        assert(block != nullptr && "release() needs a block");
-        assert(owns(block) && "block does not belong to this pool");
-        assert(!isFree(block) && "block was released twice");
+        size_type index = 0;
+        Chunk* chunk = findChunk(block, &index);
+        if (chunk == nullptr || !isMarked(*chunk, index)) {
+            ++rejectedReleases_;
+            return;
+        }
 
+        mark(*chunk, index, false);
         *static_cast<void**>(block) = freeHead_;
         freeHead_ = block;
+        assert(inUse_ > 0 && "the live map and the accounting disagree");
         --inUse_;
     }
 
@@ -157,6 +180,11 @@ public:
     // figure to size a pool from once a workload is known.
     [[nodiscard]] size_type highWaterMark() const noexcept { return highWaterMark_; }
 
+    // Releases refused because the block was foreign or already free. The free
+    // list and the accounting are unchanged when this grows: the pool reports
+    // the contract violation instead of corrupting itself.
+    [[nodiscard]] size_type rejectedReleases() const noexcept { return rejectedReleases_; }
+
     [[nodiscard]] size_type chunkCount() const noexcept { return chunks_.size(); }
 
     // True when `block` is one of this pool's blocks (free or in use).
@@ -173,6 +201,14 @@ public:
                 return (address - begin) % stride_ == 0;
         }
         return false;
+    }
+
+    // True when `block` belongs to this pool and is currently checked out.
+    [[nodiscard]] bool isLive(const void* block) const noexcept
+    {
+        size_type index = 0;
+        const Chunk* chunk = findChunk(block, &index);
+        return chunk != nullptr && isMarked(*chunk, index);
     }
 
     // ---- Bulk -------------------------------------------------------------
@@ -208,6 +244,12 @@ private:
     {
         std::byte* data = nullptr;
         size_type count = 0;
+
+        // One bit per block, set while the block is checked out. The free list
+        // alone cannot answer "is this block already free?" cheaply, and that
+        // answer is what keeps a second release from corrupting the list in a
+        // release build.
+        std::vector<std::uint64_t> live;
     };
 
     [[nodiscard]] static constexpr size_type roundUp(size_type value,
@@ -258,9 +300,14 @@ private:
         auto* data = static_cast<std::byte*>(allocateBytes(count * stride_,
                                                            options_.blockAlignment));
         try {
-            chunks_.push_back(Chunk{data, count});
+            Chunk chunk;
+            chunk.data = data;
+            chunk.count = count;
+            chunk.live.assign((count + 63) / 64, std::uint64_t{0});
+            chunks_.push_back(std::move(chunk));
         } catch (...) {
-            // The chunk table could not grow; the chunk itself must not leak.
+            // The chunk table or its live map could not grow; the chunk itself
+            // must not leak.
             freeBytes(data, options_.blockAlignment);
             throw;
         }
@@ -275,18 +322,49 @@ private:
         }
     }
 
-    [[nodiscard]] bool isFree(const void* block) const noexcept
+    // The chunk that owns `block`, or nullptr when the pool does not own it.
+    // `index` receives the block's position inside that chunk.
+    [[nodiscard]] const Chunk* findChunk(const void* block, size_type* index) const noexcept
     {
-#ifndef NDEBUG
-        for (const void* node = freeHead_; node != nullptr;
-             node = *reinterpret_cast<void* const*>(const_cast<void*>(node))) {
-            if (node == block)
-                return true;
+        if (block == nullptr)
+            return nullptr;
+
+        const auto address = reinterpret_cast<std::uintptr_t>(block);
+        for (const Chunk& chunk : chunks_) {
+            const auto begin = reinterpret_cast<std::uintptr_t>(chunk.data);
+            if (address < begin)
+                continue;
+
+            const auto offset = address - begin;
+            if (offset >= static_cast<std::uintptr_t>(chunk.count) * stride_
+                || offset % stride_ != 0) {
+                continue;
+            }
+
+            *index = static_cast<size_type>(offset / stride_);
+            return &chunk;
         }
-#else
-        (void)block;
-#endif
-        return false;
+        return nullptr;
+    }
+
+    [[nodiscard]] Chunk* findChunk(const void* block, size_type* index) noexcept
+    {
+        return const_cast<Chunk*>(std::as_const(*this).findChunk(block, index));
+    }
+
+    [[nodiscard]] static bool isMarked(const Chunk& chunk, size_type index) noexcept
+    {
+        return (chunk.live[index / 64] & (std::uint64_t{1} << (index % 64))) != 0;
+    }
+
+    static void mark(Chunk& chunk, size_type index, bool live) noexcept
+    {
+        const std::uint64_t bit = std::uint64_t{1} << (index % 64);
+        std::uint64_t& word = chunk.live[index / 64];
+        if (live)
+            word |= bit;
+        else
+            word &= ~bit;
     }
 
     Options options_{};
@@ -296,6 +374,7 @@ private:
     size_type capacity_ = 0;
     size_type inUse_ = 0;
     size_type highWaterMark_ = 0;
+    size_type rejectedReleases_ = 0;
 };
 
 } // namespace md::pool

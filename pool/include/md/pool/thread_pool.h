@@ -143,11 +143,31 @@ private:
     struct TaskNode
     {
         std::function<void()> fn;
+
+        // Runs from the node's destructor, on every path: after the task ran,
+        // after it threw, or when stop(false) destroyed the queued node. A
+        // parallelFor chunk uses it to release its latch, so neither a throwing
+        // body nor a concurrent discard can strand the caller. Empty for
+        // ordinary post()/submit() tasks.
+        std::function<void()> completion;
+
+        ~TaskNode()
+        {
+            if (!completion)
+                return;
+
+            try {
+                completion();
+            } catch (...) {
+                // A completion hook must not escape a destructor.
+            }
+        }
     };
 
     void startLocked();
     void workerLoop(std::size_t index);
     void discardQueuedLocked();
+    bool enqueue(std::function<void()> task, std::function<void()> completion);
 
     ThreadPoolOptions options_;
     std::size_t workerCount_ = 1;

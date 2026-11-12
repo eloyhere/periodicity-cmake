@@ -35,14 +35,30 @@
 
 namespace md::pool::ipc {
 
+// Byte capacity bounds. create() rounds a request up to the next power of two
+// and clamps it into this window; the effective value is reported back through
+// create()'s `actualCapacity` out-parameter and through capacity().
+inline constexpr std::size_t kMinRingCapacity = 4096;
+inline constexpr std::size_t kMaxRingCapacity = std::size_t{1} << 28; // 256 MiB
+
 class SharedRingBuffer
 {
 public:
-    // `capacity` is the byte capacity, rounded up to a power of two. Fails when
-    // the name already exists (create) or does not (open).
+    // `capacity` is the requested byte capacity, rounded up to a power of two
+    // and clamped to [kMinRingCapacity, kMaxRingCapacity]. `actualCapacity`, if
+    // given, receives the effective value, so a caller that asked for more than
+    // the maximum can see the clamp instead of guessing. Fails when the name
+    // already exists.
     static std::unique_ptr<SharedRingBuffer> create(const QString& name,
                                                     std::size_t capacity,
-                                                    QString* error);
+                                                    QString* error,
+                                                    std::size_t* actualCapacity = nullptr);
+
+    // Attaches to an existing ring and derives the mapping size from its
+    // header: a consumer does not have to know the creator's rounded byte
+    // count. The capacity-taking overload additionally requires that exact
+    // capacity and fails on a mismatch.
+    static std::unique_ptr<SharedRingBuffer> open(const QString& name, QString* error);
     static std::unique_ptr<SharedRingBuffer> open(const QString& name,
                                                   std::size_t capacity,
                                                   QString* error);

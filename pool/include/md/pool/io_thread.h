@@ -13,7 +13,10 @@
 // became due, and a due timer never waits behind a task that is not due yet.
 // The loop sleeps on the earliest deadline, so an idle IO thread costs nothing.
 //
-// The latency statistics are measured from submit to execution. They are the
+// The latency statistics are measured from the moment a task became runnable:
+// the submit time for post(), the deadline for postAfter()/postEvery(). The
+// figure therefore says how late the thread is, not how long a caller asked it
+// to wait — and a callback's own running time is part of it. They are the
 // number that tells a UI whether the IO thread is keeping up, which is why they
 // are part of the public surface rather than a debug counter.
 
@@ -44,6 +47,7 @@ public:
         std::uint64_t posted = 0;    // tasks and timers accepted
         std::uint64_t executed = 0;  // tasks and timer ticks that ran
         std::uint64_t cancelled = 0; // timers dropped by cancel()/stop()
+        std::uint64_t failed = 0;    // callbacks that threw; the thread survived
         std::size_t pending = 0;     // tasks + timers waiting
         double avgLatencyUs = 0.0;
         double maxLatencyUs = 0.0;
@@ -73,6 +77,9 @@ public:
 
     // Reads the file on the IO thread and hands the result to `done`, also on
     // the IO thread. The callback owns its copies; no reference outlives it.
+    // The one exception is a thread that is not running: there is no IO thread
+    // to run the callback on then, so the error is reported on the calling
+    // thread instead.
     void readFile(const QString& path, std::function<void(QByteArray, QString)> done);
 
     [[nodiscard]] Stats stats() const;
@@ -118,6 +125,7 @@ private:
     std::uint64_t posted_ = 0;
     std::uint64_t executed_ = 0;
     std::uint64_t cancelled_ = 0;
+    std::uint64_t failed_ = 0;
     double totalLatencyUs_ = 0.0;
     double maxLatencyUs_ = 0.0;
 

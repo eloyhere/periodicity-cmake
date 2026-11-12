@@ -28,6 +28,7 @@
 #include <md/components/input.h>
 #include <md/components/model.h>
 #include <md/theme/theme.h>
+#include <md/theme/theme_scope.h>
 
 #include <memory>
 
@@ -114,6 +115,7 @@ private slots:
     void dropDownSelection();
     void dropDownMenuKeyboard();
     void selectControl();
+    void selectControlsFollowSourceShrink();
 
     void completeFiltersAndBackfills();
 
@@ -125,6 +127,15 @@ private slots:
     void ringPickerPointerAndInertia();
 
     void paintSmokeTest();
+
+    // Appended regression cases: the floating label animates, and each popup
+    // row shows press feedback.
+    void textFieldLabelAnimates();
+    void textFieldLabelReturnsToRest();
+    void textFieldLabelReducedMotionSnaps();
+    void dropDownRowRipplePointer();
+    void dropDownRowRippleKeyboard();
+    void dropDownRowRippleReducedMotion();
 };
 
 void TestInputControls::initTestCase()
@@ -930,3 +941,322 @@ void TestInputControls::paintSmokeTest()
 
 QTEST_MAIN(TestInputControls)
 #include "tst_input_controls.moc"
+
+// ---------------------------------------------------------------------------
+// Regression tests (appended): an adapter-backed select must observe its
+// source model. A reset or a row removal clamps the held row to the surviving
+// rows (or -1 when none are left) and reports the change.
+// ---------------------------------------------------------------------------
+
+void TestInputControls::selectControlsFollowSourceShrink()
+{
+    // DropDown: a reset that removes rows clamps the held index and reports it.
+    md::Model source(QVariantList{QStringLiteral("a"), QStringLiteral("b"),
+                                 QStringLiteral("c")});
+    md::DropDown dropdown;
+    dropdown.setSourceModel(&source);
+    dropdown.setCurrentIndex(2);
+    QCOMPARE(dropdown.currentText(), QStringLiteral("c"));
+
+    QSignalSpy indexSpy(&dropdown, &md::DropDown::currentIndexChanged);
+    QSignalSpy valueSpy(&dropdown, &md::DropDown::currentValueChanged);
+
+    source.setValues(QVariantList{QStringLiteral("a"), QStringLiteral("b")});
+    QCOMPARE(dropdown.count(), 2);
+    QCOMPARE(dropdown.currentIndex(), 1);
+    QCOMPARE(dropdown.currentText(), QStringLiteral("b"));
+    QCOMPARE(static_cast<int>(indexSpy.count()), 1);
+    QCOMPARE(indexSpy.at(0).at(0).toInt(), 1);
+    QCOMPARE(static_cast<int>(valueSpy.count()), 1);
+    QCOMPARE(unwrap(valueSpy.at(0).at(0)).toString(), QStringLiteral("b"));
+
+    // Emptying the model drops the selection; the value becomes invalid.
+    source.setValues({});
+    QCOMPARE(dropdown.count(), 0);
+    QCOMPARE(dropdown.currentIndex(), -1);
+    QVERIFY(!dropdown.currentValue().isValid());
+    QCOMPARE(static_cast<int>(indexSpy.count()), 2);
+    QCOMPARE(indexSpy.at(1).at(0).toInt(), -1);
+    QCOMPARE(static_cast<int>(valueSpy.count()), 2);
+    QVERIFY(!unwrap(valueSpy.at(1).at(0)).isValid());
+
+    // A row inserted after the empty state gives the control a current row.
+    source.setValues(QVariantList{QStringLiteral("x")});
+    QCOMPARE(dropdown.currentIndex(), 0);
+    QCOMPARE(dropdown.currentText(), QStringLiteral("x"));
+    QCOMPARE(static_cast<int>(indexSpy.count()), 3);
+    QCOMPARE(static_cast<int>(valueSpy.count()), 3);
+
+    // A row removal (rowsRemoved, not a reset) takes the same path.
+    QStandardItemModel removingSource;
+    removingSource.appendRow(new QStandardItem(QStringLiteral("one")));
+    removingSource.appendRow(new QStandardItem(QStringLiteral("two")));
+    removingSource.appendRow(new QStandardItem(QStringLiteral("three")));
+
+    md::DropDown removing;
+    removing.setSourceModel(&removingSource);
+    removing.setCurrentIndex(2);
+    QCOMPARE(removing.currentText(), QStringLiteral("three"));
+
+    QSignalSpy removeIndexSpy(&removing, &md::DropDown::currentIndexChanged);
+    QSignalSpy removeValueSpy(&removing, &md::DropDown::currentValueChanged);
+
+    removingSource.removeRow(2);
+    QCOMPARE(removing.count(), 2);
+    QCOMPARE(removing.currentIndex(), 1);
+    QCOMPARE(removing.currentText(), QStringLiteral("two"));
+    QCOMPARE(static_cast<int>(removeIndexSpy.count()), 1);
+    QCOMPARE(removeIndexSpy.at(0).at(0).toInt(), 1);
+    QCOMPARE(static_cast<int>(removeValueSpy.count()), 1);
+    QCOMPARE(unwrap(removeValueSpy.at(0).at(0)).toString(), QStringLiteral("two"));
+
+    // PickerBase: the same clamp, and the value signal follows the index. A
+    // cyclic picker clamps instead of wrapping to the first row on a shrink.
+    md::Model pickerSource(QVariantList{0, 1, 2, 3});
+    md::RingPicker picker;
+    picker.setSourceModel(&pickerSource);
+    QCOMPARE(picker.count(), 4);
+    picker.setCurrentIndex(3);
+    QCOMPARE(picker.currentValue().toInt(), 3);
+
+    QSignalSpy pickerIndexSpy(&picker, &md::PickerBase::currentIndexChanged);
+    QSignalSpy pickerValueSpy(&picker, &md::PickerBase::currentValueChanged);
+
+    pickerSource.setValues(QVariantList{0, 1});
+    QCOMPARE(picker.count(), 2);
+    QCOMPARE(picker.currentIndex(), 1);
+    QCOMPARE(picker.currentValue().toInt(), 1);
+    QCOMPARE(static_cast<int>(pickerIndexSpy.count()), 1);
+    QCOMPARE(pickerIndexSpy.at(0).at(0).toInt(), 1);
+    QCOMPARE(static_cast<int>(pickerValueSpy.count()), 1);
+    QCOMPARE(unwrap(pickerValueSpy.at(0).at(0)).toInt(), 1);
+
+    pickerSource.setValues({});
+    QCOMPARE(picker.count(), 0);
+    QCOMPARE(picker.currentIndex(), -1);
+    QVERIFY(!picker.currentValue().isValid());
+    QCOMPARE(static_cast<int>(pickerIndexSpy.count()), 2);
+    QCOMPARE(pickerIndexSpy.at(1).at(0).toInt(), -1);
+    QCOMPARE(static_cast<int>(pickerValueSpy.count()), 2);
+    QVERIFY(!unwrap(pickerValueSpy.at(1).at(0)).isValid());
+}
+
+// ---------------------------------------------------------------------------
+// Regression tests (appended): the floating label is a real transition, and
+// every DropDown popup row carries its own press ripple.
+// ---------------------------------------------------------------------------
+
+namespace {
+
+md::Theme reducedMotionTheme()
+{
+    md::Theme theme = md::Theme::baselineLight();
+    md::MotionScheme motion = theme.motion();
+    motion.reducedMotion = true;
+    return theme.withMotion(motion);
+}
+
+QColor pixelAt(const QImage& image, const QPoint& logical)
+{
+    const qreal ratio = image.devicePixelRatio();
+    const int x = qBound(0, qRound(logical.x() * ratio), image.width() - 1);
+    const int y = qBound(0, qRound(logical.y() * ratio), image.height() - 1);
+    return image.pixelColor(x, y);
+}
+
+// The part of the field the label travels through, away from the embedded
+// editor's cursor so a blinking caret cannot make two frames differ.
+QRect labelCrop()
+{
+    return QRect(30, 2, 150, 48);
+}
+
+} // namespace
+
+void TestInputControls::textFieldLabelAnimates()
+{
+    md::TextInput input;
+    input.setLabel(QStringLiteral("Floating label"));
+    arrangeWidget(input, 280, 56);
+    input.show();
+    QTest::qWait(10);
+
+    // A shown top-level may hand focus to its only focusable child; begin from
+    // a genuinely resting field instead of depending on that.
+    input.editor()->clearFocus();
+    QTRY_VERIFY(!input.editor()->hasFocus());
+    QTRY_COMPARE_WITH_TIMEOUT(input.labelProgress(), 0.0, 1500);
+    QCOMPARE(input.labelProgress(), 0.0);
+    input.measure(md::MeasureSpec::unspecified(), md::MeasureSpec::unspecified());
+    const qreal restingHeight = input.measuredSize().height();
+    const QImage resting = renderWidget(input).copy(labelCrop());
+
+    input.editor()->setFocus(Qt::TabFocusReason);
+    QTRY_VERIFY(input.editor()->hasFocus());
+
+    // Let the first frame arrive, then stop roughly halfway through medium2.
+    QTRY_VERIFY_WITH_TIMEOUT(input.labelProgress() > 0.05, 1500);
+    QTest::qWait(70);
+    const qreal halfway = input.labelProgress();
+    QVERIFY(halfway > 0.05);
+    QVERIFY(halfway < 0.95);
+    const QImage midway = renderWidget(input).copy(labelCrop());
+
+    QTest::qWait(400);
+    QCOMPARE(input.labelProgress(), 1.0);
+    const QImage floating = renderWidget(input).copy(labelCrop());
+
+    // A frame from the middle of the transition differs from both end states,
+    // which is what "animated instead of jumping" means for the painted label.
+    QVERIFY(midway != resting);
+    QVERIFY(midway != floating);
+
+    // The field reserves the floating label line unconditionally, so the
+    // measurement cannot change when the label floats.
+    input.measure(md::MeasureSpec::unspecified(), md::MeasureSpec::unspecified());
+    QCOMPARE(input.measuredSize().height(), restingHeight);
+    QCOMPARE(restingHeight, 56.0);
+}
+
+void TestInputControls::textFieldLabelReturnsToRest()
+{
+    md::TextInput input;
+    input.setLabel(QStringLiteral("Floating label"));
+    arrangeWidget(input, 280, 56);
+    input.show();
+    QTest::qWait(10);
+
+    // A shown top-level hands focus to its only focusable child, so clear it:
+    // this case is about text floating the label without focus.
+    input.editor()->clearFocus();
+    QTRY_VERIFY(!input.editor()->hasFocus());
+
+    // Text alone, without focus, floats the label.
+    input.setText(QStringLiteral("Ada"));
+    QTest::qWait(400);
+    QCOMPARE(input.labelProgress(), 1.0);
+    QVERIFY(!input.editor()->hasFocus());
+
+    // Clearing the text while the field is unfocused returns it to the centre.
+    input.setText(QString());
+    QTest::qWait(400);
+    QCOMPARE(input.labelProgress(), 0.0);
+}
+
+void TestInputControls::textFieldLabelReducedMotionSnaps()
+{
+    md::TextInput input;
+    input.setLabel(QStringLiteral("Floating label"));
+    arrangeWidget(input, 280, 56);
+
+    auto* scope = md::ThemeScope::install(&input, reducedMotionTheme());
+    QVERIFY(scope != nullptr);
+    input.show();
+    QTest::qWait(10);
+
+    // Same auto-focus caveat as above: clear it so the starting state is the
+    // resting label, and assert that reduced motion settled there at once.
+    input.editor()->clearFocus();
+    QTRY_VERIFY(!input.editor()->hasFocus());
+    QCOMPARE(input.labelProgress(), 0.0);
+
+    // Reduced motion has no intermediate frames: one event-loop turn is enough
+    // to reach the end state in either direction.
+    input.editor()->setFocus(Qt::TabFocusReason);
+    QTRY_VERIFY(input.editor()->hasFocus());
+    QCoreApplication::processEvents();
+    QCOMPARE(input.labelProgress(), 1.0);
+
+    input.editor()->clearFocus();
+    QTRY_VERIFY(!input.editor()->hasFocus());
+    QCoreApplication::processEvents();
+    QCOMPARE(input.labelProgress(), 0.0);
+}
+
+void TestInputControls::dropDownRowRipplePointer()
+{
+    md::DropDown dropdown;
+    dropdown.addItems({QStringLiteral("Alpha"), QStringLiteral("Beta"),
+                       QStringLiteral("Gamma")});
+    arrangeWidget(dropdown, 240, 56);
+    dropdown.showPopup();
+    QVERIFY(dropdown.isPopupVisible());
+    QWidget* popup = dropdown.popupWidget();
+    QVERIFY(popup != nullptr);
+
+    const QImage before = renderWidget(*popup);
+    // The second row, away from its text, so the sample is plain surface.
+    const QPoint press(popup->width() - 40, 4 + 48 + 24);
+    QTest::mousePress(popup, Qt::LeftButton, Qt::NoModifier, press);
+
+    QTest::qWait(120);
+    const QImage midway = renderWidget(*popup);
+    QVERIFY(midway != before);
+
+    QTest::qWait(250);
+    const QImage settled = renderWidget(*popup);
+    QVERIFY(midway != settled);
+
+    // The neighbouring row keeps its pre-press pixels: only the pressed row
+    // carries the ripple.
+    const QPoint adjacent(press.x(), press.y() - 48);
+    QCOMPARE(pixelAt(midway, adjacent).rgba(), pixelAt(before, adjacent).rgba());
+
+    QTest::mouseRelease(popup, Qt::LeftButton, Qt::NoModifier, press);
+    QVERIFY(!dropdown.isPopupVisible());
+    QCOMPARE(dropdown.currentIndex(), 1);
+}
+
+void TestInputControls::dropDownRowRippleKeyboard()
+{
+    md::DropDown dropdown;
+    dropdown.addItems({QStringLiteral("Alpha"), QStringLiteral("Beta"),
+                       QStringLiteral("Gamma")});
+    arrangeWidget(dropdown, 240, 56);
+    dropdown.showPopup();
+    QWidget* popup = dropdown.popupWidget();
+    QVERIFY(popup != nullptr);
+
+    // A keyboard move changes the highlight and starts the same row ripple,
+    // centred inside the newly highlighted row.
+    QTest::keyClick(popup, Qt::Key_Down);
+    QTest::qWait(120);
+    const QImage midway = renderWidget(*popup);
+
+    // The keyboard ripple settles and clears; the highlight stays behind.
+    QTest::qWait(450);
+    const QImage settled = renderWidget(*popup);
+    QVERIFY(midway != settled);
+
+    const QPoint rowCentre(popup->width() / 2, 4 + 48 + 24);
+    QVERIFY(pixelAt(midway, rowCentre).rgba() != pixelAt(settled, rowCentre).rgba());
+}
+
+void TestInputControls::dropDownRowRippleReducedMotion()
+{
+    md::DropDown dropdown;
+    dropdown.addItems({QStringLiteral("Alpha"), QStringLiteral("Beta"),
+                       QStringLiteral("Gamma")});
+    arrangeWidget(dropdown, 240, 56);
+
+    auto* scope = md::ThemeScope::install(&dropdown, reducedMotionTheme());
+    QVERIFY(scope != nullptr);
+    dropdown.showPopup();
+    QWidget* popup = dropdown.popupWidget();
+    QVERIFY(popup != nullptr);
+
+    const QImage before = renderWidget(*popup);
+    const QPoint press(popup->width() - 40, 4 + 48 + 24);
+    QTest::mousePress(popup, Qt::LeftButton, Qt::NoModifier, press);
+    QCoreApplication::processEvents();
+
+    // One turn is enough for the settled state layer, and no further animation
+    // changes it while the row stays pressed.
+    const QImage immediate = renderWidget(*popup);
+    QVERIFY(immediate != before);
+    QTest::qWait(400);
+    const QImage later = renderWidget(*popup);
+    QCOMPARE(pixelAt(immediate, press).rgba(), pixelAt(later, press).rgba());
+
+    QTest::mouseRelease(popup, Qt::LeftButton, Qt::NoModifier, press);
+}

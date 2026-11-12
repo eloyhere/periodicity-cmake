@@ -80,16 +80,22 @@ public:
     [[nodiscard]] constexpr bool isPill() const noexcept { return pill_; }
 
     // The radii this shape uses for `bounds`. A pill ignores the stored radii
-    // and resolves to a semicircle; every other shape passes its corners
-    // through unchanged.
+    // and resolves to a semicircle. Every other shape clamps its corners to
+    // half the shorter side — the same limit CornerRadii::toPath() applies — so
+    // a token radius larger than the surface is never returned as-is.
     [[nodiscard]] constexpr CornerRadii resolved(const QRectF& bounds) const noexcept
     {
-        if (!pill_)
-            return radii_;
-
         const qreal shorter = bounds.width() < bounds.height() ? bounds.width()
                                                                : bounds.height();
-        return CornerRadii::uniform(shorter > 0.0 ? shorter / 2.0 : 0.0);
+        const qreal limit = shorter > 0.0 ? shorter / 2.0 : 0.0;
+
+        if (pill_)
+            return CornerRadii::uniform(limit);
+
+        return CornerRadii{clampRadius(radii_.topStart, limit),
+                           clampRadius(radii_.topEnd, limit),
+                           clampRadius(radii_.bottomEnd, limit),
+                           clampRadius(radii_.bottomStart, limit)};
     }
 
     // The outline for `bounds`. This is the single place where a shape token
@@ -100,6 +106,16 @@ public:
                                                    const Shape& rhs) noexcept = default;
 
 private:
+    // The clamp below follows CornerRadii::toPath(): a non-positive or
+    // non-finite radius degenerates to zero and a positive one is capped at the
+    // largest radius the rectangle can carry.
+    [[nodiscard]] static constexpr qreal clampRadius(qreal radius, qreal limit) noexcept
+    {
+        if (!(radius > 0.0))
+            return 0.0;
+        return radius < limit ? radius : limit;
+    }
+
     CornerRadii radii_{};
     bool pill_ = false;
 };

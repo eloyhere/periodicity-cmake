@@ -13,6 +13,7 @@
 #include <functional>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 using md::structure::BinaryHeap;
@@ -31,6 +32,7 @@ private slots:
     void trieErasesAndPrunes();
     void trieRejectsForeignSymbols();
     void trieCopies();
+    void trieMovesAndLeavesEmptySource();
 };
 
 void TestHeapTrie::heapOrdersItsElements()
@@ -201,6 +203,49 @@ void TestHeapTrie::trieCopies()
     QVERIFY(copy.empty());
     QCOMPARE(copy.nodeCount(), std::size_t(0));
     QCOMPARE(original.size(), std::size_t(2));
+}
+
+void TestHeapTrie::trieMovesAndLeavesEmptySource()
+{
+    Trie<int> source;
+    source.insert("alpha", 1);
+    source.insert("beta", 2);
+
+    Trie<int> moved = std::move(source);
+    QCOMPARE(moved.size(), std::size_t(2));
+    QCOMPARE(*moved.find("alpha"), 1);
+
+    // The moved-from trie is a valid empty trie, not merely an object whose
+    // root must not be touched: size(), nodeCount(), copying and insert() all
+    // still work because the implicit root was recreated.
+    QVERIFY(source.empty());
+    QCOMPARE(source.size(), std::size_t(0));
+    QVERIFY(source.root() != nullptr);
+    QCOMPARE(source.nodeCount(), std::size_t(0));
+    QVERIFY(!source.contains("alpha"));
+
+    Trie<int> copy = source;
+    QVERIFY(copy.empty());
+    QCOMPARE(copy.nodeCount(), std::size_t(0));
+
+    QVERIFY(source.insert("gamma", 3));
+    QCOMPARE(source.size(), std::size_t(1));
+    QCOMPARE(*source.find("gamma"), 3);
+    QCOMPARE(moved.size(), std::size_t(2));
+
+    // Move assignment replaces the destination and re-arms the source too.
+    Trie<int> target;
+    target.insert("delta", 4);
+    target = std::move(source);
+    QCOMPARE(target.size(), std::size_t(1));
+    QVERIFY(target.contains("gamma"));
+    QVERIFY(!target.contains("delta"));
+    QVERIFY(source.empty());
+    QVERIFY(source.root() != nullptr);
+    QVERIFY(source.insert("epsilon", 5));
+    QCOMPARE(source.size(), std::size_t(1));
+    QCOMPARE(*source.find("epsilon"), 5);
+    QCOMPARE(copy.size(), std::size_t(0));
 }
 
 QTEST_APPLESS_MAIN(TestHeapTrie)

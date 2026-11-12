@@ -118,12 +118,25 @@ public:
 
     // Ends T's lifetime — the destructor runs — and returns the block. Passing
     // nullptr is a no-op, so destroy() composes with create() returning nullptr.
+    //
+    // Destroying an object twice, or one that belongs to another pool, is
+    // refused: nothing is destroyed and nothing is linked, so a release build
+    // cannot corrupt the free list. rejectedReleases() counts the violation;
+    // a correct program never sees it.
     void destroy(T* object) noexcept
     {
         if (object == nullptr)
             return;
 
-        assert(owns(object) && "the object does not belong to this pool");
+        if (!blocks_.isLive(object)) {
+            // Hand the refusal to the block layer: release() is the single
+            // authority that rejects a block which is not live (or not ours)
+            // and records it in rejectedReleases(). It does not touch the
+            // object, so a foreign pointer cannot have T's destructor run on it.
+            blocks_.release(object);
+            return;
+        }
+
         std::destroy_at(object);
         blocks_.release(object);
     }
@@ -219,6 +232,12 @@ public:
 
     // Blocks currently on the free list.
     [[nodiscard]] size_type available() const noexcept { return blocks_.available(); }
+
+    // Releases refused because the object was foreign or already destroyed.
+    [[nodiscard]] size_type rejectedReleases() const noexcept
+    {
+        return blocks_.rejectedReleases();
+    }
 
     // Objects whose lifetime is in progress.
     [[nodiscard]] size_type liveCount() const noexcept { return blocks_.inUse(); }

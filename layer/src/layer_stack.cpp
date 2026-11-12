@@ -17,14 +17,17 @@ namespace md::layer {
 
 void LayerStack::add(std::unique_ptr<Layer> layer)
 {
-    if (layer == nullptr)
+    // A paint callback must not reallocate the vector the traversal is walking.
+    // The request is ignored (and the argument destroyed) rather than deferred,
+    // so a stage can never see a stack that changed under it.
+    if (painting_ || layer == nullptr)
         return;
     layers_.push_back(std::move(layer));
 }
 
 void LayerStack::insert(std::size_t index, std::unique_ptr<Layer> layer)
 {
-    if (layer == nullptr)
+    if (painting_ || layer == nullptr)
         return;
 
     // Clamping rather than throwing matches the rest of the library: a layout
@@ -38,6 +41,8 @@ void LayerStack::insert(std::size_t index, std::unique_ptr<Layer> layer)
 
 void LayerStack::clear() noexcept
 {
+    if (painting_)
+        return;
     layers_.clear();
 }
 
@@ -49,12 +54,40 @@ const Layer* LayerStack::at(std::size_t index) const noexcept
 void LayerStack::paint(QPainter& painter, const QRectF& bounds,
                        const SurfaceContext& context) const
 {
-    if (!painter.isActive())
+    // A re-entrant paint() would walk the same vector from inside a stage; it
+    // contributes nothing and is ignored.
+    if (painting_ || !painter.isActive())
         return;
 
+    // Reset the flag on every exit path, including an exception from a stage
+    // that somehow escaped the per-layer catch below.
+    struct PaintingGuard
+    {
+        explicit PaintingGuard(bool& flag) noexcept
+            : target(flag)
+        {
+            target = true;
+        }
+
+        ~PaintingGuard() { target = false; }
+
+        PaintingGuard(const PaintingGuard&) = delete;
+        PaintingGuard& operator=(const PaintingGuard&) = delete;
+
+        bool& target;
+    };
+    const PaintingGuard guard(painting_);
+
     for (const auto& layer : layers_) {
-        if (layer != nullptr)
+        if (layer == nullptr)
+            continue;
+
+        // Layers already save and restore the painter themselves, but a custom
+        // or broken stage must not take down the stages above and below it.
+        try {
             layer->paint(painter, bounds, context);
+        } catch (...) {
+        }
     }
 }
 

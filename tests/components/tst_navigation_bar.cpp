@@ -67,6 +67,7 @@ private slots:
     void addDestinationReturnsIncreasingIndices();
     void setCurrentIndexClamps();
     void clickActivatesDestination();
+    void pressCancelledByReleaseOutside();
     void keyboardMovesAndActivates();
     void emptyBarMeasuresAndPaintsNothing();
     void selectedDestinationPaintsIndicator();
@@ -335,3 +336,53 @@ void TestNavigationBar::accessibilityReportsDestinationLabels()
 
 QTEST_MAIN(TestNavigationBar)
 #include "tst_navigation_bar.moc"
+
+// ---------------------------------------------------------------------------
+// Regression test (appended): a destination is activated on release, and only
+// when the release lands on the destination that was pressed.
+// ---------------------------------------------------------------------------
+
+void TestNavigationBar::pressCancelledByReleaseOutside()
+{
+    md::NavigationBar bar;
+    bar.addDestination(makeDestination(QStringLiteral("Home")));
+    bar.addDestination(makeDestination(QStringLiteral("Search")));
+    bar.addDestination(makeDestination(QStringLiteral("Library")));
+    bar.resize(360, 80);
+
+    QSignalSpy activated(&bar, &md::NavigationBar::destinationActivated);
+    QCOMPARE(bar.currentIndex(), 0);
+
+    // A press alone does not activate; the bar waits for the release.
+    const QPointF target = bar.destinationRect(1).center();
+    QMouseEvent press(QEvent::MouseButtonPress, target, bar.mapToGlobal(target.toPoint()),
+                      Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+    QApplication::sendEvent(&bar, &press);
+    QCOMPARE(bar.currentIndex(), 0);
+    QCOMPARE(activated.count(), 0);
+
+    // Releasing outside the bar abandons the click.
+    const QPointF outside(-40.0, 40.0);
+    QMouseEvent outsideRelease(QEvent::MouseButtonRelease, outside,
+                               bar.mapToGlobal(outside.toPoint()), Qt::LeftButton,
+                               Qt::NoButton, Qt::NoModifier);
+    QApplication::sendEvent(&bar, &outsideRelease);
+    QCOMPARE(bar.currentIndex(), 0);
+    QCOMPARE(activated.count(), 0);
+
+    // Releasing over a different destination abandons it too.
+    QApplication::sendEvent(&bar, &press);
+    const QPointF other = bar.destinationRect(2).center();
+    QMouseEvent otherRelease(QEvent::MouseButtonRelease, other,
+                             bar.mapToGlobal(other.toPoint()), Qt::LeftButton,
+                             Qt::NoButton, Qt::NoModifier);
+    QApplication::sendEvent(&bar, &otherRelease);
+    QCOMPARE(bar.currentIndex(), 0);
+    QCOMPARE(activated.count(), 0);
+
+    // Press and release on the same destination activate it.
+    clickAt(bar, target);
+    QCOMPARE(bar.currentIndex(), 1);
+    QCOMPARE(activated.count(), 1);
+    QCOMPARE(activated.at(0).at(0).toInt(), 1);
+}

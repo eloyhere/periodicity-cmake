@@ -313,6 +313,7 @@ private slots:
     void colourSurfaceAtElevation();
     void colourContrast();
     void colourOpaque();
+    void shapeClampsOversizedRadii();
 };
 
 void TestTokens::typeScaleBaseline()
@@ -765,6 +766,39 @@ void TestTokens::colourOpaque()
             QVERIFY2(colour.alpha() == 255, row.name);
         }
     }
+}
+
+void TestTokens::shapeClampsOversizedRadii()
+{
+    // A 40x20 box carries at most half its shorter side, so the largest named
+    // token resolves to 10 rather than its stored 48. The token itself keeps
+    // its nominal radius: resolution is per box.
+    const QRectF small(0.0, 0.0, 40.0, 20.0);
+    const CornerRadii clamped = Shape::extraExtraLarge().resolved(small);
+    QVERIFY(clamped == CornerRadii::uniform(10.0));
+    QCOMPARE(Shape::extraExtraLarge().radii().topStart, 48.0);
+
+    // On a box large enough to carry it the token resolves unchanged.
+    QVERIFY(Shape::extraExtraLarge().resolved(QRectF(0.0, 0.0, 200.0, 200.0))
+            == CornerRadii::uniform(48.0));
+
+    // Asymmetric corners are clamped one by one, not as a group.
+    const Shape asymmetric = Shape::rounded(CornerRadii{4.0, 8.0, 12.0, 16.0});
+    const CornerRadii expected{4.0, 5.0, 5.0, 5.0};
+    QVERIFY(asymmetric.resolved(QRectF(0.0, 0.0, 10.0, 10.0)) == expected);
+
+    // The resolved radii are what path() draws: the clamp does not only exist
+    // in the path factory.
+    const QRectF wide(0.0, 0.0, 160.0, 20.0);
+    QVERIFY(Shape::extraExtraLarge().path(wide)
+            == CornerRadii::uniform(10.0).toPath(wide));
+
+    // A degenerate box resolves to no rounding rather than a negative radius.
+    QVERIFY(Shape::large().resolved(QRectF(0.0, 0.0, 0.0, 12.0))
+            == CornerRadii::uniform(0.0));
+
+    // The pill is unaffected: it already resolved against the bounds.
+    QVERIFY(Shape::pill().resolved(small) == CornerRadii::uniform(10.0));
 }
 
 QTEST_MAIN(TestTokens)

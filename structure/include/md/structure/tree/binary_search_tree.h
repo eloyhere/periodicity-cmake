@@ -30,6 +30,7 @@
 #include <functional>
 #include <memory>
 #include <utility>
+#include <vector>
 
 #include <md/structure/tree/binary_plus_tree.h>
 
@@ -194,10 +195,38 @@ public:
     // ---- Invariants -------------------------------------------------------
 
     // Debug check: every node lies within the open interval (lower, upper)
-    // implied by its ancestors.
+    // implied by its ancestors. Iterative, so a degenerate chain of any depth
+    // can be checked without recursion.
     [[nodiscard]] bool isValidOrder() const
     {
-        return isValidOrderNode(this->root(), nullptr, nullptr);
+        struct Frame
+        {
+            const node_type* node;
+            const T* lower;
+            const T* upper;
+        };
+
+        const node_type* root = this->root();
+        if (root == nullptr)
+            return true;
+
+        std::vector<Frame> pending;
+        pending.push_back({root, nullptr, nullptr});
+        while (!pending.empty()) {
+            const Frame current = pending.back();
+            pending.pop_back();
+            if (current.lower != nullptr && !compare_(*current.lower, current.node->value))
+                return false;
+            if (current.upper != nullptr && !compare_(current.node->value, *current.upper))
+                return false;
+            if (current.node->left != nullptr)
+                pending.push_back({current.node->left.get(), current.lower,
+                                   &current.node->value});
+            if (current.node->right != nullptr)
+                pending.push_back({current.node->right.get(), &current.node->value,
+                                   current.upper});
+        }
+        return true;
     }
 
 protected:
@@ -265,19 +294,6 @@ protected:
     }
 
 private:
-    [[nodiscard]] bool isValidOrderNode(const node_type* node, const T* lower,
-                                        const T* upper) const
-    {
-        if (node == nullptr)
-            return true;
-        if (lower != nullptr && !compare_(*lower, node->value))
-            return false;
-        if (upper != nullptr && !compare_(node->value, *upper))
-            return false;
-        return isValidOrderNode(node->left.get(), lower, &node->value)
-               && isValidOrderNode(node->right.get(), &node->value, upper);
-    }
-
     Compare compare_{};
 };
 

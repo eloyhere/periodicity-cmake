@@ -25,6 +25,7 @@
 #include <md/tokens/state_layer.h>
 
 #include <memory>
+#include <stdexcept>
 
 using md::Elevation;
 using md::Shape;
@@ -57,6 +58,29 @@ QImage render(const Drawable& drawable, const QRectF& bounds,
 
     QPainter painter(&image);
     painter.setLayoutDirection(direction);
+    drawable.draw(painter, bounds);
+    painter.end();
+
+    return image;
+}
+
+// Like render(), but the target device reports `ratio` as its device pixel
+// ratio. A QImage stores whatever it is given, including 0 and NaN, which are
+// the values a broken device can hand a drawable.
+//
+// The ratio is changed after the painter begins on purpose: QPainter takes a
+// snapshot of the device ratio into the high-DPI part of its transform in
+// begin(), so painting through a painter opened on a 0/NaN image would be
+// suppressed before the drawable ever saw the device. Changing the image
+// afterwards reproduces the device state the guard is about while leaving the
+// painter's own transform usable.
+QImage renderWithDevicePixelRatio(const Drawable& drawable, const QRectF& bounds,
+                                  qreal ratio)
+{
+    QImage image = newImage();
+
+    QPainter painter(&image);
+    image.setDevicePixelRatio(ratio);
     drawable.draw(painter, bounds);
     painter.end();
 
@@ -98,6 +122,17 @@ protected:
     }
 };
 
+// A drawable that fails every paint, so the composite's isolation can be
+// tested without a real primitive failing for an unrelated reason.
+class ThrowingDrawable : public Drawable
+{
+public:
+    void draw(QPainter&, const QRectF&) const override
+    {
+        throw std::runtime_error("paint failure");
+    }
+};
+
 } // namespace
 
 class TestDrawable : public QObject
@@ -114,6 +149,12 @@ private slots:
     void layerDrawablePaintsInInsertionOrder();
     void shadowMarginsGrowWithElevation();
     void shadowPaintsOutsideItsBounds();
+    void shadowNegativeBlurScaleDisablesOffset();
+    void shadowHugeBoundsDoesNotAllocate();
+    void iconRejectsInvalidSizes();
+    void iconHandlesInvalidDevicePixelRatio();
+    void shadowHandlesInvalidDevicePixelRatio();
+    void layerIsolatesThrowingChild();
     void revisionAndStateChangeInvalidate();
 };
 
@@ -346,6 +387,147 @@ void TestDrawable::shadowPaintsOutsideItsBounds()
 
     // The drop offset makes the shadow strongest below the surface.
     QVERIFY(alphaAt(image, 80, 125) > 0);
+}
+
+void TestDrawable::shadowNegativeBlurScaleDisablesOffset()
+{
+    const QRectF bounds(40.0, 40.0, 80.0, 80.0);
+
+    ShadowDrawable shadow;
+    shadow.setShape(Shape::medium());
+    shadow.setElevation(Elevation::Level3);
+    shadow.setBlurScale(-2.0);
+
+    // The setter clamps to zero, so the offset and the margins agree: the
+    // documented "disable the blur and the offset" behaviour. Before the
+    // clamp the offset was mirrored while the margins stayed zero.
+    QCOMPARE(shadow.blurScale(), 0.0);
+    QCOMPARE(shadow.shadowMargins(), QMarginsF());
+
+    // A non-finite scale is clamped the same way: NaN can be neither compared
+    // nor rendered, and infinity would make every margin non-finite.
+    ShadowDrawable nonFinite;
+    nonFinite.setElevation(Elevation::Level3);
+    nonFinite.setBlurScale(qQNaN());
+    QCOMPARE(nonFinite.blurScale(), 0.0);
+    QCOMPARE(nonFinite.shadowMargins(), QMarginsF());
+    nonFinite.setBlurScale(qInf());
+    QCOMPARE(nonFinite.blurScale(), 0.0);
+
+    const QImage image = render(shadow, bounds);
+
+    // The unshifted silhouette still paints inside the bounds...
+    QVERIFY(alphaAt(image, 80, 80) > 0);
+
+    // ...all the way to the bottom edge, which a shadow shifted upwards by the
+    // negative scale could not reach...
+    QVERIFY(alphaAt(image, 80, 119) > 0);
+
+    // ...and nothing at all above the bounds.
+    QCOMPARE(alphaAt(image, 80, 39), 0);
+}
+
+void TestDrawable::shadowHugeBoundsDoesNotAllocate()
+{
+    // Without the device-pixel cap this asks for a 40000 x 40000 ARGB image
+    // (6.4 GB) and then a 1.6 GB alpha vector. The call must return without
+    // painting and without attempting either allocation.
+    ShadowDrawable shadow;
+    shadow.setShape(Shape::medium());
+    shadow.setElevation(Elevation::Level5);
+
+    QVERIFY(isFullyTransparent(render(shadow, QRectF(0.0, 0.0, 40000.0, 40000.0))));
+
+    // Non-finite bounds must take the same early exit rather than reaching
+    // qCeil() or QImage with NaN/infinity.
+    QVERIFY(isFullyTransparent(render(shadow, QRectF(0.0, 0.0, qQNaN(), 100.0))));
+    QVERIFY(isFullyTransparent(render(shadow, QRectF(0.0, 0.0, qInf(), 100.0))));
+}
+
+void TestDrawable::iconRejectsInvalidSizes()
+{
+    IconDrawable icon;
+    QCOMPARE(icon.size(), QSizeF(24.0, 24.0));
+
+    // A negative extent is "no preference", not an inverted box.
+    icon.setSize(QSizeF(-8.0, 32.0));
+    QCOMPARE(icon.size(), QSizeF(0.0, 32.0));
+    QCOMPARE(icon.intrinsicSize(), QSizeF(0.0, 32.0));
+
+    // A non-finite size is rejected outright and leaves the previous value
+    // (and the revision) untouched.
+    icon.setSize(QSizeF(24.0, 24.0));
+    const quint64 before = icon.revision();
+    icon.setSize(QSizeF(qQNaN(), 24.0));
+    icon.setSize(QSizeF(24.0, qInf()));
+    QCOMPARE(icon.size(), QSizeF(24.0, 24.0));
+    QCOMPARE(icon.revision(), before);
+
+    // A clamped-to-zero box paints nothing and must not divide by NaN.
+    QPixmap solid(8, 8);
+    solid.fill(Qt::white);
+    IconDrawable collapsed;
+    collapsed.setPixmap(solid);
+    collapsed.setSize(QSizeF(-8.0, -8.0));
+    QCOMPARE(collapsed.size(), QSizeF(0.0, 0.0));
+    QVERIFY(isFullyTransparent(render(collapsed, QRectF(0.0, 0.0, kImageSize, kImageSize))));
+}
+
+void TestDrawable::iconHandlesInvalidDevicePixelRatio()
+{
+    QPixmap solid(64, 64);
+    solid.fill(Qt::white);
+
+    IconDrawable icon;
+    icon.setPixmap(solid);
+    icon.setSize(QSizeF(64.0, 64.0));
+    icon.setColour(QColor(Qt::red));
+
+    const QRectF bounds(0.0, 0.0, kImageSize, kImageSize);
+
+    // A ratio of 0 used to collapse the requested pixel size to 1 x 1 and tag
+    // the cached pixmap with 0; NaN reached qCeil() as an undefined
+    // conversion. Both now fall back to 1.0 for sizing, keying and tagging.
+    QCOMPARE(renderWithDevicePixelRatio(icon, bounds, 0.0).pixelColor(80, 80),
+             QColor(Qt::red));
+    QCOMPARE(renderWithDevicePixelRatio(icon, bounds, qQNaN()).pixelColor(80, 80),
+             QColor(Qt::red));
+
+    // A usable ratio is still honoured; the fallback is not a cap.
+    QCOMPARE(renderWithDevicePixelRatio(icon, bounds, 2.0).pixelColor(80, 80),
+             QColor(Qt::red));
+}
+
+void TestDrawable::shadowHandlesInvalidDevicePixelRatio()
+{
+    const QRectF bounds(40.0, 40.0, 80.0, 80.0);
+
+    ShadowDrawable shadow;
+    shadow.setShape(Shape::medium());
+    shadow.setElevation(Elevation::Level3);
+    // A distinct colour keeps this test independent of the pixmap cached by
+    // the other shadow tests.
+    shadow.setColour(QColor(20, 20, 20));
+
+    // At ratio 0 the old code computed an empty exact size and silently drew
+    // nothing (and would have tagged a raster with 0); NaN reached qCeil().
+    QVERIFY(alphaAt(renderWithDevicePixelRatio(shadow, bounds, 0.0), 80, 80) > 0);
+    QVERIFY(alphaAt(renderWithDevicePixelRatio(shadow, bounds, qQNaN()), 80, 80) > 0);
+
+    // A usable ratio is still honoured; the fallback is not a cap.
+    QVERIFY(alphaAt(renderWithDevicePixelRatio(shadow, bounds, 2.0), 80, 80) > 0);
+}
+
+void TestDrawable::layerIsolatesThrowingChild()
+{
+    LayerDrawable composite;
+    composite.add(std::make_unique<ThrowingDrawable>());
+    composite.add(std::make_unique<ShapeDrawable>(Shape::none(), QColor(Qt::blue)));
+
+    // The failing child must not abort the composite: the sibling after it
+    // still paints, and no exception escapes to the caller.
+    const QImage image = render(composite, QRectF(0.0, 0.0, kImageSize, kImageSize));
+    QCOMPARE(image.pixelColor(80, 80), QColor(Qt::blue));
 }
 
 void TestDrawable::revisionAndStateChangeInvalidate()

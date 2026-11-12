@@ -50,6 +50,8 @@ private slots:
     void stopDrainsQueuedWork();
     void stopDiscardsQueuedWork();
     void parallelForVisitsEveryIndex();
+    void parallelForSurvivesThrowingBody();
+    void parallelForSurvivesDiscard();
     void recyclesTaskNodes();
     void throwingTaskDoesNotKillPool();
     void restartAfterStop();
@@ -185,6 +187,74 @@ void TestThreadPool::parallelForVisitsEveryIndex()
 
     for (std::size_t index = 0; index < kCount; ++index)
         QCOMPARE(hits[index], 1);
+}
+
+void TestThreadPool::parallelForSurvivesThrowingBody()
+{
+    ThreadPool pool(ThreadPoolOptions{.workers = 4});
+
+    // The body throws on one index. parallelFor must still return and the pool
+    // must stay usable; before the fix the chunk skipped its count_down(), so
+    // this call never returned and the suite timed out instead of failing.
+    bool returned = false;
+    try {
+        pool.parallelFor(64, [](std::size_t index) {
+            if (index == 7)
+                throw std::runtime_error("body failed");
+        });
+        returned = true;
+    } catch (...) {
+        returned = false;
+    }
+
+    QVERIFY(returned);
+    QVERIFY(pool.stats().failed >= 1);
+    QCOMPARE(pool.stats().active, std::size_t(0));
+    QCOMPARE(pool.stats().tasks.live, std::size_t(0));
+
+    std::atomic<int> ran{0};
+    QVERIFY(pool.post([&ran] { ran.fetch_add(1, std::memory_order_relaxed); }));
+    QVERIFY(pool.drain(5s));
+    QCOMPARE(ran.load(), 1);
+}
+
+void TestThreadPool::parallelForSurvivesDiscard()
+{
+    ThreadPool pool(ThreadPoolOptions{.workers = 1, .queueCapacity = 64});
+
+    // Occupy the only worker, so all four chunks of the parallelFor below stay
+    // queued when stop(false) discards the queue.
+    std::atomic<bool> release{false};
+    QVERIFY(pool.post([&release] {
+        while (!release.load(std::memory_order_acquire))
+            std::this_thread::yield();
+    }));
+    QVERIFY(waitForActive(pool, 1, 2000));
+
+    std::thread runner([&pool, &release] {
+        pool.parallelFor(16, [](std::size_t) {});
+        // Reached only after the discarded chunks released their latches; that
+        // is the wake-up stop(false) below needs to finish its join.
+        release.store(true, std::memory_order_release);
+    });
+
+    // Wait until parallelFor has queued all of its chunks.
+    QElapsedTimer timer;
+    timer.start();
+    while (pool.stats().queued < 4 && timer.elapsed() < 5000)
+        std::this_thread::sleep_for(1ms);
+    const std::size_t queued = pool.stats().queued;
+
+    // Always finish the shutdown, even when the expectation above fails: a
+    // joinable std::thread in a test would call std::terminate instead of
+    // reporting the failure.
+    pool.stop(false);
+    release.store(true, std::memory_order_release);
+    runner.join();
+
+    QCOMPARE(queued, std::size_t(4));
+    QCOMPARE(pool.stats().dropped, std::uint64_t(4));
+    QCOMPARE(pool.stats().tasks.live, std::size_t(0));
 }
 
 void TestThreadPool::recyclesTaskNodes()

@@ -10,9 +10,9 @@ namespace md {
 
 QPainterPath Shape::path(const QRectF& bounds) const
 {
-    // A pill resolves against the bounds; every other shape passes its stored
-    // corners through. CornerRadii clamps oversized radii, so the token value
-    // never has to know how large the surface will be.
+    // resolved() has already clamped the corners to the bounds, and toPath()
+    // applies the same limit to whatever it is handed, so the token value never
+    // has to know how large the surface will be.
     return resolved(bounds).toPath(bounds);
 }
 

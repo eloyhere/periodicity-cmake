@@ -41,6 +41,7 @@ private slots:
     void visitsNodesWithDepth();
     void searchesAndCounts();
     void detectsIrregularShapes();
+    void survivesDeepChain();
 };
 
 void TestBinary::buildsFromLevelOrder()
@@ -213,6 +214,45 @@ void TestBinary::detectsIrregularShapes()
     QVERIFY(full.isFull());
     QVERIFY(!full.isPerfect());
     QVERIFY(full.isBalanced());
+}
+
+void TestBinary::survivesDeepChain()
+{
+    // A BinarySearchTree degenerates into a chain by design on sorted input, so
+    // the plain tree must tolerate the same shape. The chain is built through
+    // the O(1) edit API; every measurement, traversal, copy and the teardown at
+    // scope exit must be independent of the chain's depth.
+    constexpr int chainLength = 100000;
+
+    BinaryTree<int> chain;
+    auto& root = chain.insertRoot(0);
+    BinaryNode<int>* tail = &root;
+    for (int value = 1; value < chainLength; ++value)
+        tail = &chain.insertLeft(tail, value);
+
+    QCOMPARE(chain.size(), std::size_t(chainLength));
+    QCOMPARE(chain.height(), chainLength);
+    QCOMPARE(chain.minimumHeight(), 1);
+    QCOMPARE(chain.countLeaves(), std::size_t(1));
+    QCOMPARE(chain.countNodesWithOneChild(), std::size_t(chainLength - 1));
+    QVERIFY(!chain.isFull());
+    QVERIFY(!chain.isBalanced());
+    QCOMPARE(chain.diameter(), chainLength);
+
+    // The chain is built with insertLeft(), so it leans left: inorder reads the
+    // deepest tail first and the root last. (The ascending expectation would
+    // describe a right-leaning chain, which is not what was built here.)
+    const std::vector<int> inorder = chain.toInorder();
+    QCOMPARE(inorder.size(), std::size_t(chainLength));
+    QCOMPARE(inorder.front(), chainLength - 1);
+    QCOMPARE(inorder.back(), 0);
+
+    // Copying walks the shape iteratively, and the copy is released through the
+    // same iterative teardown when the scope ends.
+    const BinaryTree<int> copy = chain;
+    QCOMPARE(copy.size(), std::size_t(chainLength));
+    QCOMPARE(copy.toPreorder().front(), 0);
+    QCOMPARE(copy.toPostorder().front(), chainLength - 1);
 }
 
 QTEST_APPLESS_MAIN(TestBinary)

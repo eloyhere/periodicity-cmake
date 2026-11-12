@@ -24,17 +24,40 @@
 // A malformed parent graph is made finite: the chain walk stops after 1024
 // nodes and also stops as soon as it revisits a target (a cycle).
 //
-// Pointer positions: dispatch begins with the PointerEvent's local position
-// expressed in the original target's coordinate system. Before delivering to
-// each handler the dispatcher recomputes it with
-// `node.mapPointFrom(originalTarget, originalPosition)`, so every handler sees
-// the point in its own coordinates and the capture and bubble passes agree.
-// The original target itself receives the caller's position unchanged, and the
-// caller's position is restored when dispatch ends so the same PointerEvent
-// can be reused.
+// Positions: dispatch begins with the event position expressed in the
+// original target's coordinate system — PointerEvent::localPosition() or
+// WheelEvent::position(). Before delivering to each handler the dispatcher
+// recomputes it with `node.mapPointFrom(originalTarget, originalPosition)`, so
+// every handler sees the position in its own coordinates and the capture and
+// bubble passes agree. The original target itself receives the caller's
+// position unchanged, and the caller's position is restored when dispatch ends
+// so the same event can be reused.
 //
-// Event::resetForDispatch() is called first, so one Event instance may be
-// reused for successive dispatches.
+// Event::resetForDispatch() is called at the start of every admitted run; a
+// re-entrant pass saves the outer state first (see below).
+// Re-entrant dispatch is supported: a handler may dispatch the event it is
+// handling, even to a different target. The outer pass saves its phase, target
+// and flags before the inner pass resets them and restores them when the inner
+// pass returns, so neither pass observes the other's outcome. Nesting is
+// capped at 16 passes; a dispatch beyond that cap is refused without touching
+// the event and returns the flags the event already carries.
+//
+// Lifetime: EventTarget is not a QObject, so the chain cannot hold a QPointer.
+// Every target carries a shared liveness token instead (event_target.h), and
+// the chain keeps a copy. When a handler destroys a node — including the
+// delivery target or the original target — dispatch aborts before the next
+// delivery, and Event::target() is detached from the destroyed node. A
+// top-level dispatch clears Event::target() when it returns, so a retained
+// Event never names a target that may since have been destroyed.
+//
+// Handlers may throw. Every onEvent()/onInterceptEvent() invocation is wrapped
+// in a catch-all: a throwing handler is treated as if it had returned false
+// without accepting or stopping anything, and the remaining passes still run.
+// A throwing handler therefore cannot break the chain or leave the dispatcher
+// wedged.
+//
+// The dispatcher is not thread-safe; targets and dispatch belong to the GUI
+// thread.
 
 #pragma once
 

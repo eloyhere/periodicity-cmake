@@ -45,6 +45,8 @@ private slots:
     void insetsAppliedTo();
     void cornerRadiiToPath();
     void cornerRadiiToPathClamps();
+    void densityInvalidScaleFallsBack();
+    void cornerRadiiNonFiniteInputs();
     void viewStatesComposition();
     void loggingCategoryNames();
 };
@@ -193,6 +195,82 @@ void TestCore::cornerRadiiToPathClamps()
 
     // An empty rectangle has no outline at all.
     QVERIFY(CornerRadii::uniform(8.0).toPath(QRectF()).isEmpty());
+}
+
+void TestCore::densityInvalidScaleFallsBack()
+{
+    // A zoom that animates through zero must not collapse every measurement.
+    // The whole struct uses one effective scale, so dp and pxToDp stay
+    // inverses instead of disagreeing.
+    Density zero;
+    zero.scale = 0.0;
+    QCOMPARE(zero.effectiveScale(), 1.0);
+    QCOMPARE(zero.dp(24.0), 24.0);
+    QCOMPARE(zero.sp(16.0), 16.0);
+    QCOMPARE(zero.pxToDp(24.0), 24.0);
+
+    // A negative scale is unusable too: it must not invert dp while pxToDp
+    // silently ignores it.
+    Density negative;
+    negative.scale = -2.0;
+    QCOMPARE(negative.effectiveScale(), 1.0);
+    QCOMPARE(negative.dp(12.0), 12.0);
+    QCOMPARE(negative.sp(8.0), 8.0);
+    QCOMPARE(negative.pxToDp(-24.0), -24.0);
+
+    // NaN and infinity are rejected by the same rule.
+    Density nan;
+    nan.scale = qQNaN();
+    QCOMPARE(nan.effectiveScale(), 1.0);
+    QCOMPARE(nan.dp(12.0), 12.0);
+    QCOMPARE(nan.sp(8.0), 8.0);
+    QCOMPARE(nan.pxToDp(12.0), 12.0);
+
+    Density infinite;
+    infinite.scale = qInf();
+    QCOMPARE(infinite.effectiveScale(), 1.0);
+    QCOMPARE(infinite.dp(12.0), 12.0);
+    QCOMPARE(infinite.pxToDp(12.0), 12.0);
+
+    // With the identity fallback, dp -> pxToDp is an exact round trip.
+    QCOMPARE(zero.pxToDp(zero.dp(37.5)), 37.5);
+
+    // A usable scale is still applied and still inverts exactly.
+    Density zoomed;
+    zoomed.scale = 2.0;
+    QCOMPARE(zoomed.effectiveScale(), 2.0);
+    QCOMPARE(zoomed.pxToDp(zoomed.dp(12.0)), 12.0);
+}
+
+void TestCore::cornerRadiiNonFiniteInputs()
+{
+    const QRectF bounds(0.0, 0.0, 100.0, 40.0);
+
+    // NaN compares false with everything, so the old `radius <= 0` test let it
+    // fall through and the clamp turned it into the *maximum* radius. It must
+    // degenerate to a square corner instead.
+    const CornerRadii nanRadii = CornerRadii::uniform(qQNaN());
+    const QPainterPath nanPath = nanRadii.toPath(bounds);
+    QVERIFY(nanPath == CornerRadii{}.toPath(bounds));
+    QVERIFY(rectsAlmostEqual(nanPath.boundingRect(), bounds));
+    QVERIFY(nanPath.contains(QPointF(0.5, 0.5)));
+
+    // A single NaN corner degenerates that corner only.
+    const CornerRadii mixed{qQNaN(), 8.0, 8.0, 8.0};
+    const CornerRadii mixedExpected{0.0, 8.0, 8.0, 8.0};
+    QVERIFY(mixed.toPath(bounds) == mixedExpected.toPath(bounds));
+
+    // Infinity is a positive radius and clamps to half the shorter side.
+    QVERIFY(CornerRadii::uniform(qInf()).toPath(bounds)
+            == CornerRadii::uniform(20.0).toPath(bounds));
+
+    // A non-finite rectangle has no drawable outline; returning a path made of
+    // NaN or infinite points would poison every caller downstream.
+    const CornerRadii radii = CornerRadii::uniform(8.0);
+    QVERIFY(radii.toPath(QRectF(0.0, 0.0, qQNaN(), 40.0)).isEmpty());
+    QVERIFY(radii.toPath(QRectF(0.0, 0.0, 100.0, qInf())).isEmpty());
+    QVERIFY(radii.toPath(QRectF(qQNaN(), 0.0, 100.0, 40.0)).isEmpty());
+    QVERIFY(radii.toPath(QRectF(0.0, qInf(), 100.0, 40.0)).isEmpty());
 }
 
 void TestCore::viewStatesComposition()

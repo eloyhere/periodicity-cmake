@@ -115,12 +115,17 @@ public:
         return value;
     }
 
-    // Safe to call from either side. The figure is a snapshot, not a promise.
+    // Safe to call from either side. The figure is a snapshot, not a promise:
+    // the consumer's cursor is loaded first because it only moves forward, so
+    // `head - tail` cannot wrap even when the producer publishes between the
+    // two loads. The result is capped at capacity() because a producer-side
+    // snapshot can catch a stale (smaller) tail and otherwise over-report.
     [[nodiscard]] std::size_t size() const noexcept
     {
-        const std::size_t head = head_.load(std::memory_order_acquire);
         const std::size_t tail = tail_.load(std::memory_order_acquire);
-        return head - tail;
+        const std::size_t head = head_.load(std::memory_order_acquire);
+        const std::size_t occupied = head - tail;
+        return occupied < capacity_ ? occupied : capacity_;
     }
 
     [[nodiscard]] std::size_t capacity() const noexcept { return capacity_; }

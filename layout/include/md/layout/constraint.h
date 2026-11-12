@@ -27,6 +27,8 @@
 
 #include <optional>
 
+#include <exception>
+
 namespace md {
 
 class Constraint : public ViewGroup
@@ -135,6 +137,41 @@ protected:
 
     void arrangeChildren(const QRectF& content) override
     {
+        // Placing a child runs its measure()/arrange() hooks, which is user
+        // code: one throw must not unwind through Qt's frame.
+        try {
+            arrangeConstrained(content);
+        } catch (const std::exception& error) {
+            layout_detail::reportFailure("Constraint::arrangeChildren", error.what());
+        } catch (...) {
+            layout_detail::reportFailure("Constraint::arrangeChildren", nullptr);
+        }
+    }
+
+private:
+    // Two insets that add up to more than `extent` cannot both be honoured.
+    // The overrun is taken off both sides evenly — a side that reaches zero
+    // passes its remaining share to the other — so the pair still sums to the
+    // extent and the child keeps its place inside the content.
+    static void clampInsets(int& start, int& end, int extent)
+    {
+        const int overrun = start + end - extent;
+        if (overrun <= 0)
+            return;
+
+        int startCut = qMin(start, overrun / 2);
+        int endCut = overrun - startCut;
+        if (endCut > end) {
+            startCut += endCut - end;
+            endCut = end;
+        }
+
+        start -= startCut;
+        end -= endCut;
+    }
+
+    void arrangeConstrained(const QRectF& content)
+    {
         const bool rightToLeft = layoutDirection() == Qt::RightToLeft;
 
         // Anchors, centring and the mirror are all resolved in whole pixels:
@@ -151,10 +188,17 @@ protected:
 
             const Anchors anchors = constraints(child);
 
-            const int insetStart = qRound(anchors.start.value_or(0.0));
-            const int insetEnd = qRound(anchors.end.value_or(0.0));
-            const int insetTop = qRound(anchors.top.value_or(0.0));
-            const int insetBottom = qRound(anchors.bottom.value_or(0.0));
+            int insetStart = qRound(anchors.start.value_or(0.0));
+            int insetEnd = qRound(anchors.end.value_or(0.0));
+            int insetTop = qRound(anchors.top.value_or(0.0));
+            int insetBottom = qRound(anchors.bottom.value_or(0.0));
+
+            // Conflicting anchors are resolved against the content: an inset
+            // pair larger than the axis is clamped, so a start and an end anchor
+            // of 150 in a 100-wide parent centre the child instead of placing it
+            // 150 pixels outside the content.
+            clampInsets(insetStart, insetEnd, width);
+            clampInsets(insetTop, insetBottom, height);
 
             const int availableWidth = qMax(0, width - insetStart - insetEnd);
             const int availableHeight = qMax(0, height - insetTop - insetBottom);
@@ -191,6 +235,11 @@ protected:
             else if (anchors.centerVertical)
                 y = (height - childHeight) / 2;
 
+            // A single anchor can also sit beyond the edge; whatever the anchors
+            // asked for, the child is never placed outside the content.
+            x = qBound(0, x, width - childWidth);
+            y = qBound(0, y, height - childHeight);
+
             // A centred child is already symmetric: mirroring it again would
             // move it one pixel whenever the leftover is odd.
             const bool centredHorizontally =
@@ -204,7 +253,6 @@ protected:
         }
     }
 
-private:
     static bool isValid(const Anchors& anchors)
     {
         for (const std::optional<qreal>& value :

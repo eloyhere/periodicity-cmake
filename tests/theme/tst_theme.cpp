@@ -106,6 +106,17 @@ private slots:
     void nullHostIsIgnored();
     void paletteBridge();
     void paletteDisabledContent();
+
+    // Appended boundary tests for the theme findings in issue.md: scope
+    // lifetime/notification, adapter re-resolution, density normalisation,
+    // the default palette and exception isolation.
+    void defaultThemeHasAUsablePalette();
+    void densityIsNormalised();
+    void scopeDestructionNotifiesLiveWidgets();
+    void scopeReplacementNotifiesLiveWidgets();
+    void adapterScopeRefreshesAfterAncestorChange();
+    void adapterScopeRefreshesAfterApplicationChange();
+    void throwingObserverDoesNotBreakSetTheme();
 };
 
 void TestTheme::baselineThemes()
@@ -458,3 +469,207 @@ void TestTheme::paletteDisabledContent()
 QTEST_MAIN(TestTheme)
 
 #include "tst_theme.moc"
+
+// ---------------------------------------------------------------------------
+// Appended boundary tests: default palette, density normalisation, scope
+// destruction/replacement notification, adapter re-resolution and exception
+// isolation. The tests above are unchanged.
+// ---------------------------------------------------------------------------
+
+namespace {
+
+// A derived scope whose adapter keeps the inherited tokens but doubles the
+// density, so a test can tell whether re-resolution actually ran.
+class DensityAdapter final : public ThemeScope::Adapter
+{
+public:
+    [[nodiscard]] Theme resolve(const Theme& inherited) const override
+    {
+        return inherited.withDensity(Density{2.0, 2.0});
+    }
+};
+
+} // namespace
+
+void TestTheme::defaultThemeHasAUsablePalette()
+{
+    // The default constructor is the metatype placeholder, but it must not be
+    // a palette of invalid colours: it is the baseline light theme.
+    const Theme defaulted;
+    QVERIFY(defaulted.colours() == ColorScheme::baselineLight());
+    QVERIFY(defaulted == Theme::baselineLight());
+    QCOMPARE(defaulted.density().scale, 1.0);
+    QVERIFY(defaulted.toPalette().color(QPalette::Window).rgba()
+            == Theme::baselineLight().colours().surface.rgba());
+
+    // An explicitly empty scheme (all members uninitialised) is substituted by
+    // the baseline at the Theme boundary.
+    const Theme emptyScheme(ColorScheme{}, TypeScale::baseline(), ShapeScale::baseline(),
+                            MotionScheme::baseline(), Density{});
+    QVERIFY(emptyScheme.colours() == ColorScheme::baselineLight());
+    QVERIFY(emptyScheme.toPalette().color(QPalette::Window).isValid());
+    QVERIFY(emptyScheme.toPalette().color(QPalette::Text).isValid());
+    QVERIFY(emptyScheme.colourPrimary().isValid());
+    QVERIFY(emptyScheme.colourPrimaryDark().isValid());
+    QVERIFY(emptyScheme.colourSecondaryDark().isValid());
+}
+
+void TestTheme::densityIsNormalised()
+{
+    const Theme base = Theme::baselineLight();
+
+    const Density zero{0.0, 0.0};
+    const Theme fromZero = base.withDensity(zero);
+    QCOMPARE(fromZero.density().scale, 1.0);
+    QCOMPARE(fromZero.density().fontScale, 1.0);
+    QCOMPARE(fromZero.density().dp(4.0), 4.0);
+    QCOMPARE(fromZero.density().sp(4.0), 4.0);
+    QCOMPARE(zero.scale, 0.0); // the caller's value is not modified
+
+    const Theme fromNegative = base.withDensity(Density{-2.0, -0.5});
+    QCOMPARE(fromNegative.density().scale, 1.0);
+    QCOMPARE(fromNegative.density().fontScale, 1.0);
+
+    const Theme fromNan = base.withDensity(Density{qQNaN(), qQNaN()});
+    QCOMPARE(fromNan.density().scale, 1.0);
+    QCOMPARE(fromNan.density().fontScale, 1.0);
+
+    const Theme fromHuge = base.withDensity(Density{1.0e9, 1.0e9});
+    QCOMPARE(fromHuge.density().scale, 4.0);
+    QCOMPARE(fromHuge.density().fontScale, 4.0);
+
+    const Theme fromTiny = base.withDensity(Density{0.01, 0.01});
+    QCOMPARE(fromTiny.density().scale, 0.1);
+    QCOMPARE(fromTiny.density().fontScale, 0.1);
+
+    // Valid values survive unchanged.
+    const Theme valid = base.withDensity(Density{1.25, 1.5});
+    QCOMPARE(valid.density().scale, 1.25);
+    QCOMPARE(valid.density().fontScale, 1.5);
+
+    // The explicit constructor goes through the same normalisation.
+    const Theme constructed(base.colours(), base.type(), base.shapes(), base.motion(),
+                            Density{0.0, 8.0});
+    QCOMPARE(constructed.density().scale, 1.0);
+    QCOMPARE(constructed.density().fontScale, 4.0);
+}
+
+void TestTheme::scopeDestructionNotifiesLiveWidgets()
+{
+    ProbeWidget host;
+    auto* child = new ProbeWidget(&host);
+    auto* grandchild = new ProbeWidget(child);
+
+    ThemeScope* scope = ThemeScope::install(&host, Theme::baselineDark());
+    QVERIFY(scope != nullptr);
+    QVERIFY(Theme::forWidget(grandchild) == Theme::baselineDark());
+
+    QTest::qWait(20);
+    const int hostChanges = host.themeChanges;
+    const int childChanges = child->themeChanges;
+    const int grandchildChanges = grandchild->themeChanges;
+
+    // Destroying a scope changes resolution for the whole subtree, so live
+    // widgets must be told to re-resolve even though no setTheme() ran.
+    delete scope;
+
+    QCOMPARE(ThemeScope::find(&host), nullptr);
+    QVERIFY(Theme::forWidget(grandchild) == Theme::applicationTheme());
+    QTRY_VERIFY(host.themeChanges > hostChanges);
+    QTRY_VERIFY(child->themeChanges > childChanges);
+    QTRY_VERIFY(grandchild->themeChanges > grandchildChanges);
+}
+
+void TestTheme::scopeReplacementNotifiesLiveWidgets()
+{
+    ProbeWidget host;
+    auto* child = new ProbeWidget(&host);
+
+    QVERIFY(ThemeScope::install(&host, Theme::baselineLight()) != nullptr);
+    QTest::qWait(20);
+    const int hostChanges = host.themeChanges;
+    const int childChanges = child->themeChanges;
+
+    ThemeScope* replacement = ThemeScope::install(&host, Theme::baselineDark());
+    QVERIFY(replacement != nullptr);
+    QCOMPARE(ThemeScope::find(&host), replacement);
+    QVERIFY(Theme::forWidget(child) == Theme::baselineDark());
+
+    QTRY_VERIFY(host.themeChanges > hostChanges);
+    QTRY_VERIFY(child->themeChanges > childChanges);
+}
+
+void TestTheme::adapterScopeRefreshesAfterAncestorChange()
+{
+    QWidget outerHost;
+    auto* innerHost = new QWidget(&outerHost);
+    auto* leaf = new QWidget(innerHost);
+
+    ThemeScope* outer = ThemeScope::install(&outerHost, Theme::baselineDark());
+    QVERIFY(outer != nullptr);
+
+    ThemeScope* inner = ThemeScope::install(innerHost, std::make_unique<DensityAdapter>());
+    QVERIFY(inner != nullptr);
+    QVERIFY(Theme::forWidget(leaf).colours() == ColorScheme::baselineDark());
+    QCOMPARE(Theme::forWidget(leaf).density().scale, 2.0);
+
+    // The derived scope re-resolves when an ancestor changes, without an
+    // explicit refresh() call and without an event-loop turn: resolution is
+    // synchronous, only the notification is posted.
+    outer->setTheme(Theme::baselineLight());
+    QVERIFY(Theme::forWidget(leaf).colours() == ColorScheme::baselineLight());
+    QCOMPARE(Theme::forWidget(leaf).density().scale, 2.0);
+
+    // A manual refresh still works and is a no-op when nothing changed.
+    inner->refresh();
+    QCOMPARE(Theme::forWidget(leaf).density().scale, 2.0);
+}
+
+void TestTheme::adapterScopeRefreshesAfterApplicationChange()
+{
+    const Theme original = Theme::applicationTheme();
+
+    QWidget host;
+    auto* child = new QWidget(&host);
+    QVERIFY(ThemeScope::install(&host, std::make_unique<DensityAdapter>()) != nullptr);
+
+    Theme::setApplicationTheme(Theme::baselineDark());
+    QVERIFY(Theme::forWidget(child).colours() == ColorScheme::baselineDark());
+    QCOMPARE(Theme::forWidget(child).density().scale, 2.0);
+
+    Theme::setApplicationTheme(Theme::baselineLight());
+    QVERIFY(Theme::forWidget(child).colours() == ColorScheme::baselineLight());
+    QCOMPARE(Theme::forWidget(child).density().scale, 2.0);
+
+    Theme::setApplicationTheme(original);
+}
+
+void TestTheme::throwingObserverDoesNotBreakSetTheme()
+{
+    ProbeWidget host;
+    auto* child = new ProbeWidget(&host);
+
+    ThemeScope* scope = ThemeScope::install(&host, Theme::baselineLight());
+    QVERIFY(scope != nullptr);
+    QTest::qWait(20);
+    const int hostChanges = host.themeChanges;
+
+    bool threw = false;
+    QObject::connect(scope, &ThemeScope::themeChanged, scope, [&threw] {
+        threw = true;
+        throw 7; // an arbitrary payload: the isolation catches everything
+    });
+
+    scope->setTheme(Theme::baselineDark());
+
+    QVERIFY(threw);
+    QVERIFY(scope->theme() == Theme::baselineDark());
+    QVERIFY(Theme::forWidget(child) == Theme::baselineDark());
+
+    // The posted notification still reaches the subtree, and a later change
+    // still works after the isolated exception.
+    QTRY_VERIFY(host.themeChanges > hostChanges);
+    scope->setTheme(Theme::baselineLight());
+    QVERIFY(scope->theme() == Theme::baselineLight());
+}
+

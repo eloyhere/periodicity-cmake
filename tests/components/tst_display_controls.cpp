@@ -186,9 +186,11 @@ private slots:
 
     void listSelectionAndKeyboard();
     void listClicksAndScrolling();
+    void firstVisibleRowStaysInsideModel();
 
     void recyclerVirtualisation();
     void recyclerReactsToModelChanges();
+    void removedSelectionEmitsInvalidIndex();
 
     void popUpOpensClosesAndDismisses();
 
@@ -721,3 +723,154 @@ void TestDisplayControls::guideStepProgression()
 
 QTEST_MAIN(TestDisplayControls)
 #include "tst_display_controls.moc"
+
+// ---------------------------------------------------------------------------
+// Regression tests (appended): the row window and the selection must survive a
+// model that shrinks, and a removed selection must be reported.
+// ---------------------------------------------------------------------------
+
+namespace {
+
+// StringModel has no reset helper, and a reset is the other way a selection
+// disappears. No Q_OBJECT: the fixture needs no signals of its own.
+class ResettableModel : public QAbstractListModel
+{
+public:
+    explicit ResettableModel(int count, QObject* parent = nullptr)
+        : QAbstractListModel(parent)
+    {
+        resetTo(count);
+    }
+
+    [[nodiscard]] int rowCount(const QModelIndex& parent = QModelIndex()) const override
+    {
+        return parent.isValid() ? 0 : static_cast<int>(rows_.size());
+    }
+
+    [[nodiscard]] QVariant data(const QModelIndex& index,
+                                int role = Qt::DisplayRole) const override
+    {
+        if (!index.isValid() || index.row() < 0
+            || index.row() >= static_cast<int>(rows_.size())) {
+            return {};
+        }
+
+        return role == Qt::DisplayRole ? QVariant(rows_.at(index.row())) : QVariant();
+    }
+
+    void resetTo(int count)
+    {
+        beginResetModel();
+        rows_.clear();
+        for (int row = 0; row < count; ++row)
+            rows_.append(QStringLiteral("Row %1").arg(row));
+        endResetModel();
+    }
+
+private:
+    QStringList rows_;
+};
+
+} // namespace
+
+void TestDisplayControls::firstVisibleRowStaysInsideModel()
+{
+    StringModel model(10);
+
+    // A collapsed viewport still has a scroll range that covers the whole
+    // model, so ensureVisible() may scroll to `rowCount * rowHeight`.
+    md::List collapsed;
+    collapsed.setModel(&model);
+    collapsed.setRowHeight(40.0);
+    collapsed.arrange(QRect(0, 0, 240, 0));
+    collapsed.scrollToRow(9);
+
+    QCOMPARE(collapsed.firstVisibleRow(), 0);
+    QVERIFY(collapsed.firstVisibleRow() < collapsed.rowCount());
+
+    // A viewport shorter than one row reports the last row, never rowCount().
+    md::List narrow;
+    narrow.setModel(&model);
+    narrow.setRowHeight(40.0);
+    narrow.arrange(QRect(0, 0, 240, 10));
+    narrow.scrollToRow(9);
+
+    QCOMPARE(narrow.firstVisibleRow(), 9);
+    QVERIFY(narrow.firstVisibleRow() < narrow.rowCount());
+}
+
+void TestDisplayControls::removedSelectionEmitsInvalidIndex()
+{
+    StringModel listModel(10);
+
+    md::List list;
+    list.setModel(&listModel);
+    list.setRowHeight(40.0);
+    list.arrange(QRect(0, 0, 240, 200));
+    list.setCurrentIndex(list.indexAt(5));
+    QCOMPARE(list.currentRow(), 5);
+
+    QSignalSpy listSpy(&list, &md::List::currentIndexChanged);
+
+    // A removal below the selection keeps it and emits nothing.
+    listModel.removeLastRow();
+    QCOMPARE(list.currentRow(), 5);
+    QVERIFY(list.currentIndex().isValid());
+    QCOMPARE(listSpy.count(), 0);
+
+    // Removing the selected row clears it and reports the invalid index.
+    list.setCurrentIndex(list.indexAt(8)); // the model now has 9 rows
+    QCOMPARE(listSpy.count(), 1);          // the explicit selection above
+    listModel.removeLastRow();
+    QCOMPARE(list.currentRow(), -1);
+    QCOMPARE(listSpy.count(), 2);
+    QVERIFY(!listSpy.last().at(0).toModelIndex().isValid());
+
+    StringModel recyclerModel(20);
+
+    md::Recycler recycler;
+    recycler.setRowHeight(40.0);
+    recycler.arrange(QRect(0, 0, 300, 300));
+    recycler.setModel(&recyclerModel);
+    recycler.setCurrentIndex(recycler.indexAtRow(19));
+    QCOMPARE(recycler.currentRow(), 19);
+
+    QSignalSpy recyclerSpy(&recycler, &md::Recycler::currentIndexChanged);
+    recyclerModel.removeLastRow();
+    QCOMPARE(recycler.currentRow(), -1);
+    QCOMPARE(recyclerSpy.count(), 1);
+    QVERIFY(!recyclerSpy.last().at(0).toModelIndex().isValid());
+
+    // A model reset goes through the same notification.
+    ResettableModel resetModel(4);
+
+    md::Recycler resetRecycler;
+    resetRecycler.setRowHeight(40.0);
+    resetRecycler.arrange(QRect(0, 0, 300, 300));
+    resetRecycler.setModel(&resetModel);
+    resetRecycler.setCurrentIndex(resetModel.index(1, 0));
+    QCOMPARE(resetRecycler.currentRow(), 1);
+
+    QSignalSpy resetSpy(&resetRecycler, &md::Recycler::currentIndexChanged);
+    resetModel.resetTo(2);
+    QCOMPARE(resetRecycler.currentRow(), -1);
+    QCOMPARE(resetSpy.count(), 1);
+    QVERIFY(!resetSpy.last().at(0).toModelIndex().isValid());
+
+    // List reports a reset the same way.
+    ResettableModel listResetModel(3);
+
+    md::List resetList;
+    resetList.setModel(&listResetModel);
+    resetList.setRowHeight(40.0);
+    resetList.arrange(QRect(0, 0, 240, 200));
+    resetList.setCurrentIndex(listResetModel.index(2, 0));
+    QCOMPARE(resetList.currentRow(), 2);
+
+    QSignalSpy listResetSpy(&resetList, &md::List::currentIndexChanged);
+    listResetModel.resetTo(1);
+    QCOMPARE(resetList.currentRow(), -1);
+    QCOMPARE(listResetSpy.count(), 1);
+    QVERIFY(!listResetSpy.last().at(0).toModelIndex().isValid());
+    QVERIFY(!resetList.currentIndex().isValid());
+}

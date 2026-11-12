@@ -67,6 +67,17 @@ void Event::setTarget(EventTarget* target) noexcept
     m_target = target;
 }
 
+void Event::restoreDispatchState(EventPhase phase,
+                                 EventTarget* target,
+                                 bool accepted,
+                                 bool propagationStopped) noexcept
+{
+    m_phase = phase;
+    m_target = target;
+    m_accepted = accepted;
+    m_propagationStopped = propagationStopped;
+}
+
 void Event::resetForDispatch()
 {
     m_phase = EventPhase::Target;

@@ -2,15 +2,20 @@
 //
 // The contract under test is the ordering guarantee: user input overtakes UI
 // work, UI work overtakes UI events, and a flush never lets a lower priority
-// delay a higher one that arrived while it was draining.
+// delay a higher one that arrived while it was draining. The failure and
+// lifetime edges are covered too: a throwing task must not wedge the queue, a
+// coalesced key must stay bounded and position-stable across reposts, cancel
+// must report whether anything was pending, and a task may destroy the queue.
 
 #include <md/schedule/task_queue.h>
 
+#include <QPointer>
 #include <QSignalSpy>
 #include <QStringList>
 #include <QTest>
 
 #include <chrono>
+#include <stdexcept>
 
 using md::schedule::Priority;
 using md::schedule::TaskQueue;
@@ -28,6 +33,12 @@ private slots:
     void reentrantPostRunsInSameFlush();
     void flushBudgetLeavesWorkAndReschedules();
     void pendingCountsIgnoreRetiredEntries();
+    void throwingTaskDoesNotWedgeQueue();
+    void coalescedRepostsKeepRetiredIdsBounded();
+    void cancelReportsWhetherTaskWasPending();
+    void coalescedRepostKeepsPriorityAndPosition();
+    void negativeBudgetMeansNoBudget();
+    void destructionFromTaskIsSafe();
 };
 
 void TestTaskQueue::runsInPriorityOrder()
@@ -155,5 +166,125 @@ void TestTaskQueue::pendingCountsIgnoreRetiredEntries()
     QVERIFY(!queue.isEmpty());
 }
 
+void TestTaskQueue::throwingTaskDoesNotWedgeQueue()
+{
+    TaskQueue queue;
+    queue.setBatchTimeBudget(std::chrono::microseconds(0));
+    QSignalSpy drained(&queue, &TaskQueue::drained);
+    QStringList order;
+
+    queue.post(Priority::UserInput, [] { throw std::runtime_error("task failure"); });
+    queue.post(Priority::UiUpdate, [&order] { order << QStringLiteral("after-throw"); });
+
+    QCOMPARE(queue.flush(), 2);
+    QCOMPARE(order, QStringList{QStringLiteral("after-throw")});
+    QVERIFY(queue.isEmpty());
+    QCOMPARE(drained.count(), 1);
+
+    // flushing_ was reset with the drain, so a later post still runs and a
+    // later flush still accepts work.
+    queue.post(Priority::UiEvent, [&order] { order << QStringLiteral("later"); });
+    QCOMPARE(queue.flush(), 1);
+    QCOMPARE(order.size(), 2);
+}
+
+void TestTaskQueue::coalescedRepostsKeepRetiredIdsBounded()
+{
+    TaskQueue queue;
+    queue.setBatchTimeBudget(std::chrono::microseconds(0));
+    int runs = 0;
+
+    // The leak path from the issue: drain, then repost the same key, repeated.
+    // Each cycle must leave neither a retired id nor a coalescing entry behind.
+    for (int cycle = 0; cycle < 1000; ++cycle) {
+        queue.postCoalesced(Priority::UiUpdate, 11, [&runs] { ++runs; });
+        QCOMPARE(queue.flush(), 1);
+        QCOMPARE(queue.retiredCount(), 0);
+        QVERIFY(queue.isEmpty());
+    }
+    QCOMPARE(runs, 1000);
+
+    // A burst of reposts before one flush still collapses to a single run.
+    for (int repost = 0; repost < 1000; ++repost)
+        queue.postCoalesced(Priority::UiUpdate, 12, [&runs] { ++runs; });
+
+    QCOMPARE(queue.retiredCount(), 0);
+    QCOMPARE(queue.pending(Priority::UiUpdate), 1);
+    QCOMPARE(queue.flush(), 1);
+    QCOMPARE(runs, 1001);
+    QCOMPARE(queue.retiredCount(), 0);
+}
+
+void TestTaskQueue::cancelReportsWhetherTaskWasPending()
+{
+    TaskQueue queue;
+    queue.setBatchTimeBudget(std::chrono::microseconds(0));
+
+    QVERIFY(!queue.cancel(1234));
+
+    bool cancelledFromTask = true;
+    queue.postCoalesced(Priority::Background, 7, [&queue, &cancelledFromTask] {
+        // The entry has already left the queue, so a running task cannot be
+        // cancelled and the caller can tell.
+        cancelledFromTask = queue.cancel(7);
+    });
+
+    QCOMPARE(queue.flush(), 1);
+    QVERIFY(!cancelledFromTask);
+    QVERIFY(!queue.cancel(7));
+
+    queue.postCoalesced(Priority::Idle, 8, [] {});
+    QVERIFY(queue.cancel(8));
+    QVERIFY(!queue.cancel(8)); // Already cancelled.
+    QVERIFY(queue.isEmpty());
+}
+
+void TestTaskQueue::coalescedRepostKeepsPriorityAndPosition()
+{
+    TaskQueue queue;
+    queue.setBatchTimeBudget(std::chrono::microseconds(0));
+    QStringList order;
+
+    queue.postCoalesced(Priority::UiEvent, 1,
+                        [&order] { order << QStringLiteral("key-1-first"); });
+    queue.postCoalesced(Priority::UiEvent, 2,
+                        [&order] { order << QStringLiteral("key-2"); });
+
+    // The repost asks for UserInput, but the pending entry keeps the priority
+    // and position of its first post: it stays behind key 2 in UiEvent.
+    queue.postCoalesced(Priority::UserInput, 1,
+                        [&order] { order << QStringLiteral("key-1-second"); });
+
+    QCOMPARE(queue.pending(Priority::UserInput), 0);
+    QCOMPARE(queue.pending(Priority::UiEvent), 2);
+    QCOMPARE(queue.flush(), 2);
+    QCOMPARE(order, (QStringList{QStringLiteral("key-1-second"), QStringLiteral("key-2")}));
+}
+
+void TestTaskQueue::negativeBudgetMeansNoBudget()
+{
+    TaskQueue queue;
+    queue.setBatchTimeBudget(std::chrono::microseconds(-1000));
+    int ran = 0;
+
+    for (int index = 0; index < 3; ++index)
+        queue.post(Priority::Idle, [&ran] { ++ran; });
+
+    QCOMPARE(queue.flush(), 3);
+    QCOMPARE(ran, 3);
+}
+
+void TestTaskQueue::destructionFromTaskIsSafe()
+{
+    TaskQueue* queue = new TaskQueue;
+    queue->setBatchTimeBudget(std::chrono::microseconds(0));
+    QPointer<TaskQueue> guard(queue);
+
+    queue->post(Priority::UserInput, [queue] { delete queue; });
+    queue->flush();
+
+    QVERIFY(guard.isNull());
+}
+
 QTEST_MAIN(TestTaskQueue)
-#include "tst_schedule.moc"
+#include "tst_task_queue.moc"

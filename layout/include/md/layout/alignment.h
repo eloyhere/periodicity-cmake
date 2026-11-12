@@ -104,11 +104,25 @@ namespace md::layout_detail {
     return MeasureSpec::atMost(bound > 0.0 ? bound : 0.0);
 }
 
-// A non-negative, finite length. Used wherever a public setter accepts a qreal
-// that ends up as geometry.
+// A finite, non-negative length below the 1e9 geometry cap. Used wherever a
+// public setter accepts a qreal that ends up as geometry. Zero is a legal
+// length — a zero-height bar, a collapsed header, a run without spacing — so
+// only negative, non-finite and absurdly large values fall back; a NaN fails
+// the comparison and takes the fallback too.
 [[nodiscard]] inline qreal length(qreal value, qreal fallback = 0.0) noexcept
 {
-    return value > 0.0 && value < 1.0e9 ? value : fallback;
+    return value >= 0.0 && value < 1.0e9 ? value : fallback;
+}
+
+// Reports an exception that escaped a container hook. A container's
+// measure/arrange/paint override isolates its body with try/catch — a child's
+// hook is user code and a geometry mistake must not unwind through Qt's frames
+// — and calls this from the handler. The hook that failed is named so the
+// warning points at a container rather than at a line in Qt.
+inline void reportFailure(const char* where, const char* what)
+{
+    qWarning("md::layout: %s failed: %s", where,
+             what != nullptr ? what : "unknown exception");
 }
 
 } // namespace md::layout_detail

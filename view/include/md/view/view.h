@@ -37,6 +37,7 @@
 #include <md/ripple/ripple.h>
 #include <md/tokens/elevation.h>
 #include <md/tokens/shape.h>
+#include <md/view/error_guard.h>
 #include <md/view/lifecycle.h>
 
 #include <QColor>
@@ -46,6 +47,7 @@
 #include <QRect>
 #include <QRectF>
 #include <QSizeF>
+#include <QString>
 #include <QVariant>
 #include <QWidget>
 #include <Qt>
@@ -67,6 +69,11 @@ class Store;
 // Qt's geometry questions by running the measure contract, and it paints the
 // fixed pipeline above; a subclass supplies the content and, when it has
 // children, the arrangement.
+//
+// The entry points that run component code — paintEvent(), measure(), arrange()
+// and event() — go through the error guard (md/view/error_guard.h): a hook that
+// throws is caught, reported once per entry point and skipped instead of
+// unwinding into Qt. lastError() exposes the diagnostic.
 class View : public QWidget, public EventTarget
 {
     Q_OBJECT
@@ -86,8 +93,17 @@ public:
     // (framework.md §6.3); components never call setGeometry() on a child.
     void arrange(const QRect& geometry);
 
+    // How large the last explicit measure() pass resolved. A Qt geometry query
+    // (sizeHint, minimumSizeHint, heightForWidth) never displaces it; before
+    // the first explicit measurement the most recent query result is visible
+    // here, because there is no measurement to protect yet.
     [[nodiscard]] QSizeF measuredSize() const noexcept;
-    [[nodiscard]] QRectF contentRect() const noexcept;
+
+    // The rectangle the component's content and every layer paint into. A
+    // subclass that reserves a shadow inset or padding overrides this; the
+    // paint pipeline, the ripple bounds and arrangeOverride() all follow the
+    // result. Not noexcept so an override may compute it.
+    [[nodiscard]] virtual QRectF contentRect() const;
 
     [[nodiscard]] ViewStates state() const noexcept;
 
@@ -95,6 +111,12 @@ public:
     // lifecycle"). Components read it to assert their own invariants; the
     // transitions themselves belong to the base class.
     [[nodiscard]] LifecycleState lifecycleState() const noexcept;
+
+    // The diagnostic of the last failure caught at a guarded entry point
+    // (paintEvent, measure, arrange or event), empty until one happens. The
+    // failure itself is logged once per entry point, but this string is
+    // refreshed on every failure, so it always describes the most recent one.
+    [[nodiscard]] QString lastError() const;
 
     // Sets or clears one interaction flag and schedules the repaint. The
     // Enabled flag is special: it mirrors QWidget::isEnabled(), so it changes
@@ -128,7 +150,7 @@ public:
     //   sizeHint        — unspecified width and height;
     //   minimumSizeHint — atMost(0) on both axes;
     //   heightForWidth  — exactly(width) and an unspecified height.
-    // All three return the cached measurement rounded up.
+    // All three round the hint result up and leave measuredSize() alone.
     [[nodiscard]] QSize sizeHint() const override;
     [[nodiscard]] QSize minimumSizeHint() const override;
     [[nodiscard]] bool hasHeightForWidth() const override;
@@ -251,8 +273,30 @@ private:
                          Qt::KeyboardModifiers modifiers,
                          std::chrono::milliseconds timestamp);
 
+    // One Qt geometry query: runs the measure contract without displacing an
+    // explicit measurement (see measuredSize()).
+    [[nodiscard]] QSizeF hintSize(const char* where, MeasureSpec width,
+                                  MeasureSpec height);
+
+    // The full condition under which the ripple controller may animate:
+    // feedback enabled by the caller, the widget enabled and the view
+    // focusable. Every path that changes one of the three re-applies it.
+    void syncRippleEnabled();
+
     // How large the view asked to be. Zero until the first measurement pass.
     QSizeF measuredSize_{0.0, 0.0};
+
+    // True once a non-hint measure() pass has populated the cache.
+    bool measuredExplicitly_ = false;
+
+    // One report shared by the four guarded entry points: one warning per
+    // entry point, plus the text lastError() returns.
+    view::GuardReport guardReport_;
+
+    // Nesting depth of arrange(). setGeometry() emits a resize synchronously;
+    // resizeEvent() skips its own arrangement while this is non-zero so one
+    // arrange() call places the content exactly once.
+    int arrangeDepth_ = 0;
 
     Shape shape_{Shape::small()};
     Elevation elevation_ = Elevation::Level0;

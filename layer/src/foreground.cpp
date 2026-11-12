@@ -3,7 +3,8 @@
 // All three stages are stateless: they read the SurfaceContext, paint once and
 // allocate no persistent resources. The shared shape clip is applied with
 // QPainter's own clip path rather than by constructing an intersection path,
-// which keeps a rounded surface from showing square overlay corners.
+// which keeps a rounded surface from showing square overlay corners. That clip
+// is intersected with whatever the caller already set, never substituted for it.
 
 #include <md/layer/foreground.h>
 
@@ -52,9 +53,15 @@ void StateOverlayLayer::paint(QPainter& painter, const QRectF& bounds,
     overlay.setAlphaF(static_cast<float>(overlay.alphaF() * opacity));
 
     painter.save();
-    painter.setRenderHint(QPainter::Antialiasing, true);
-    painter.setClipPath(context.shape.path(bounds));
-    painter.fillRect(bounds, overlay);
+    try {
+        painter.setRenderHint(QPainter::Antialiasing, true);
+        // Intersect, never replace: the caller's clip is a damage region or a
+        // host clip and must stay in force for this overlay too.
+        painter.setClipPath(context.shape.path(bounds), Qt::IntersectClip);
+        painter.fillRect(bounds, overlay);
+    } catch (...) {
+        // A decorative overlay must not stop the stages that paint after it.
+    }
     painter.restore();
 }
 
@@ -95,10 +102,14 @@ void FocusRingLayer::paint(QPainter& painter, const QRectF& bounds,
     pen.setCapStyle(Qt::RoundCap);
 
     painter.save();
-    painter.setRenderHint(QPainter::Antialiasing, true);
-    painter.setPen(pen);
-    painter.setBrush(Qt::NoBrush);
-    painter.drawPath(path);
+    try {
+        painter.setRenderHint(QPainter::Antialiasing, true);
+        painter.setPen(pen);
+        painter.setBrush(Qt::NoBrush);
+        painter.drawPath(path);
+    } catch (...) {
+        // A focus ring is decorative: isolate it from the rest of the stack.
+    }
     painter.restore();
 }
 
@@ -125,10 +136,14 @@ void OutlineLayer::paint(QPainter& painter, const QRectF& bounds,
     pen.setCapStyle(Qt::RoundCap);
 
     painter.save();
-    painter.setRenderHint(QPainter::Antialiasing, true);
-    painter.setPen(pen);
-    painter.setBrush(Qt::NoBrush);
-    painter.drawPath(path);
+    try {
+        painter.setRenderHint(QPainter::Antialiasing, true);
+        painter.setPen(pen);
+        painter.setBrush(Qt::NoBrush);
+        painter.drawPath(path);
+    } catch (...) {
+        // A contour is decorative: isolate it from the rest of the stack.
+    }
     painter.restore();
 }
 

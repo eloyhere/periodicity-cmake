@@ -75,7 +75,9 @@ void Collapse::setTitle(QString title)
 
 void Collapse::setHeaderHeight(qreal height)
 {
-    const qreal value = layout_detail::length(height, 48.0);
+    // Zero is a legal header height; a negative or non-finite value is ignored
+    // instead of being replaced by a number the caller never asked for.
+    const qreal value = layout_detail::length(height, headerHeight_);
     if (headerHeight_ == value)
         return;
 

@@ -44,12 +44,15 @@ public:
 
     // The leading button. It must be a child of the bar; the bar takes it into
     // the child list when it is not one yet. Null clears the role without
-    // deleting the view.
+    // deleting the view: the former button is hidden, so it is neither painted
+    // at its last rectangle nor picked up as a trailing action. Assigning a
+    // button shows it again; the bar never deletes it.
     void setNavigationButton(View* button);
     [[nodiscard]] View* navigationButton() const { return navigationButton_; }
 
-    // Adds a trailing action. Every child that is not the navigation button is
-    // an action, so a child added with addView() participates too.
+    // Adds a trailing action. Every visible child that is not the navigation
+    // button is an action, so a child added with addView() participates too; a
+    // hidden child takes no space in the run.
     void addAction(View* action);
     [[nodiscard]] QList<View*> actions() const;
 
@@ -57,7 +60,8 @@ public:
     [[nodiscard]] Qt::Alignment actionsAlignment() const noexcept { return actionsAlignment_; }
 
     // The height of the bar at rest (default 112) and at full collapse
-    // (default 64).
+    // (default 64). Zero is a legal height — the bar occupies nothing — so only
+    // a negative or non-finite value is ignored, leaving the current height.
     void setExpandedHeight(qreal height);
     [[nodiscard]] qreal expandedHeight() const noexcept { return expandedHeight_; }
     void setCollapsedHeight(qreal height);
@@ -102,7 +106,10 @@ protected:
     void changeEvent(QEvent* event) override;
 
 private:
+    void measureBar(MeasureSpec width, MeasureSpec height);
+    void arrangeBar(const QRectF& content);
     void syncElevation();
+    void syncCollapsed();
     void relayoutNow();
     [[nodiscard]] qreal barHeight() const noexcept;
 

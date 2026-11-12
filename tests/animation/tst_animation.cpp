@@ -6,6 +6,7 @@
 // a timeout instead of a flake.
 
 #include <QCoreApplication>
+#include <QPointer>
 #include <QSignalSpy>
 #include <QTest>
 
@@ -13,6 +14,8 @@
 #include <md/tokens/motion.h>
 
 #include <chrono>
+#include <limits>
+#include <stdexcept>
 
 using md::CubicBezier;
 using md::Easing;
@@ -56,6 +59,13 @@ private slots:
     void restartContinuesFromCurrentProgress();
     void delayedRunStartsAtItsStartValue();
     void destructorStopsWithoutFinishing();
+    void callbackDeletesTheAnimator();
+    void callbackRestartsTheAnimator();
+    void zeroDurationHonoursTheDelay();
+    void pauseResumesFromTheSameProgress();
+    void hugeTimelineValuesDoNotWrap();
+    void retargetAtTheEndRunsTheNewCallback();
+    void throwingCallbackIsContained();
 };
 
 void TestAnimation::initialState()
@@ -263,6 +273,240 @@ void TestAnimation::destructorStopsWithoutFinishing()
     // callback behind.
     QTest::qWait(50);
     QVERIFY(!finished);
+}
+
+void TestAnimation::callbackDeletesTheAnimator()
+{
+    auto* animator = new Animator;
+    QPointer<Animator> guard(animator);
+
+    bool finished = false;
+    QObject::connect(animator, &Animator::finished, animator,
+                     [&finished] { finished = true; });
+
+    int calls = 0;
+    animator->start(reducedMotionSpec(), [&animator, &calls](qreal value) {
+        ++calls;
+        if (value >= 1.0) {
+            // Deleting the animator from inside its own callback must not make
+            // it read its members, or emit finished(), afterwards.
+            delete animator;
+            animator = nullptr;
+        }
+    });
+
+    QTRY_VERIFY_WITH_TIMEOUT(guard.isNull(), 2000);
+    QCOMPARE(calls, 1);
+    QVERIFY(!finished);
+
+    // Let the event loop settle: the queued snap must not touch freed memory.
+    QTest::qWait(20);
+    QVERIFY(!finished);
+}
+
+void TestAnimation::callbackRestartsTheAnimator()
+{
+    Animator animator;
+    QSignalSpy finishedSpy(&animator, &Animator::finished);
+
+    int firstRunCalls = 0;
+    qreal restartedAt = -1.0;
+    bool restarted = false;
+    QList<qreal> secondRun;
+
+    animator.start(linearSpec(200), [&](qreal value) {
+        ++firstRunCalls;
+        if (restarted)
+            return;
+
+        restarted = true;
+        restartedAt = value;
+
+        // start() from inside the callback must neither free the function that
+        // is executing nor reconfigure QVariantAnimation under its own
+        // valueChanged emission.
+        animator.start(linearSpec(120), [&secondRun](qreal second) {
+            secondRun.append(second);
+        });
+    });
+
+    QTRY_VERIFY_WITH_TIMEOUT(restarted, 2000);
+    QVERIFY(restartedAt > 0.0);
+    QVERIFY(restartedAt < 1.0);
+
+    // The old callback is gone for good; the replacement completes the run.
+    QTRY_COMPARE_WITH_TIMEOUT(int(finishedSpy.count()), 1, 3000);
+    QCOMPARE(firstRunCalls, 1);
+    QVERIFY(!animator.isRunning());
+
+    QTRY_VERIFY_WITH_TIMEOUT(secondRun.size() >= 2, 1000);
+    QVERIFY(secondRun.first() >= restartedAt - 0.001);
+    QCOMPARE(secondRun.last(), 1.0);
+    QCOMPARE(animator.progress(), 1.0);
+}
+
+void TestAnimation::zeroDurationHonoursTheDelay()
+{
+    Animator animator;
+    QSignalSpy finishedSpy(&animator, &Animator::finished);
+
+    MotionSpec spec = reducedMotionSpec();
+    spec.delay = std::chrono::milliseconds(120);
+
+    int calls = 0;
+    animator.start(spec, [&calls](qreal) { ++calls; });
+
+    QVERIFY(animator.isRunning());
+
+    // The delay is part of the spec, so the snap waits for it instead of firing
+    // on the first event-loop turn.
+    QTest::qWait(40);
+    QCOMPARE(calls, 0);
+    QCOMPARE(int(finishedSpy.count()), 0);
+
+    QTRY_COMPARE_WITH_TIMEOUT(int(finishedSpy.count()), 1, 2000);
+    QCOMPARE(calls, 1);
+    QCOMPARE(animator.progress(), 1.0);
+    QVERIFY(!animator.isRunning());
+}
+
+void TestAnimation::pauseResumesFromTheSameProgress()
+{
+    Animator animator;
+    QSignalSpy finishedSpy(&animator, &Animator::finished);
+
+    QList<qreal> values;
+    animator.start(linearSpec(200), [&values](qreal value) { values.append(value); });
+
+    QTRY_VERIFY_WITH_TIMEOUT(animator.progress() > 0.1, 2000);
+
+    animator.pause();
+    QVERIFY(!animator.isRunning());
+    QVERIFY(animator.isPaused());
+
+    const qreal pausedAt = animator.progress();
+    const qsizetype pausedCalls = values.size();
+    QVERIFY(pausedAt > 0.0);
+    QVERIFY(pausedAt < 1.0);
+
+    // A paused run emits nothing and keeps its value.
+    QTest::qWait(80);
+    QCOMPARE(animator.progress(), pausedAt);
+    QCOMPARE(values.size(), pausedCalls);
+    QCOMPARE(int(finishedSpy.count()), 0);
+
+    animator.resume();
+    QVERIFY(animator.isRunning());
+    QVERIFY(!animator.isPaused());
+    QCOMPARE(animator.progress(), pausedAt);
+
+    QTRY_COMPARE_WITH_TIMEOUT(int(finishedSpy.count()), 1, 3000);
+    QVERIFY(values.size() > pausedCalls);
+
+    // The resumed run continues forward from where it stopped; it never rewinds
+    // to 0 the way stop() + start() would.
+    QVERIFY(values.last() == 1.0);
+    QVERIFY(values[pausedCalls] >= pausedAt - 0.001);
+    for (qsizetype i = pausedCalls + 1; i < values.size(); ++i)
+        QVERIFY(values[i] >= values[i - 1]);
+
+    // A pause on an idle animator is a no-op.
+    animator.pause();
+    QVERIFY(!animator.isPaused());
+    animator.resume();
+    QVERIFY(!animator.isRunning());
+}
+
+void TestAnimation::hugeTimelineValuesDoNotWrap()
+{
+    Animator animator;
+    QSignalSpy finishedSpy(&animator, &Animator::finished);
+
+    MotionSpec longRun = linearSpec(0);
+    longRun.duration = std::chrono::milliseconds(std::numeric_limits<qint64>::max());
+
+    QList<qreal> values;
+    animator.start(longRun, [&values](qreal value) { values.append(value); });
+
+    // Without saturation the remaining time wraps negative and the run
+    // completes on the next turn instead of animating for the clamped maximum.
+    QTest::qWait(60);
+    QCOMPARE(int(finishedSpy.count()), 0);
+    QVERIFY(animator.isRunning());
+    QVERIFY(animator.progress() < 0.5);
+    for (qreal value : values)
+        QVERIFY(value < 0.5);
+
+    animator.stop();
+    QVERIFY(!animator.isRunning());
+
+    // A delay above the int range is clamped the same way: it cannot fire at an
+    // arbitrary truncated time.
+    MotionSpec longDelay = linearSpec(40);
+    longDelay.delay = std::chrono::milliseconds(std::numeric_limits<qint64>::max());
+
+    int calls = 0;
+    animator.start(longDelay, [&calls](qreal) { ++calls; });
+
+    QTest::qWait(60);
+    QCOMPARE(calls, 0);
+    QCOMPARE(int(finishedSpy.count()), 0);
+    QVERIFY(animator.isRunning());
+
+    animator.stop();
+    QVERIFY(!animator.isRunning());
+}
+
+void TestAnimation::retargetAtTheEndRunsTheNewCallback()
+{
+    Animator animator;
+    QSignalSpy finishedSpy(&animator, &Animator::finished);
+
+    int secondRunCalls = 0;
+    qreal lastSecondRun = -1.0;
+    bool retargeted = false;
+
+    animator.start(linearSpec(40), [&](qreal value) {
+        if (value < 1.0 || retargeted)
+            return;
+
+        retargeted = true;
+
+        // The run is complete but finished() has not been emitted yet. The new
+        // run must reach its own callback instead of only emitting finished().
+        animator.start(linearSpec(40), [&secondRunCalls, &lastSecondRun](qreal second) {
+            ++secondRunCalls;
+            lastSecondRun = second;
+        });
+    });
+
+    QTRY_VERIFY_WITH_TIMEOUT(retargeted, 3000);
+    QTRY_VERIFY_WITH_TIMEOUT(secondRunCalls >= 2, 3000);
+    QTRY_COMPARE_WITH_TIMEOUT(lastSecondRun, 1.0, 3000);
+
+    // The superseded run does not emit finished(); the replacement does.
+    QTRY_COMPARE_WITH_TIMEOUT(int(finishedSpy.count()), 1, 3000);
+    QVERIFY(!animator.isRunning());
+    QCOMPARE(animator.progress(), 1.0);
+}
+
+void TestAnimation::throwingCallbackIsContained()
+{
+    Animator animator;
+    QSignalSpy finishedSpy(&animator, &Animator::finished);
+
+    int calls = 0;
+    animator.start(reducedMotionSpec(), [&calls](qreal) {
+        ++calls;
+        throw std::runtime_error("callback failure");
+    });
+
+    // The animator catches the exception, so it cannot unwind through Qt's
+    // event loop, and the run still completes.
+    QTRY_COMPARE_WITH_TIMEOUT(int(finishedSpy.count()), 1, 2000);
+    QCOMPARE(calls, 1);
+    QCOMPARE(animator.progress(), 1.0);
+    QVERIFY(!animator.isRunning());
 }
 
 QTEST_GUILESS_MAIN(TestAnimation)

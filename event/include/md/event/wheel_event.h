@@ -29,9 +29,15 @@ public:
     [[nodiscard]] QPoint angleDelta() const noexcept;
     [[nodiscard]] QPoint pixelDelta() const noexcept;
 
-    // The wheel position in the receiving target's coordinate system.
+    // The wheel position in the receiving target's coordinate system. The
+    // dispatcher translates it per node, exactly as it does
+    // PointerEvent::localPosition(), and restores the caller's position when
+    // dispatch ends.
     [[nodiscard]] QPointF position() const noexcept;
     [[nodiscard]] Qt::KeyboardModifiers modifiers() const noexcept;
+
+    // Set by the dispatcher when it translates the event between targets.
+    void setPosition(QPointF position) noexcept;
 
 private:
     QPoint m_angleDelta;

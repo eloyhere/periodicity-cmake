@@ -36,6 +36,7 @@ class TestRingChannel : public QObject
 private slots:
     void ringRoundsCapacity();
     void ringPreservesOrderUnderLoad();
+    void ringSizeNeverUnderflows();
     void ringRejectsWhenFull();
     void channelMultiProducer();
     void channelBoundedDrops();
@@ -43,7 +44,9 @@ private slots:
     void ioThreadRunsAndDelays();
     void ioThreadRepeatsAndCancels();
     void ioThreadReadsFile();
+    void ioThreadPeriodicLatency();
     void mailboxDeliversInOrder();
+    void mailboxBoundsBacklog();
 };
 
 void TestRingChannel::ringRoundsCapacity()
@@ -90,6 +93,39 @@ void TestRingChannel::ringPreservesOrderUnderLoad()
     QCOMPARE(received, kCount);
     QCOMPARE(ring.size(), std::size_t(0));
     QVERIFY(ring.highWaterMark() <= ring.capacity());
+}
+
+void TestRingChannel::ringSizeNeverUnderflows()
+{
+    constexpr std::uint64_t kCount = 200000;
+
+    SpscRingBuffer<std::uint64_t> ring(64);
+    std::atomic<bool> overflowed{false};
+
+    std::thread producer([&ring, &overflowed] {
+        for (std::uint64_t value = 0; value < kCount;) {
+            if (ring.push(value))
+                ++value;
+            // The old size() loaded head before tail, so a consumer draining
+            // between the two loads wrapped the subtraction to ~2^64.
+            if (ring.size() > ring.capacity())
+                overflowed.store(true, std::memory_order_relaxed);
+        }
+    });
+
+    for (std::uint64_t received = 0; received < kCount;) {
+        std::uint64_t value = 0;
+        if (ring.pop(value))
+            ++received;
+        if (ring.size() > ring.capacity())
+            overflowed.store(true, std::memory_order_relaxed);
+    }
+
+    producer.join();
+
+    QVERIFY(!overflowed.load(std::memory_order_relaxed));
+    QVERIFY(ring.size() <= ring.capacity());
+    QCOMPARE(ring.size(), std::size_t(0));
 }
 
 void TestRingChannel::ringRejectsWhenFull()
@@ -259,6 +295,30 @@ void TestRingChannel::ioThreadReadsFile()
     QVERIFY(error.isEmpty());
 }
 
+void TestRingChannel::ioThreadPeriodicLatency()
+{
+    IoThread io(QStringLiteral("tst-io-latency"));
+
+    std::atomic<int> ticks{0};
+    const std::uint64_t timerId = io.postEvery(25ms, [&ticks] {
+        ticks.fetch_add(1, std::memory_order_relaxed);
+        std::this_thread::sleep_for(5ms);
+    });
+    QVERIFY(timerId != 0);
+
+    QTRY_VERIFY_WITH_TIMEOUT(ticks.load() >= 3, 5000);
+    QVERIFY(io.cancel(timerId));
+    QTRY_VERIFY_WITH_TIMEOUT(io.stats().executed >= 3, 2000);
+
+    // Latency runs from the deadline to the end of the callback, so a callback
+    // that sleeps 5 ms cannot report less than that. The old code recorded the
+    // *next* deadline here, which made every periodic sample negative and
+    // clamped it to zero.
+    const IoThread::Stats stats = io.stats();
+    QVERIFY(stats.avgLatencyUs >= 3000.0);
+    QVERIFY(stats.maxLatencyUs >= 3000.0);
+}
+
 void TestRingChannel::mailboxDeliversInOrder()
 {
     Mailbox mailbox;
@@ -295,6 +355,32 @@ void TestRingChannel::mailboxDeliversInOrder()
     QCOMPARE(static_cast<int>(order.size()), 500);
     for (int index = 0; index < 500; ++index)
         QCOMPARE(order[static_cast<std::size_t>(index)], index);
+}
+
+void TestRingChannel::mailboxBoundsBacklog()
+{
+    Mailbox mailbox(nullptr, 4);
+
+    for (int index = 0; index < 4; ++index)
+        mailbox.post([] {});
+
+    mailbox.post([] {}); // full: dropped and counted
+    QCOMPARE(mailbox.dropped(), std::uint64_t(1));
+    QCOMPARE(mailbox.pending(), std::size_t(4));
+
+    QTRY_COMPARE_WITH_TIMEOUT(mailbox.delivered(), std::uint64_t(4), 5000);
+    QCOMPARE(mailbox.pending(), std::size_t(0));
+
+    // close() discards the backlog it finds and counts those closures too.
+    mailbox.post([] {});
+    QCOMPARE(mailbox.pending(), std::size_t(1));
+    mailbox.close();
+    QCOMPARE(mailbox.pending(), std::size_t(0));
+    QCOMPARE(mailbox.dropped(), std::uint64_t(2));
+
+    mailbox.post([] {}); // closed: refused, nothing queued
+    QCOMPARE(mailbox.pending(), std::size_t(0));
+    QCOMPARE(mailbox.dropped(), std::uint64_t(2));
 }
 
 QTEST_GUILESS_MAIN(TestRingChannel)

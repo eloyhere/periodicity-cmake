@@ -18,8 +18,31 @@
 
 namespace md::layer {
 
+namespace {
+
+// A level outside Level0..Level5 can only come from a static_cast on stored or
+// serialised data. It has no shadow geometry, so treat it as Level0 instead of
+// letting ShadowDrawable see an unknown enum value (which falls back to 0 dp
+// for the offset but still reserves a blurred rim).
+Elevation normaliseElevation(Elevation elevation) noexcept
+{
+    switch (elevation) {
+    case Elevation::Level0:
+    case Elevation::Level1:
+    case Elevation::Level2:
+    case Elevation::Level3:
+    case Elevation::Level4:
+    case Elevation::Level5:
+        return elevation;
+    }
+    return Elevation::Level0;
+}
+
+} // namespace
+
 void ElevationLayer::setElevation(Elevation elevation)
 {
+    elevation = normaliseElevation(elevation);
     if (elevation_ == elevation)
         return;
 
@@ -76,7 +99,7 @@ QMarginsF ElevationLayer::shadowMargins(const SurfaceContext& context) const
 
 Elevation ElevationLayer::effectiveElevation(const SurfaceContext& context) const noexcept
 {
-    return elevation_.value_or(context.elevation);
+    return normaliseElevation(elevation_.value_or(context.elevation));
 }
 
 Shape ElevationLayer::effectiveShape(const SurfaceContext& context) const noexcept
@@ -102,13 +125,18 @@ void ElevationLayer::paint(QPainter& painter, const QRectF& bounds,
     if (level == Elevation::Level0)
         return;
 
-    shadow_.setElevation(level);
-    shadow_.setShape(effectiveShape(context));
-    shadow_.setColour(effectiveColour(context));
+    try {
+        shadow_.setElevation(level);
+        shadow_.setShape(effectiveShape(context));
+        shadow_.setColour(effectiveColour(context));
 
-    // Unclipped on purpose: the shadow belongs outside the shape's bounds
-    // (framework.md §3.4).
-    shadow_.draw(painter, bounds);
+        // Unclipped on purpose: the shadow belongs outside the shape's bounds
+        // (framework.md §3.4).
+        shadow_.draw(painter, bounds);
+    } catch (...) {
+        // The shadow is decorative; a mask allocation failure must not abort
+        // the background and content stages that follow it.
+    }
 }
 
 } // namespace md::layer

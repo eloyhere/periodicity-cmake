@@ -15,7 +15,13 @@
 //     so a child can never inherit an unrelated file handle from the UI process;
 //   * the output handler runs on an internal reader thread. It receives a view
 //     that is only valid for the duration of the call, which is exactly what a
-//     FrameDecoder::append() wants; copy it to keep it.
+//     FrameDecoder::append() wants; copy it to keep it;
+//   * the optional end-of-stream handler runs on that same thread once, after
+//     the last output byte, when the child closes its stdout or exits. A
+//     consumer reassembling frames needs it: without EOF, a child that dies
+//     mid-frame leaves a partial message in the decoder and the consumer waits
+//     forever. A handler that throws is contained; it cannot take the reader
+//     thread (or the process) down.
 
 #pragma once
 
@@ -37,6 +43,10 @@ public:
     // ephemeral; copy anything that must outlive the call.
     using OutputHandler = std::function<void(QByteArrayView)>;
 
+    // Called on the reader thread once, after the last output byte. A throwing
+    // handler is swallowed: the reader thread and the child are unaffected.
+    using EofHandler = std::function<void()>;
+
     struct Options
     {
         QString program;
@@ -45,9 +55,13 @@ public:
     };
 
     // Returns nullptr and fills `error` when the process could not be started.
+    // `onEof` may be empty. Both handlers run on the reader thread and must not
+    // outlive the ChildProcess unless they own their captures; the destructor
+    // stops the child and joins that thread.
     static std::unique_ptr<ChildProcess> spawn(const Options& options,
                                                OutputHandler onOutput,
-                                               QString* error);
+                                               QString* error,
+                                               EofHandler onEof = {});
 
     ~ChildProcess();
 

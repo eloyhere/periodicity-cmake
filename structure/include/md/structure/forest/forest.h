@@ -15,6 +15,7 @@
 
 #pragma once
 
+#include <cassert>
 #include <cstddef>
 #include <utility>
 #include <vector>
@@ -50,8 +51,21 @@ public:
     [[nodiscard]] size_type treeCount() const noexcept { return trees_.size(); }
     [[nodiscard]] bool empty() const noexcept { return trees_.empty(); }
 
-    [[nodiscard]] tree_type& tree(size_type index) { return trees_[index]; }
-    [[nodiscard]] const tree_type& tree(size_type index) const { return trees_[index]; }
+    // The tree at `index`; precondition: index < treeCount(). Out-of-range
+    // access is undefined (the index addresses a vector slot), so a debug build
+    // asserts instead — use removeTree(), which reports an out-of-range index
+    // by returning false, when the index is not known to be valid.
+    [[nodiscard]] tree_type& tree(size_type index)
+    {
+        assert(index < trees_.size() && "tree index out of range");
+        return trees_[index];
+    }
+
+    [[nodiscard]] const tree_type& tree(size_type index) const
+    {
+        assert(index < trees_.size() && "tree index out of range");
+        return trees_[index];
+    }
 
     void clear() noexcept { trees_.clear(); }
 

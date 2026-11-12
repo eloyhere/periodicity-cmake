@@ -24,6 +24,15 @@
 
 namespace md::drawable {
 
+namespace {
+
+// A corrupt size must not turn into a gigapixel raster. The limit is well
+// above any real icon (even at 800 % scaling) and only rejects geometry that
+// could not be painted anyway.
+constexpr qreal kMaxIconDeviceSide = 8192.0;
+
+} // namespace
+
 IconDrawable::IconDrawable(QIcon icon)
     : icon_(std::move(icon))
 {
@@ -53,9 +62,17 @@ void IconDrawable::setPixmap(QPixmap pixmap)
 
 void IconDrawable::setSize(QSizeF size)
 {
-    if (size_ == size)
+    // A non-finite size would survive every later isEmpty() test, divide by
+    // NaN in alignedTarget() and reach qCeil() as an undefined float-to-int
+    // conversion, so it is rejected outright. Negative extents are merely "no
+    // preference" and clamp to zero instead of inverting the fitted box.
+    if (!qIsFinite(size.width()) || !qIsFinite(size.height()))
         return;
-    size_ = size;
+
+    const QSizeF clamped(qMax(0.0, size.width()), qMax(0.0, size.height()));
+    if (size_ == clamped)
+        return;
+    size_ = clamped;
     invalidate();
 }
 
@@ -135,6 +152,8 @@ QPixmap IconDrawable::renderTinted(const QSize& pixelSize, qreal dpr) const
     source.setDevicePixelRatio(1.0);
 
     QImage canvas(pixelSize, QImage::Format_ARGB32_Premultiplied);
+    if (canvas.isNull())
+        return {};
     canvas.fill(Qt::transparent);
 
     {
@@ -161,6 +180,8 @@ QPixmap IconDrawable::renderTinted(const QSize& pixelSize, qreal dpr) const
     }
 
     QPixmap result = QPixmap::fromImage(canvas);
+    if (result.isNull())
+        return {};
     result.setDevicePixelRatio(dpr);
     return result;
 }
@@ -171,42 +192,70 @@ void IconDrawable::draw(QPainter& painter, const QRectF& bounds) const
         return;
 
     const QRectF target = alignedTarget(bounds);
-    if (target.isEmpty())
+    if (target.isEmpty() || !qIsFinite(target.x()) || !qIsFinite(target.y())
+        || !qIsFinite(target.width()) || !qIsFinite(target.height())) {
         return;
+    }
 
-    const qreal dpr = painter.device() != nullptr ? painter.device()->devicePixelRatioF() : 1.0;
+    const qreal dpr = Drawable::effectiveDevicePixelRatio(painter);
     const bool mirror = mirrored_ && painter.layoutDirection() == Qt::RightToLeft;
-    const QSize pixelSize(qMax(1, qCeil(target.width() * dpr)),
-                          qMax(1, qCeil(target.height() * dpr)));
 
-    const QString key = QStringLiteral("md.icon.%1.%2x%3.%4.%5.%6")
-                            .arg(cacheKey(), 16)
-                            .arg(pixelSize.width())
-                            .arg(pixelSize.height())
-                            .arg(qRound(dpr * 100.0))
-                            .arg(mirror ? 1 : 0)
-                            .arg(revision());
+    // setSize() rejects non-finite extents, but `bounds` still passes through
+    // a division, so the product is validated before it becomes a QSize: a
+    // value above INT_MAX would make qCeil() undefined, and an enormous value
+    // would ask Qt for an unbounded raster.
+    const qreal deviceWidth = target.width() * dpr;
+    const qreal deviceHeight = target.height() * dpr;
+    if (!qIsFinite(deviceWidth) || !qIsFinite(deviceHeight)
+        || deviceWidth <= 0.0 || deviceHeight <= 0.0
+        || deviceWidth > kMaxIconDeviceSide || deviceHeight > kMaxIconDeviceSide) {
+        return;
+    }
+
+    const QSize pixelSize(qMax(1, qCeil(deviceWidth)), qMax(1, qCeil(deviceHeight)));
 
     QPixmap pixmap;
-    if (!QPixmapCache::find(key, &pixmap)) {
-        pixmap = renderTinted(pixelSize, dpr);
-        if (pixmap.isNull())
-            return;
-        QPixmapCache::insert(key, pixmap);
+    try {
+        // The key itself allocates, so it is built inside the same guard as
+        // the raster it describes.
+        const QString key = QStringLiteral("md.icon.%1.%2x%3.%4.%5.%6")
+                                .arg(cacheKey(), 16)
+                                .arg(pixelSize.width())
+                                .arg(pixelSize.height())
+                                .arg(qRound(dpr * 100.0))
+                                .arg(mirror ? 1 : 0)
+                                .arg(revision());
+
+        if (!QPixmapCache::find(key, &pixmap)) {
+            pixmap = renderTinted(pixelSize, dpr);
+            if (pixmap.isNull())
+                return;
+            QPixmapCache::insert(key, pixmap);
+        }
+    } catch (...) {
+        // Allocation or cache failure: nothing to paint, but the composite
+        // around this icon is unaffected.
+        return;
     }
+    if (pixmap.isNull())
+        return;
 
     painter.save();
-    painter.setRenderHint(QPainter::SmoothPixmapTransform, true);
+    try {
+        painter.setRenderHint(QPainter::SmoothPixmapTransform, true);
 
-    // The tinted pixmap has the exact logical size of `target`, so mirroring
-    // around the target's centre keeps the icon in place.
-    if (mirror) {
-        painter.translate(target.center());
-        painter.scale(-1.0, 1.0);
-        painter.translate(-target.center());
+        // The tinted pixmap has the exact logical size of `target`, so
+        // mirroring around the target's centre keeps the icon in place.
+        if (mirror) {
+            painter.translate(target.center());
+            painter.scale(-1.0, 1.0);
+            painter.translate(-target.center());
+        }
+
+        painter.drawPixmap(target.topLeft(), pixmap);
+    } catch (...) {
+        // A failed primitive is skipped; the painter state is restored below.
     }
-
-    painter.drawPixmap(target.topLeft(), pixmap);
     painter.restore();
 }
 

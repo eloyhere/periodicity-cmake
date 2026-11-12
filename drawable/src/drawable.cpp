@@ -6,7 +6,23 @@
 
 #include <md/drawable/drawable.h>
 
+#include <QPaintDevice>
+#include <QPainter>
+#include <QtGlobal>
+
 namespace md::drawable {
+
+qreal Drawable::effectiveDevicePixelRatio(const QPainter& painter) noexcept
+{
+    const QPaintDevice* device = painter.device();
+    if (device == nullptr)
+        return 1.0;
+
+    const qreal ratio = device->devicePixelRatioF();
+    // A non-finite or non-positive ratio is not usable: sizing would collapse,
+    // the cache key would say "0 %" and QPainter would divide by it.
+    return qIsFinite(ratio) && ratio > 0.0 ? ratio : 1.0;
+}
 
 void Drawable::setState(ViewStates state)
 {

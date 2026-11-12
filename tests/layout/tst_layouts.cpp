@@ -149,11 +149,13 @@ private slots:
 
     void linearWeightsAndVerticalCoordinates();
     void linearRowMirrorsInRtl();
+    void linearOverflowKeepsNaturalSizes();
 
     void frameStacksAndAligns();
 
     void constraintStretchCentreAndMirror();
     void constraintRejectsInvalidAnchors();
+    void constraintConflictingAnchorsStayInside();
 
     void stateSwitchesVisibleChild();
     void stateDrawsPlaceholderWithoutWidget();
@@ -167,8 +169,12 @@ private slots:
     void coordinatorDrivesAppBarAndCollapse();
 
     void appBarCollapsesWithScroll();
+    void appBarSkipsHiddenActions();
+    void appBarAnnouncesRangeClamp();
+    void appBarHonoursZeroHeightsAndClearedNavigation();
 
     void collapseExpandsWithSignal();
+    void collapseAcceptsZeroHeaderHeight();
 };
 
 void TestLayouts::initTestCase()
@@ -243,6 +249,39 @@ void TestLayouts::linearRowMirrorsInRtl()
     row.setGravity(Qt::AlignHCenter | Qt::AlignTop);
     QCOMPARE(first.geometry(), QRect(45, 0, 40, 20));
     QCOMPARE(second.geometry(), QRect(95, 0, 60, 20));
+}
+
+void TestLayouts::linearOverflowKeepsNaturalSizes()
+{
+    // A weight takes a share of *positive* spare space. When the natural
+    // children overflow the axis there is no spare, so the weighted child keeps
+    // its measurement and the run spills over instead of one child being
+    // crushed to make the others fit.
+    md::Linear row(md::Linear::Orientation::Horizontal);
+    Leaf first(QSizeF(40.0, 20.0));
+    Leaf second(QSizeF(40.0, 20.0));
+
+    row.addView(&first);
+    row.addView(&second);
+    row.setWeight(&second, 1.0);
+
+    row.measure(md::MeasureSpec::exactly(60.0), md::MeasureSpec::exactly(20.0));
+    row.arrange(QRect(0, 0, 60, 20));
+    QCOMPARE(first.geometry(), QRect(0, 0, 40, 20));
+    QCOMPARE(second.geometry(), QRect(40, 0, 40, 20));
+
+    // An axis of zero behaves the same way rather than collapsing the run.
+    row.measure(md::MeasureSpec::exactly(0.0), md::MeasureSpec::exactly(20.0));
+    row.arrange(QRect(0, 0, 0, 20));
+    QCOMPARE(first.geometry(), QRect(0, 0, 40, 20));
+    QCOMPARE(second.geometry(), QRect(40, 0, 40, 20));
+
+    // A run that does fit still fills the axis: the weighted child takes the
+    // whole 120-pixel share, so the fix only affects the overflowing case.
+    row.measure(md::MeasureSpec::exactly(200.0), md::MeasureSpec::exactly(20.0));
+    row.arrange(QRect(0, 0, 200, 20));
+    QCOMPARE(first.geometry(), QRect(0, 0, 40, 20));
+    QCOMPARE(second.geometry(), QRect(40, 0, 160, 20));
 }
 
 void TestLayouts::frameStacksAndAligns()
@@ -366,6 +405,71 @@ void TestLayouts::constraintRejectsInvalidAnchors()
     loose.measure(md::MeasureSpec::exactly(200.0), md::MeasureSpec::exactly(100.0));
     loose.arrange(QRect(0, 0, 200, 100));
     QCOMPARE(natural.geometry(), QRect(0, 0, 30, 12));
+}
+
+void TestLayouts::constraintConflictingAnchorsStayInside()
+{
+    md::Constraint root;
+    Leaf child(QSizeF(30.0, 20.0));
+    root.addView(&child);
+
+    // start + end is 300 on a 100-wide axis. The insets are clamped so the
+    // child stays inside the content; the overrun is split evenly, so the
+    // zero-width child ends up in the middle of the axis instead of at x = 150.
+    QVERIFY(root.setConstraints(&child, md::Constraint::Anchors{
+                                                 .start = 150.0,
+                                                 .end = 150.0,
+                                                 .top = 5.0,
+                                                 .bottom = 5.0,
+                                             }));
+
+    root.measure(md::MeasureSpec::exactly(100.0), md::MeasureSpec::exactly(100.0));
+    QCOMPARE(root.measuredSize(), QSizeF(100.0, 100.0));
+    root.arrange(QRect(0, 0, 100, 100));
+    QCOMPARE(child.geometry(), QRect(50, 5, 0, 90));
+
+    // A symmetric conflict is direction-independent: the mirror of the centre
+    // is the centre.
+    root.setLayoutDirection(Qt::RightToLeft);
+    QCOMPARE(child.geometry(), QRect(50, 5, 0, 90));
+    root.setLayoutDirection(Qt::LeftToRight);
+
+    // An asymmetric conflict keeps the ratio of the two sides: the 20-pixel
+    // overrun comes off both anchors evenly.
+    Leaf asymmetric(QSizeF(20.0, 20.0));
+    root.addView(&asymmetric);
+    QVERIFY(root.setConstraints(&asymmetric, md::Constraint::Anchors{
+                                                  .start = 30.0,
+                                                  .end = 90.0,
+                                              }));
+    root.arrange(QRect(0, 0, 100, 100));
+    QCOMPARE(asymmetric.geometry(), QRect(20, 0, 0, 20));
+
+    // The vertical axis follows the same rule.
+    Leaf vertical(QSizeF(20.0, 20.0));
+    root.addView(&vertical);
+    QVERIFY(root.setConstraints(&vertical, md::Constraint::Anchors{
+                                                   .top = 150.0,
+                                                   .bottom = 150.0,
+                                               }));
+    root.arrange(QRect(0, 0, 100, 100));
+    QCOMPARE(vertical.geometry(), QRect(0, 50, 20, 0));
+
+    // A single anchor beyond the edge is clamped back inside as well, so a
+    // child is never placed outside the content by its own anchors.
+    Leaf beyond(QSizeF(20.0, 20.0));
+    root.addView(&beyond);
+    QVERIFY(root.setConstraints(&beyond, md::Constraint::Anchors{.start = 500.0}));
+    root.arrange(QRect(0, 0, 100, 100));
+    QCOMPARE(beyond.geometry(), QRect(100, 0, 0, 20));
+
+    // Every child stayed inside the 100x100 content rectangle.
+    for (md::View* view : root.views()) {
+        QVERIFY(view->geometry().left() >= 0);
+        QVERIFY(view->geometry().top() >= 0);
+        QVERIFY(view->geometry().right() < 100);
+        QVERIFY(view->geometry().bottom() < 100);
+    }
 }
 
 void TestLayouts::stateSwitchesVisibleChild()
@@ -804,6 +908,154 @@ void TestLayouts::appBarCollapsesWithScroll()
     QCOMPARE(bar.collapseFraction(), 0.0);
 }
 
+void TestLayouts::appBarSkipsHiddenActions()
+{
+    md::AppBar bar;
+    bar.setTitle(QStringLiteral("Inbox"));
+
+    Leaf nav(QSizeF(48.0, 48.0));
+    Leaf first(QSizeF(48.0, 48.0));
+    Leaf second(QSizeF(48.0, 48.0));
+    bar.setNavigationButton(&nav);
+    bar.addAction(&first);
+    bar.addAction(&second);
+
+    bar.measure(md::MeasureSpec::exactly(320.0), md::MeasureSpec::exactly(112.0));
+    bar.arrange(QRect(0, 0, 320, 112));
+
+    QCOMPARE(bar.actions().size(), 2);
+    const qreal twoActionTitle = bar.titleRect().width();
+    const int trailingEdge = 320 - 4;
+
+    // Hiding an action removes it from the run: the remaining action is still
+    // flush with the trailing edge (no gap where the hidden one used to be) and
+    // the title takes the space back.
+    second.hide();
+    QCOMPARE(bar.actions().size(), 1);
+    QVERIFY(bar.actions().at(0) == &first);
+
+    bar.measure(md::MeasureSpec::exactly(320.0), md::MeasureSpec::exactly(112.0));
+    bar.arrange(QRect(0, 0, 320, 112));
+    QCOMPARE(first.x() + first.width(), trailingEdge);
+    QVERIFY(bar.titleRect().width() > twoActionTitle);
+
+    // Hiding the last action leaves an empty run, and the title keeps the span
+    // between the navigation button and the trailing inset.
+    first.hide();
+    QVERIFY(bar.actions().isEmpty());
+
+    bar.measure(md::MeasureSpec::exactly(320.0), md::MeasureSpec::exactly(112.0));
+    bar.arrange(QRect(0, 0, 320, 112));
+    QVERIFY(bar.titleRect().width() > twoActionTitle);
+    QVERIFY(bar.titleRect().right() <= 320.0);
+
+    // The whole bar still fits the axis it was given.
+    QCOMPARE(bar.measuredSize(), QSizeF(320.0, 112.0));
+}
+
+void TestLayouts::appBarAnnouncesRangeClamp()
+{
+    md::AppBar bar;
+    Leaf action(QSizeF(48.0, 48.0));
+    bar.addAction(&action);
+
+    bar.setScrollRange(100.0);
+    bar.setScrollOffset(100.0);
+    QCOMPARE(bar.collapseFraction(), 1.0);
+    QCOMPARE(bar.currentHeight(), bar.collapsedHeight());
+
+    QSignalSpy offsetSpy(&bar, &md::AppBar::offsetChanged);
+    QSignalSpy collapsedSpy(&bar, &md::AppBar::collapsedChanged);
+
+    // Shrinking the range below the offset repairs the offset through the
+    // offset setter, so the clamp is announced and the collapse flag follows
+    // the new fraction instead of contradicting it.
+    bar.setScrollRange(0.0);
+    QCOMPARE(bar.scrollOffset(), 0.0);
+    QCOMPARE(bar.collapseFraction(), 0.0);
+    QCOMPARE(bar.currentHeight(), bar.expandedHeight());
+    QCOMPARE(offsetSpy.count(), 1);
+    QCOMPARE(offsetSpy.at(0).at(0).toReal(), 0.0);
+    QCOMPARE(collapsedSpy.count(), 1);
+    QCOMPARE(collapsedSpy.at(0).at(0).toBool(), false);
+
+    // Growing the range moves the fraction without moving the offset, so the
+    // collapsed flag is re-derived even though the offset did not change.
+    bar.setScrollRange(100.0);
+    bar.setScrollOffset(100.0);
+    QCOMPARE(collapsedSpy.count(), 2);
+    QCOMPARE(collapsedSpy.at(1).at(0).toBool(), true);
+    QCOMPARE(offsetSpy.count(), 2);
+
+    bar.setScrollRange(200.0);
+    QCOMPARE(bar.scrollOffset(), 100.0);
+    QCOMPARE(bar.collapseFraction(), 0.5);
+    QCOMPARE(collapsedSpy.count(), 3);
+    QCOMPARE(collapsedSpy.at(2).at(0).toBool(), false);
+    // The repair must not invent an offset change that did not happen.
+    QCOMPARE(offsetSpy.count(), 2);
+
+    QVERIFY(bar.currentHeight() > bar.collapsedHeight());
+    QVERIFY(bar.currentHeight() < bar.expandedHeight());
+}
+
+void TestLayouts::appBarHonoursZeroHeightsAndClearedNavigation()
+{
+    md::AppBar bar;
+
+    // Zero is a height, not a missing value: the old fallback stored 56, which
+    // could make an explicitly shorter bar grow while it collapsed.
+    bar.setExpandedHeight(40.0);
+    bar.setCollapsedHeight(0.0);
+    QCOMPARE(bar.expandedHeight(), 40.0);
+    QCOMPARE(bar.collapsedHeight(), 0.0);
+    QCOMPARE(bar.currentHeight(), 40.0);
+
+    bar.setScrollRange(100.0);
+    bar.setScrollOffset(100.0);
+    QCOMPARE(bar.currentHeight(), 0.0);
+
+    // Negative and non-finite heights are ignored instead of replaced by a
+    // number the caller never asked for.
+    bar.setExpandedHeight(-1.0);
+    bar.setCollapsedHeight(std::numeric_limits<qreal>::quiet_NaN());
+    QCOMPARE(bar.expandedHeight(), 40.0);
+    QCOMPARE(bar.collapsedHeight(), 0.0);
+
+    // Clearing the navigation role hides the button and keeps it out of the
+    // action run; the former button never becomes a trailing action.
+    md::AppBar navBar;
+    Leaf nav(QSizeF(48.0, 48.0));
+    Leaf action(QSizeF(48.0, 48.0));
+    navBar.setNavigationButton(&nav);
+    navBar.addAction(&action);
+
+    navBar.measure(md::MeasureSpec::exactly(300.0), md::MeasureSpec::exactly(112.0));
+    navBar.arrange(QRect(0, 0, 300, 112));
+    QCOMPARE(navBar.actions().size(), 1);
+    QVERIFY(!nav.isHidden());
+    QCOMPARE(nav.geometry().left(), 4);
+
+    navBar.setNavigationButton(nullptr);
+    QVERIFY(navBar.navigationButton() == nullptr);
+    QVERIFY(nav.isHidden());
+    QCOMPARE(navBar.actions().size(), 1);
+    QVERIFY(navBar.actions().at(0) == &action);
+
+    navBar.measure(md::MeasureSpec::exactly(300.0), md::MeasureSpec::exactly(112.0));
+    navBar.arrange(QRect(0, 0, 300, 112));
+    QCOMPARE(action.x() + action.width(), 300 - 4);
+
+    // Assigning the role again shows the button and places it at the leading
+    // edge once more.
+    navBar.setNavigationButton(&nav);
+    QVERIFY(!nav.isHidden());
+    navBar.measure(md::MeasureSpec::exactly(300.0), md::MeasureSpec::exactly(112.0));
+    navBar.arrange(QRect(0, 0, 300, 112));
+    QCOMPARE(nav.geometry().left(), 4);
+    QCOMPARE(navBar.actions().size(), 1);
+}
+
 void TestLayouts::collapseExpandsWithSignal()
 {
     md::Collapse section;
@@ -860,6 +1112,29 @@ void TestLayouts::collapseExpandsWithSignal()
     QCOMPARE(section.expansion(), 1.0);
     QCOMPARE(expandedSpy.count(), 3);
     QCOMPARE(finishedSpy.count(), 3);
+}
+
+void TestLayouts::collapseAcceptsZeroHeaderHeight()
+{
+    md::Collapse section;
+
+    // Zero is a header height, not a missing value: the old fallback stored 48,
+    // so a section asked for no header still reserved one.
+    section.setHeaderHeight(0.0);
+    QCOMPARE(section.headerHeight(), 0.0);
+    QCOMPARE(section.preferredHeight(), 0.0);
+
+    // Negative and non-finite heights are ignored, so the accepted zero is not
+    // replaced by a fallback afterwards.
+    section.setHeaderHeight(-8.0);
+    section.setHeaderHeight(std::numeric_limits<qreal>::quiet_NaN());
+    QCOMPARE(section.headerHeight(), 0.0);
+
+    // The header row follows the stored zero instead of a 48-pixel default.
+    section.measure(md::MeasureSpec::exactly(200.0), md::MeasureSpec::exactly(0.0));
+    QCOMPARE(section.measuredSize(), QSizeF(200.0, 0.0));
+    section.arrange(QRect(0, 0, 200, 0));
+    QCOMPARE(section.headerRect(), QRectF(0.0, 0.0, 200.0, 0.0));
 }
 
 QTEST_MAIN(TestLayouts)

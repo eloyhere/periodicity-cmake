@@ -15,7 +15,13 @@
 // that the queue itself keeps alive, and the queued meta-call is addressed to
 // the mailbox as its context object. If the mailbox dies first, Qt drops the
 // meta-call and the shared state dies with the last poster — a late post() is
-// dropped rather than touching freed memory.
+// dropped rather than touching freed memory. The mailbox itself must still
+// outlive the threads that call post(): reading the member after the destructor
+// started would race with it, exactly as for any QObject.
+//
+// The backlog is bounded: `capacity` (0 = unbounded) caps how many closures may
+// wait, and a post that would exceed it is dropped and counted instead of
+// growing memory without limit.
 
 #pragma once
 
@@ -36,18 +42,26 @@ class Mailbox : public QObject
     Q_OBJECT
 
 public:
-    explicit Mailbox(QObject* parent = nullptr);
+    // `capacity` bounds the queue; 0 means unbounded. The bound is fixed for
+    // the mailbox's lifetime, so it must be chosen before the first post().
+    explicit Mailbox(QObject* parent = nullptr, std::size_t capacity = 0);
     ~Mailbox() override;
 
     Mailbox(const Mailbox&) = delete;
     Mailbox& operator=(const Mailbox&) = delete;
 
     // Safe from any thread, including the owning one. A closed mailbox drops
-    // the closure.
+    // the closure; a full one drops it too and counts it.
     void post(std::function<void()> fn);
 
     [[nodiscard]] std::size_t pending() const;
+
+    // Closures delivered on the owning thread so far.
     [[nodiscard]] std::uint64_t delivered() const;
+
+    // Closures dropped instead of queued: the backlog was full at post(), or
+    // close() discarded what was still queued.
+    [[nodiscard]] std::uint64_t dropped() const;
 
     // True when called on the thread the mailbox lives on.
     [[nodiscard]] bool isCurrentThread() const;
@@ -65,9 +79,11 @@ private:
     {
         std::mutex mutex;
         std::deque<std::function<void()>> queue;
+        std::size_t capacity = 0;
         std::atomic<bool> wakeup{false};
         std::atomic<bool> closed{false};
         std::atomic<std::uint64_t> delivered{0};
+        std::atomic<std::uint64_t> dropped{0};
     };
 
     void drain(const std::shared_ptr<State>& state);

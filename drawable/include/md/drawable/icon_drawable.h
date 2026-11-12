@@ -50,7 +50,9 @@ public:
 
     // The requested icon box, in logical pixels. draw() fits this box into the
     // target rectangle without stretching and without enlarging it beyond the
-    // requested size.
+    // requested size. Negative extents clamp to zero (which means "no
+    // preference" and paints nothing); a non-finite size is rejected and
+    // leaves the previous value in place.
     void setSize(QSizeF size);
     [[nodiscard]] QSizeF size() const noexcept { return size_; }
     [[nodiscard]] QSizeF intrinsicSize() const override { return size_; }

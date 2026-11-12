@@ -146,9 +146,13 @@ QAccessible::State ViewAccessible::state() const
     }
 
     // QAccessibleWidget already mirrors isEnabled() into disabled; restating it
-    // makes the invalid bit below independent of the base implementation.
+    // keeps the answer independent of the base implementation.
+    //
+    // A disabled view is unavailable, not invalid: QAccessible::State::invalid
+    // means the interface itself is no longer valid, so assistive technology
+    // drops the node instead of announcing it as unavailable. Only `disabled`
+    // is set here.
     result.disabled = !w->isEnabled();
-    result.invalid = result.invalid || result.disabled;
 
     return result;
 }

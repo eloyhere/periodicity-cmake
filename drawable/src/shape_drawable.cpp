@@ -79,30 +79,37 @@ void ShapeDrawable::draw(QPainter& painter, const QRectF& bounds) const
     if (!hasFill && !hasStroke)
         return;
 
-    const QPainterPath path = shape_.path(bounds);
-    if (path.isEmpty())
-        return;
-
+    // Save before the try so the state is restored on both the success and
+    // the failure path. A throw from path construction, allocation or the
+    // raster engine is contained here; one drawable must not abort the
+    // composite that contains it.
     painter.save();
-    painter.setRenderHint(QPainter::Antialiasing, true);
+    try {
+        const QPainterPath path = shape_.path(bounds);
+        if (!path.isEmpty()) {
+            painter.setRenderHint(QPainter::Antialiasing, true);
 
-    if (hasFill) {
-        painter.setPen(Qt::NoPen);
-        painter.setBrush(fill_);
-        painter.drawPath(path);
+            if (hasFill) {
+                painter.setPen(Qt::NoPen);
+                painter.setBrush(fill_);
+                painter.drawPath(path);
+            }
+
+            if (hasStroke) {
+                QPen pen(stroke_, strokeWidth());
+                // Round joins and caps keep a rounded outline from growing a
+                // miter spike at the corners, which is the M3 look for a
+                // stroked surface.
+                pen.setJoinStyle(Qt::RoundJoin);
+                pen.setCapStyle(Qt::RoundCap);
+                painter.setPen(pen);
+                painter.setBrush(Qt::NoBrush);
+                painter.drawPath(path);
+            }
+        }
+    } catch (...) {
+        // A failed primitive is skipped; the painter state is restored below.
     }
-
-    if (hasStroke) {
-        QPen pen(stroke_, strokeWidth());
-        // Round joins and caps keep a rounded outline from growing a miter
-        // spike at the corners, which is the M3 look for a stroked surface.
-        pen.setJoinStyle(Qt::RoundJoin);
-        pen.setCapStyle(Qt::RoundCap);
-        painter.setPen(pen);
-        painter.setBrush(Qt::NoBrush);
-        painter.drawPath(path);
-    }
-
     painter.restore();
 }
 
@@ -112,7 +119,10 @@ quint64 ShapeDrawable::cacheKey() const
     key = detail::mix(key, detail::hashColour(fill_));
     key = detail::mix(key, detail::hashColour(stroke_));
     key = detail::mix(key, detail::hashScalar(strokeWidthDp_));
-    key = detail::mix(key, detail::hashScalar(density_.scale));
+    // Hash the scale the conversions actually use, not the raw member: an
+    // unusable scale falls back to 1.0, and hashing NaN would make qRound64()
+    // undefined.
+    key = detail::mix(key, detail::hashScalar(density_.effectiveScale()));
     return key;
 }
 

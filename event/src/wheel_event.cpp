@@ -34,6 +34,11 @@ QPointF WheelEvent::position() const noexcept
     return m_position;
 }
 
+void WheelEvent::setPosition(QPointF position) noexcept
+{
+    m_position = std::move(position);
+}
+
 Qt::KeyboardModifiers WheelEvent::modifiers() const noexcept
 {
     return m_modifiers;

@@ -95,10 +95,12 @@ struct ChildProcess::Impl
     int pid = 0;
     int stdinWrite = -1;
     int stdoutRead = -1;
+    std::atomic<bool> reaped{false}; // waitpid() has already collected the child
 #endif
     std::thread reader;
     std::mutex writeMutex;
     OutputHandler output;
+    EofHandler eof;
     QString error;
     std::atomic<bool> running{false};
     std::atomic<int> exitCode{-1};
@@ -166,7 +168,8 @@ ChildProcess::~ChildProcess()
 
 std::unique_ptr<ChildProcess> ChildProcess::spawn(const Options& options,
                                                   OutputHandler onOutput,
-                                                  QString* error)
+                                                  QString* error,
+                                                  EofHandler onEof)
 {
     const auto fail = [error](const QString& message) -> std::unique_ptr<ChildProcess> {
         if (error != nullptr)
@@ -282,6 +285,7 @@ std::unique_ptr<ChildProcess> ChildProcess::spawn(const Options& options,
     process->impl_->stdoutRead = outRead;
     process->impl_->pid = static_cast<qint64>(processInfo.dwProcessId);
     process->impl_->output = std::move(onOutput);
+    process->impl_->eof = std::move(onEof);
     process->impl_->running.store(true, std::memory_order_relaxed);
 
     Impl* impl = process->impl_.get();
@@ -293,8 +297,23 @@ std::unique_ptr<ChildProcess> ChildProcess::spawn(const Options& options,
                                        static_cast<DWORD>(buffer.size()), &read, nullptr);
             if (ok == FALSE || read == 0)
                 break;
-            if (impl->output)
-                impl->output(QByteArrayView(buffer.data(), static_cast<qsizetype>(read)));
+            if (impl->output) {
+                try {
+                    impl->output(QByteArrayView(buffer.data(), static_cast<qsizetype>(read)));
+                } catch (...) {
+                    // A handler must not take the reader thread down with it.
+                }
+            }
+        }
+
+        // End of stream, clean or not. The consumer can now give up on a
+        // truncated frame instead of waiting for bytes that will never arrive.
+        if (impl->eof) {
+            try {
+                impl->eof();
+            } catch (...) {
+                // The reader survives a throwing end-of-stream handler too.
+            }
         }
     });
 
@@ -354,6 +373,7 @@ std::unique_ptr<ChildProcess> ChildProcess::spawn(const Options& options,
     process->impl_->stdinWrite = inPipe[1];
     process->impl_->stdoutRead = outPipe[0];
     process->impl_->output = std::move(onOutput);
+    process->impl_->eof = std::move(onEof);
     process->impl_->running.store(true, std::memory_order_relaxed);
 
     Impl* impl = process->impl_.get();
@@ -363,8 +383,23 @@ std::unique_ptr<ChildProcess> ChildProcess::spawn(const Options& options,
             const ssize_t read = ::read(impl->stdoutRead, buffer.data(), buffer.size());
             if (read <= 0)
                 break;
-            if (impl->output)
-                impl->output(QByteArrayView(buffer.data(), static_cast<qsizetype>(read)));
+            if (impl->output) {
+                try {
+                    impl->output(QByteArrayView(buffer.data(), static_cast<qsizetype>(read)));
+                } catch (...) {
+                    // A handler must not take the reader thread down with it.
+                }
+            }
+        }
+
+        // End of stream, clean or not. The consumer can now give up on a
+        // truncated frame instead of waiting for bytes that will never arrive.
+        if (impl->eof) {
+            try {
+                impl->eof();
+            } catch (...) {
+                // The reader survives a throwing end-of-stream handler too.
+            }
         }
     });
 
@@ -440,6 +475,12 @@ bool ChildProcess::isRunning() const
         impl_->exitCode.store(WIFEXITED(status) ? WEXITSTATUS(status) : -1,
                               std::memory_order_relaxed);
         impl_->running.store(false, std::memory_order_relaxed);
+        impl_->reaped.store(true, std::memory_order_release);
+        return false;
+    }
+    if (result < 0 && errno == ECHILD) {
+        // waitForFinished() already collected the child.
+        impl_->running.store(false, std::memory_order_relaxed);
         return false;
     }
     return true;
@@ -475,6 +516,11 @@ int ChildProcess::waitForFinished(int timeoutMs)
     if (impl_->pid <= 0)
         return -1;
 
+    // isRunning() may have reaped the child already. A second waitpid() would
+    // fail with ECHILD, so report the exit code it recorded instead.
+    if (impl_->reaped.load(std::memory_order_acquire))
+        return impl_->exitCode.load(std::memory_order_relaxed);
+
     const auto deadline = timeoutMs < 0
         ? std::chrono::steady_clock::time_point::max()
         : std::chrono::steady_clock::now() + std::chrono::milliseconds(timeoutMs);
@@ -486,10 +532,14 @@ int ChildProcess::waitForFinished(int timeoutMs)
             const int code = WIFEXITED(status) ? WEXITSTATUS(status) : -1;
             impl_->exitCode.store(code, std::memory_order_relaxed);
             impl_->running.store(false, std::memory_order_relaxed);
+            impl_->reaped.store(true, std::memory_order_release);
             return code;
         }
-        if (result < 0)
+        if (result < 0) {
+            if (errno == ECHILD)
+                return impl_->exitCode.load(std::memory_order_relaxed);
             return -1;
+        }
         if (std::chrono::steady_clock::now() >= deadline)
             return -1;
         std::this_thread::sleep_for(std::chrono::milliseconds(2));
@@ -517,7 +567,7 @@ void ChildProcess::terminate(int exitCode)
     impl_->running.store(false, std::memory_order_relaxed);
 #else
     Q_UNUSED(exitCode);
-    if (impl_->pid <= 0)
+    if (impl_->pid <= 0 || impl_->reaped.load(std::memory_order_acquire))
         return;
 
     ::kill(impl_->pid, SIGTERM);

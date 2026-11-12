@@ -87,8 +87,9 @@ public:
     // accessibleDescription() and md-description.
     [[nodiscard]] QString text(QAccessible::Text t) const override;
 
-    // QAccessibleWidget's state plus the check properties. A disabled view is
-    // also reported invalid.
+    // QAccessibleWidget's state plus the check properties. A disabled view
+    // sets the disabled bit only: reporting `invalid` would make assistive
+    // technology drop the node instead of announcing it as unavailable.
     [[nodiscard]] QAccessible::State state() const override;
 
     // Delegated to QAccessibleWidget: children are real QWidgets.

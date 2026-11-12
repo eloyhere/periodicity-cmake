@@ -31,8 +31,15 @@ namespace {
 
 constexpr std::uint32_t kMagic = 0x5344524Du; // "MDRS"
 constexpr std::uint32_t kVersion = 1;
-constexpr std::size_t kMinCapacity = 4096;
-constexpr std::size_t kMaxCapacity = std::size_t{1} << 28; // 256 MiB
+
+// The header's capacity must be one of ours: a power of two inside the window
+// create() produces. A corrupt or foreign header is refused instead of mapped.
+bool validCapacity(std::uint64_t capacity) noexcept
+{
+    return capacity >= static_cast<std::uint64_t>(kMinRingCapacity)
+        && capacity <= static_cast<std::uint64_t>(kMaxRingCapacity)
+        && (capacity & (capacity - 1)) == 0;
+}
 
 // The mapping begins with this header. Cursors are byte offsets into the
 // storage that follows: a pointer would be meaningless in the other process.
@@ -54,8 +61,8 @@ static_assert(alignof(RingHeader) == 64, "the payload starts on a cache line");
 
 std::size_t roundUpToPowerOfTwo(std::size_t value)
 {
-    std::size_t result = kMinCapacity;
-    while (result < value && result < kMaxCapacity)
+    std::size_t result = kMinRingCapacity;
+    while (result < value && result < kMaxRingCapacity)
         result <<= 1;
     return result;
 }
@@ -150,7 +157,8 @@ SharedRingBuffer::~SharedRingBuffer()
 
 std::unique_ptr<SharedRingBuffer> SharedRingBuffer::create(const QString& name,
                                                            std::size_t capacity,
-                                                           QString* error)
+                                                           QString* error,
+                                                           std::size_t* actualCapacity)
 {
     const auto fail = [error](const QString& message) -> std::unique_ptr<SharedRingBuffer> {
         if (error != nullptr)
@@ -161,7 +169,7 @@ std::unique_ptr<SharedRingBuffer> SharedRingBuffer::create(const QString& name,
     if (name.isEmpty())
         return fail(QStringLiteral("SharedRingBuffer: empty name"));
 
-    const std::size_t capacityBytes = roundUpToPowerOfTwo(std::max(capacity, kMinCapacity));
+    const std::size_t capacityBytes = roundUpToPowerOfTwo(capacity);
     const std::size_t total = sizeof(RingHeader) + capacityBytes;
 
 #ifdef Q_OS_WIN
@@ -227,12 +235,12 @@ std::unique_ptr<SharedRingBuffer> SharedRingBuffer::create(const QString& name,
     ring->impl_->data = reinterpret_cast<unsigned char*>(header) + sizeof(RingHeader);
 
     std::memset(ring->impl_->data, 0, capacityBytes);
+    if (actualCapacity != nullptr)
+        *actualCapacity = capacityBytes;
     return ring;
 }
 
-std::unique_ptr<SharedRingBuffer> SharedRingBuffer::open(const QString& name,
-                                                         std::size_t capacity,
-                                                         QString* error)
+std::unique_ptr<SharedRingBuffer> SharedRingBuffer::open(const QString& name, QString* error)
 {
     const auto fail = [error](const QString& message) -> std::unique_ptr<SharedRingBuffer> {
         if (error != nullptr)
@@ -243,22 +251,41 @@ std::unique_ptr<SharedRingBuffer> SharedRingBuffer::open(const QString& name,
     if (name.isEmpty())
         return fail(QStringLiteral("SharedRingBuffer: empty name"));
 
-    const std::size_t capacityBytes = roundUpToPowerOfTwo(std::max(capacity, kMinCapacity));
-    const std::size_t total = sizeof(RingHeader) + capacityBytes;
-
 #ifdef Q_OS_WIN
-    if (total > 0xFFFFFFFFull)
-        return fail(QStringLiteral("SharedRingBuffer: mapping is too large"));
-
     const std::wstring wideName = name.toStdWString();
     HANDLE mapping = ::OpenFileMappingW(FILE_MAP_ALL_ACCESS, FALSE, wideName.c_str());
     if (mapping == nullptr)
         return fail(QStringLiteral("OpenFileMapping('%1') failed: %2").arg(name, lastError()));
 
+    // Probe the header first: the payload size lives in it, so the attaching
+    // side does not have to know how the creator's byte count was rounded.
+    auto* probe = static_cast<RingHeader*>(
+        ::MapViewOfFile(mapping, FILE_MAP_ALL_ACCESS, 0, 0, sizeof(RingHeader)));
+    if (probe == nullptr) {
+        ::CloseHandle(mapping);
+        return fail(QStringLiteral("MapViewOfFile('%1') failed: %2")
+                        .arg(name, lastError()));
+    }
+
+    const std::uint32_t magic = probe->magic;
+    const std::uint32_t version = probe->version;
+    const std::uint64_t capacity = probe->capacity;
+    ::UnmapViewOfFile(probe);
+
+    const auto reject = [&]() -> std::unique_ptr<SharedRingBuffer> {
+        ::CloseHandle(mapping);
+        return fail(QStringLiteral("shared memory '%1' has an incompatible header").arg(name));
+    };
+
+    if (magic != kMagic || version != kVersion || !validCapacity(capacity))
+        return reject();
+
+    const std::size_t total = sizeof(RingHeader) + static_cast<std::size_t>(capacity);
     void* view = ::MapViewOfFile(mapping, FILE_MAP_ALL_ACCESS, 0, 0, total);
     if (view == nullptr) {
         ::CloseHandle(mapping);
-        return fail(QStringLiteral("MapViewOfFile failed: %1").arg(lastError()));
+        return fail(QStringLiteral("MapViewOfFile('%1') failed: %2")
+                        .arg(name, lastError()));
     }
 #else
     const QByteArray localName = name.toLocal8Bit();
@@ -266,10 +293,40 @@ std::unique_ptr<SharedRingBuffer> SharedRingBuffer::open(const QString& name,
     if (fd < 0)
         return fail(QStringLiteral("shm_open('%1') failed: %2").arg(name, lastError()));
 
+    void* probe = ::mmap(nullptr, sizeof(RingHeader), PROT_READ, MAP_SHARED, fd, 0);
+    if (probe == MAP_FAILED) {
+        ::close(fd);
+        return fail(QStringLiteral("mmap('%1') failed: %2").arg(name, lastError()));
+    }
+
+    const auto* probeHeader = static_cast<const RingHeader*>(probe);
+    const std::uint32_t magic = probeHeader->magic;
+    const std::uint32_t version = probeHeader->version;
+    const std::uint64_t capacity = probeHeader->capacity;
+    ::munmap(probe, sizeof(RingHeader));
+
+    const auto reject = [&]() -> std::unique_ptr<SharedRingBuffer> {
+        ::close(fd);
+        return fail(QStringLiteral("shared memory '%1' has an incompatible header").arg(name));
+    };
+
+    if (magic != kMagic || version != kVersion || !validCapacity(capacity))
+        return reject();
+
+    const std::size_t total = sizeof(RingHeader) + static_cast<std::size_t>(capacity);
+
+    // The mapping must describe exactly the bytes the header claims; a segment
+    // that was truncated under us would otherwise fault on first use.
+    struct stat info{};
+    if (::fstat(fd, &info) != 0
+        || static_cast<std::uint64_t>(info.st_size) != static_cast<std::uint64_t>(total)) {
+        return reject();
+    }
+
     void* view = ::mmap(nullptr, total, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
     if (view == MAP_FAILED) {
         ::close(fd);
-        return fail(QStringLiteral("mmap failed: %1").arg(lastError()));
+        return fail(QStringLiteral("mmap('%1') failed: %2").arg(name, lastError()));
     }
 #endif
 
@@ -281,23 +338,28 @@ std::unique_ptr<SharedRingBuffer> SharedRingBuffer::open(const QString& name,
     ring->impl_->fd = fd;
 #endif
     ring->impl_->view = view;
-    ring->impl_->capacity = capacityBytes;
+    ring->impl_->capacity = static_cast<std::size_t>(capacity);
+    ring->impl_->header = static_cast<RingHeader*>(view);
+    ring->impl_->data = reinterpret_cast<unsigned char*>(view) + sizeof(RingHeader);
+    return ring;
+}
 
-    auto* header = static_cast<RingHeader*>(view);
-    if (header->magic != kMagic || header->version != kVersion
-        || header->capacity != static_cast<std::uint64_t>(capacityBytes)) {
-#ifdef Q_OS_WIN
-        ::UnmapViewOfFile(view);
-        ::CloseHandle(mapping);
-#else
-        ::munmap(view, total);
-        ::close(fd);
-#endif
-        return fail(QStringLiteral("shared memory '%1' has an incompatible header").arg(name));
+std::unique_ptr<SharedRingBuffer> SharedRingBuffer::open(const QString& name,
+                                                         std::size_t capacity,
+                                                         QString* error)
+{
+    const std::size_t expected = roundUpToPowerOfTwo(capacity);
+
+    std::unique_ptr<SharedRingBuffer> ring = open(name, error);
+    if (ring != nullptr && ring->capacity() != expected) {
+        if (error != nullptr) {
+            *error = QStringLiteral("shared memory '%1' has capacity %2, not %3")
+                         .arg(name)
+                         .arg(static_cast<qulonglong>(ring->capacity()))
+                         .arg(static_cast<qulonglong>(expected));
+        }
+        return nullptr;
     }
-
-    ring->impl_->header = header;
-    ring->impl_->data = reinterpret_cast<unsigned char*>(header) + sizeof(RingHeader);
     return ring;
 }
 
@@ -390,9 +452,14 @@ std::size_t SharedRingBuffer::used() const
     if (!impl_ || impl_->header == nullptr)
         return 0;
 
-    const std::uint64_t head = impl_->header->head.load(std::memory_order_acquire);
+    // Tail first: it only grows, so head - tail cannot wrap when the consumer
+    // drains between the two loads. A producer-side snapshot can catch a stale
+    // tail and over-report, so the figure is capped at the ring's capacity.
     const std::uint64_t tail = impl_->header->tail.load(std::memory_order_acquire);
-    return static_cast<std::size_t>(head - tail);
+    const std::uint64_t head = impl_->header->head.load(std::memory_order_acquire);
+    const std::uint64_t occupied = head - tail;
+    const std::uint64_t capacity = static_cast<std::uint64_t>(impl_->capacity);
+    return static_cast<std::size_t>(occupied < capacity ? occupied : capacity);
 }
 
 std::uint64_t SharedRingBuffer::dropped() const

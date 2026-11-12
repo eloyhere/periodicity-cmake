@@ -9,8 +9,14 @@
 namespace md::layer {
 
 RippleLayer::RippleLayer(Theme theme, QObject* parent)
-    : controller_(parent)
+    : controller_(nullptr)
 {
+    // `parent` is accepted for source compatibility but deliberately not used:
+    // controller_ is a value member, so parenting it to an external QObject
+    // would make that object delete a subobject it does not own. The layer
+    // destroys the controller exactly once, with itself.
+    Q_UNUSED(parent);
+
     controller_.setTheme(std::move(theme));
 }
 
@@ -44,12 +50,27 @@ const ripple::RippleController& RippleLayer::controller() const noexcept
 void RippleLayer::paint(QPainter& painter, const QRectF& bounds,
                         const SurfaceContext& context) const
 {
-    Q_UNUSED(bounds);
     Q_UNUSED(context);
 
+    // Same guard as every other stage: an empty rectangle or an inactive
+    // painter has no pixels to contribute, and the controller must not be asked
+    // to paint into either.
+    if (bounds.isEmpty() || !painter.isActive())
+        return;
+
     // The controller clips to the bounds and corner radius configured by the
-    // host; the layer only contributes its position in the stack.
-    controller_.paint(painter);
+    // host. That cached rectangle can be stale, so intersect it with the
+    // rectangle the layer was actually asked to paint; a save/restore keeps the
+    // stage from leaking that clip into the next one.
+    painter.save();
+    try {
+        painter.setClipRect(bounds, Qt::IntersectClip);
+        controller_.paint(painter);
+    } catch (...) {
+        // A ripple is feedback, never a reason for the rest of the composite
+        // to stop painting.
+    }
+    painter.restore();
 }
 
 bool RippleLayer::isAnimated() const noexcept

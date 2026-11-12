@@ -192,6 +192,13 @@ bool IoThread::cancel(std::uint64_t timerId)
 
 void IoThread::readFile(const QString& path, std::function<void(QByteArray, QString)> done)
 {
+    if (!done)
+        return;
+
+    // The original is moved into the queued task, so the rejection path needs
+    // its own copy to report the failure at all.
+    const std::function<void(QByteArray, QString)> onRejected = done;
+
     const bool queued = post([path, done = std::move(done)] {
         if (!done)
             return;
@@ -206,8 +213,12 @@ void IoThread::readFile(const QString& path, std::function<void(QByteArray, QStr
         done(bytes, QString());
     });
 
-    if (!queued && done)
-        done(QByteArray{}, QStringLiteral("IO thread is not running"));
+    if (!queued) {
+        // There is no IO thread left to run the callback on, so the error is
+        // reported here, on the caller: the documented exception to the
+        // on-the-IO-thread rule in the header.
+        onRejected(QByteArray{}, QStringLiteral("IO thread is not running"));
+    }
 }
 
 IoThread::Stats IoThread::stats() const
@@ -218,6 +229,7 @@ IoThread::Stats IoThread::stats() const
     stats.posted = posted_;
     stats.executed = executed_;
     stats.cancelled = cancelled_;
+    stats.failed = failed_;
     stats.pending = immediate_.size() + timers_.size();
     stats.avgLatencyUs = executed_ == 0 ? 0.0 : totalLatencyUs_ / static_cast<double>(executed_);
     stats.maxLatencyUs = maxLatencyUs_;
@@ -243,24 +255,39 @@ void IoThread::loop()
             timers_.erase(due);
             timerIndex_.erase(timer->id);
 
+            // The lateness of this tick is measured from the deadline that made
+            // it due, captured before the callback runs. Overwriting `posted`
+            // with the next deadline (as this used to) makes every periodic
+            // sample negative, which the clamp below turns into a zero.
+            timer->posted = timer->due;
+
             lock.unlock();
-            if (!timer->cancelled.load(std::memory_order_acquire) && timer->fn)
-                timer->fn();
+            bool callbackFailed = false;
+            if (!timer->cancelled.load(std::memory_order_acquire) && timer->fn) {
+                try {
+                    timer->fn();
+                } catch (...) {
+                    // A throwing timer must not kill the thread: it counts as
+                    // a failed execution and the timer is re-armed below.
+                    callbackFailed = true;
+                }
+            }
             const Clock::time_point finished = Clock::now();
             lock.lock();
+
+            if (callbackFailed)
+                ++failed_;
 
             if (!timer->cancelled.load(std::memory_order_relaxed)
                 && timer->period > std::chrono::milliseconds::zero() && !stopping_) {
                 // Re-arm from the moment it ran, so a slow callback cannot
                 // queue a burst of overdue ticks.
                 timer->due = finished + timer->period;
-                timer->posted = timer->due;
                 scheduleLocked(timer);
-                recordExecution(timer->due, finished);
             } else {
                 timersById_.erase(timer->id);
-                recordExecution(timer->due, finished);
             }
+            recordExecution(timer->posted, finished);
             continue;
         }
 
@@ -269,11 +296,20 @@ void IoThread::loop()
             immediate_.pop_front();
 
             lock.unlock();
-            if (item.fn)
-                item.fn();
+            bool callbackFailed = false;
+            if (item.fn) {
+                try {
+                    item.fn();
+                } catch (...) {
+                    // One failing task cannot take the IO thread down.
+                    callbackFailed = true;
+                }
+            }
             const Clock::time_point finished = Clock::now();
             lock.lock();
 
+            if (callbackFailed)
+                ++failed_;
             recordExecution(item.posted, finished);
             continue;
         }

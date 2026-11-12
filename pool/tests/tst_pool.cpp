@@ -89,6 +89,7 @@ private slots:
     void blockPoolRespectsBounds();
     void blockPoolPreallocates();
     void blockPoolAlignsBlocks();
+    void blockPoolRejectsDoubleRelease();
 
     void objectPoolCreatesAndDestroys();
     void objectPoolStartsAFreshLifetime();
@@ -98,6 +99,7 @@ private slots:
     void objectPoolPreallocates();
     void objectPoolHandlesConstructorFailure();
     void objectPoolOwnsAndClears();
+    void objectPoolRejectsDoubleDestroy();
 
     void handleOwnsLifetime();
     void handleMovesOwnership();
@@ -206,6 +208,51 @@ void TestPool::blockPoolAlignsBlocks()
         const auto address = reinterpret_cast<std::uintptr_t>(block);
         QCOMPARE(address % alignof(OverAligned), std::uintptr_t(0));
     }
+}
+
+void TestPool::blockPoolRejectsDoubleRelease()
+{
+    BlockPool pool({.blockSize = 16, .chunkBlocks = 4});
+
+    void* first = pool.acquire();
+    void* second = pool.acquire();
+    QVERIFY(first != nullptr);
+    QVERIFY(second != nullptr);
+    QCOMPARE(pool.inUse(), std::size_t(2));
+
+    pool.release(first);
+    pool.release(first); // a second release must be refused, not linked again
+
+    QCOMPARE(pool.rejectedReleases(), std::size_t(1));
+    QCOMPARE(pool.inUse(), std::size_t(1));
+    QCOMPARE(pool.available(), std::size_t(3));
+
+    // Exactly one link to the block is on the free list. A self-linked block
+    // would be handed out again while it is checked out (the release-build
+    // corruption this guards against).
+    QVERIFY(pool.acquire() == first);
+    QCOMPARE(pool.inUse(), std::size_t(2));
+
+    void* third = pool.acquire();
+    void* fourth = pool.acquire();
+    QVERIFY(third != nullptr);
+    QVERIFY(fourth != nullptr);
+    QVERIFY(third != first);
+    QVERIFY(fourth != first);
+    QVERIFY(third != fourth);
+    QCOMPARE(pool.inUse(), std::size_t(4));
+
+    pool.release(second);
+    pool.release(third);
+    pool.release(fourth);
+    pool.release(first);
+    QCOMPARE(pool.inUse(), std::size_t(0));
+
+    // A block the pool does not own is refused as well.
+    int stackValue = 0;
+    pool.release(&stackValue);
+    QCOMPARE(pool.rejectedReleases(), std::size_t(2));
+    QCOMPARE(pool.available(), pool.capacity());
 }
 
 void TestPool::objectPoolCreatesAndDestroys()
@@ -355,6 +402,57 @@ void TestPool::objectPoolOwnsAndClears()
     QVERIFY(again != nullptr);
     QCOMPARE(pool.capacity(), std::size_t(2));
     pool.destroy(again);
+}
+
+void TestPool::objectPoolRejectsDoubleDestroy()
+{
+    Counted::resetCounters();
+    ObjectPool<Counted> pool({.chunkBlocks = 4});
+
+    Counted* first = pool.create(1);
+    Counted* second = pool.create(2);
+    QVERIFY(first != nullptr);
+    QVERIFY(second != nullptr);
+
+    pool.destroy(first);
+    QCOMPARE(Counted::destroyed, 1);
+    QCOMPARE(pool.rejectedReleases(), std::size_t(0));
+
+    // The second destroy must not run the destructor again and must not push
+    // the block onto the free list twice: in a release build that used to hand
+    // the same storage to two live objects.
+    pool.destroy(first);
+    QCOMPARE(Counted::destroyed, 1);
+    QCOMPARE(pool.liveCount(), std::size_t(1));
+    QCOMPARE(pool.rejectedReleases(), std::size_t(1));
+
+    Counted* third = pool.create(3);
+    Counted* fourth = pool.create(4);
+    Counted* fifth = pool.create(5);
+    QVERIFY(third != nullptr);
+    QVERIFY(fourth != nullptr);
+    QVERIFY(fifth != nullptr);
+    QVERIFY(third != fourth);
+    QVERIFY(third != fifth);
+    QVERIFY(fourth != fifth);
+    QCOMPARE(pool.liveCount(), std::size_t(4));
+
+    // A pointer the pool never handed out is refused before its destructor
+    // could run.
+    {
+        Counted foreign(9);
+        pool.destroy(&foreign);
+        QCOMPARE(pool.rejectedReleases(), std::size_t(2));
+        QCOMPARE(Counted::destroyed, 1); // the rejected destroy did not run it
+    }
+    QCOMPARE(Counted::destroyed, 2); // the stack object ended on its own
+
+    pool.destroy(second);
+    pool.destroy(third);
+    pool.destroy(fourth);
+    pool.destroy(fifth);
+    QCOMPARE(pool.liveCount(), std::size_t(0));
+    QCOMPARE(pool.available(), pool.capacity());
 }
 
 void TestPool::handleOwnsLifetime()

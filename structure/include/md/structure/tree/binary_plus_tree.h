@@ -27,6 +27,12 @@
 //
 // Both are O(height), because a node knows its subtree sizes and its parent
 // chain but nothing else.
+//
+// Every traversal, structural query, refresh, copy and teardown is iterative.
+// The shape can legitimately be a chain of tens of thousands of nodes — a
+// BinarySearchTree on this substrate degenerates by design on sorted input —
+// so no operation may recurse once per level: the work uses an explicit heap
+// stack whose depth is independent of the call stack.
 
 #pragma once
 
@@ -66,8 +72,19 @@ public:
     }
 
     BinaryPlusTree(BinaryPlusTree&&) noexcept = default;
-    BinaryPlusTree& operator=(BinaryPlusTree&&) noexcept = default;
-    ~BinaryPlusTree() = default;
+
+    // Clears the current contents through the iterative teardown rather than
+    // letting unique_ptr release the old root recursively.
+    BinaryPlusTree& operator=(BinaryPlusTree&& other) noexcept
+    {
+        if (this != &other) {
+            clear();
+            root_ = std::move(other.root_);
+        }
+        return *this;
+    }
+
+    ~BinaryPlusTree() { clear(); }
 
     void swap(BinaryPlusTree& other) noexcept { root_.swap(other.root_); }
 
@@ -86,6 +103,7 @@ public:
     // by hand can be handed over safely.
     void setRoot(std::unique_ptr<node_type> root)
     {
+        clear();
         root_ = std::move(root);
         refresh();
     }
@@ -95,7 +113,28 @@ public:
         return std::move(root_);
     }
 
-    void clear() noexcept { root_.reset(); }
+    // Removes every node. The tree is rotated into a right-leaning vine and
+    // then released along that vine, so a degenerate chain of any depth is
+    // freed without recursing: O(n) time, O(1) extra space.
+    void clear() noexcept
+    {
+        while (root_ != nullptr) {
+            if (root_->left == nullptr) {
+                // The root has no left child, so it can be destroyed after its
+                // right subtree takes its place in the owning pointer.
+                root_ = std::move(root_->right);
+                continue;
+            }
+
+            // Right rotation: the left child becomes the root and the old root
+            // becomes its right child. The tree-to-vine transformation performs
+            // at most one rotation per node in total.
+            std::unique_ptr<node_type> pivot = std::move(root_->left);
+            root_->left = std::move(pivot->right);
+            pivot->right = std::move(root_);
+            root_ = std::move(pivot);
+        }
+    }
 
     node_type& insertRoot(T value)
     {
@@ -124,11 +163,27 @@ public:
         return *parent->right;
     }
 
-    // Replaces the child on `rightSide` and returns the previous occupant.
+    // Replaces the child on `rightSide` of `parent` and returns the previous
+    // occupant (nullptr when the slot was empty).
+    //
+    // Precondition: `parent` belongs to this tree. `child` must not be `parent`
+    // or one of its ancestors: grafting a subtree that already contains the
+    // parent would close the parent chain into a cycle, updateToRoot() would
+    // never reach the root and teardown would release the same nodes twice.
+    // Such a graft is rejected before the tree is touched — the child is
+    // released, the tree is unchanged and nullptr is returned. A debug build
+    // asserts instead of returning.
     std::unique_ptr<node_type> setChild(node_type* parent, bool rightSide,
                                         std::unique_ptr<node_type> child)
     {
         assert(parent != nullptr && "setChild needs a parent");
+        if (parent == nullptr)
+            return nullptr;
+        if (isSelfOrAncestor(parent, child.get())) {
+            assert(false && "setChild would create a parent cycle");
+            return nullptr;
+        }
+
         std::unique_ptr<node_type>& slot = rightSide ? parent->right : parent->left;
         std::unique_ptr<node_type> previous = std::move(slot);
         if (previous != nullptr)
@@ -471,26 +526,88 @@ protected:
     }
 
 private:
+    // One explicit-stack frame of a bottom-up height walk. `stage` is 0 before
+    // the left child has been processed, 1 before the right child and 2 once
+    // both subtree heights are known.
+    struct HeightFrame
+    {
+        const node_type* node;
+        int stage;
+        int leftHeight;
+        int rightHeight;
+    };
+
+    // True when `candidate` is `node` itself or one of its ancestors.
+    [[nodiscard]] static bool isSelfOrAncestor(const node_type* node,
+                                               const node_type* candidate) noexcept
+    {
+        for (const node_type* current = node; current != nullptr;
+             current = current->parent) {
+            if (current == candidate)
+                return true;
+        }
+        return false;
+    }
+
     static void refreshSubtree(node_type* node, node_type* parent) noexcept
     {
         if (node == nullptr)
             return;
+
+        // Preorder pass: rebuild every parent link and record the visit order.
+        // Reversing that order puts every child before its parent, so the
+        // bottom-up refresh needs no recursion.
+        std::vector<node_type*> order;
         node->parent = parent;
-        refreshSubtree(node->left.get(), node);
-        refreshSubtree(node->right.get(), node);
-        node->refresh();
+        order.push_back(node);
+        for (size_type index = 0; index < order.size(); ++index) {
+            node_type* current = order[index];
+            if (current->left != nullptr) {
+                current->left->parent = current;
+                order.push_back(current->left.get());
+            }
+            if (current->right != nullptr) {
+                current->right->parent = current;
+                order.push_back(current->right.get());
+            }
+        }
+
+        for (auto it = order.rbegin(); it != order.rend(); ++it)
+            (*it)->refresh();
     }
 
     static std::unique_ptr<node_type> cloneSubtree(const node_type* node, node_type* parent)
     {
         if (node == nullptr)
             return nullptr;
+
         auto copy = std::make_unique<node_type>(node->value);
         copy->parent = parent;
-        copy->left = cloneSubtree(node->left.get(), copy.get());
-        copy->right = cloneSubtree(node->right.get(), copy.get());
         copy->height = node->height;
         copy->size = node->size;
+
+        std::vector<std::pair<const node_type*, node_type*>> pending;
+        pending.emplace_back(node, copy.get());
+        while (!pending.empty()) {
+            const std::pair<const node_type*, node_type*> current = pending.back();
+            pending.pop_back();
+            const node_type* source = current.first;
+            node_type* target = current.second;
+            if (source->left != nullptr) {
+                target->left = std::make_unique<node_type>(source->left->value);
+                target->left->parent = target;
+                target->left->height = source->left->height;
+                target->left->size = source->left->size;
+                pending.emplace_back(source->left.get(), target->left.get());
+            }
+            if (source->right != nullptr) {
+                target->right = std::make_unique<node_type>(source->right->value);
+                target->right->parent = target;
+                target->right->height = source->right->height;
+                target->right->size = source->right->size;
+                pending.emplace_back(source->right.get(), target->right.get());
+            }
+        }
         return copy;
     }
 
@@ -512,29 +629,58 @@ private:
     {
         if (node == nullptr)
             return;
-        function(node->value);
-        preorder(node->left.get(), function);
-        preorder(node->right.get(), function);
+
+        std::vector<const node_type*> pending;
+        pending.push_back(node);
+        while (!pending.empty()) {
+            const node_type* current = pending.back();
+            pending.pop_back();
+            function(current->value);
+            // Right first so the left subtree is visited first.
+            if (current->right != nullptr)
+                pending.push_back(current->right.get());
+            if (current->left != nullptr)
+                pending.push_back(current->left.get());
+        }
     }
 
     template <class Function>
     static void inorder(const node_type* node, Function& function)
     {
-        if (node == nullptr)
-            return;
-        inorder(node->left.get(), function);
-        function(node->value);
-        inorder(node->right.get(), function);
+        std::vector<const node_type*> pending;
+        const node_type* current = node;
+        while (current != nullptr || !pending.empty()) {
+            while (current != nullptr) {
+                pending.push_back(current);
+                current = current->left.get();
+            }
+            current = pending.back();
+            pending.pop_back();
+            function(current->value);
+            current = current->right.get();
+        }
     }
 
     template <class Function>
     static void postorder(const node_type* node, Function& function)
     {
-        if (node == nullptr)
-            return;
-        postorder(node->left.get(), function);
-        postorder(node->right.get(), function);
-        function(node->value);
+        std::vector<const node_type*> pending;
+        const node_type* current = node;
+        const node_type* lastVisited = nullptr;
+        while (current != nullptr || !pending.empty()) {
+            while (current != nullptr) {
+                pending.push_back(current);
+                current = current->left.get();
+            }
+            const node_type* top = pending.back();
+            if (top->right != nullptr && top->right.get() != lastVisited) {
+                current = top->right.get();
+            } else {
+                function(top->value);
+                lastVisited = top;
+                pending.pop_back();
+            }
+        }
     }
 
     template <class Function>
@@ -560,29 +706,63 @@ private:
     {
         if (node == nullptr)
             return;
-        function(*node, depth);
-        preorderNodes(node->left.get(), depth + 1, function);
-        preorderNodes(node->right.get(), depth + 1, function);
+
+        std::vector<std::pair<const node_type*, int>> pending;
+        pending.emplace_back(node, depth);
+        while (!pending.empty()) {
+            const std::pair<const node_type*, int> current = pending.back();
+            pending.pop_back();
+            function(*current.first, current.second);
+            if (current.first->right != nullptr)
+                pending.emplace_back(current.first->right.get(), current.second + 1);
+            if (current.first->left != nullptr)
+                pending.emplace_back(current.first->left.get(), current.second + 1);
+        }
     }
 
     template <class Function>
     static void inorderNodes(const node_type* node, int depth, Function& function)
     {
-        if (node == nullptr)
-            return;
-        inorderNodes(node->left.get(), depth + 1, function);
-        function(*node, depth);
-        inorderNodes(node->right.get(), depth + 1, function);
+        std::vector<std::pair<const node_type*, int>> pending;
+        const node_type* current = node;
+        int currentDepth = depth;
+        while (current != nullptr || !pending.empty()) {
+            while (current != nullptr) {
+                pending.emplace_back(current, currentDepth);
+                ++currentDepth;
+                current = current->left.get();
+            }
+            const std::pair<const node_type*, int> visited = pending.back();
+            pending.pop_back();
+            function(*visited.first, visited.second);
+            currentDepth = visited.second + 1;
+            current = visited.first->right.get();
+        }
     }
 
     template <class Function>
     static void postorderNodes(const node_type* node, int depth, Function& function)
     {
-        if (node == nullptr)
-            return;
-        postorderNodes(node->left.get(), depth + 1, function);
-        postorderNodes(node->right.get(), depth + 1, function);
-        function(*node, depth);
+        std::vector<std::pair<const node_type*, int>> pending;
+        const node_type* current = node;
+        const node_type* lastVisited = nullptr;
+        int currentDepth = depth;
+        while (current != nullptr || !pending.empty()) {
+            while (current != nullptr) {
+                pending.emplace_back(current, currentDepth);
+                ++currentDepth;
+                current = current->left.get();
+            }
+            const std::pair<const node_type*, int>& top = pending.back();
+            if (top.first->right != nullptr && top.first->right.get() != lastVisited) {
+                currentDepth = top.second + 1;
+                current = top.first->right.get();
+            } else {
+                function(*top.first, top.second);
+                lastVisited = top.first;
+                pending.pop_back();
+            }
+        }
     }
 
     template <class Function>
@@ -605,92 +785,195 @@ private:
 
     static size_type countLeaves(const node_type* node) noexcept
     {
-        if (node == nullptr)
-            return 0;
-        if (node->isLeaf())
-            return 1;
-        return countLeaves(node->left.get()) + countLeaves(node->right.get());
+        size_type leaves = 0;
+        std::vector<const node_type*> pending;
+        if (node != nullptr)
+            pending.push_back(node);
+        while (!pending.empty()) {
+            const node_type* current = pending.back();
+            pending.pop_back();
+            if (current->isLeaf()) {
+                ++leaves;
+                continue;
+            }
+            if (current->left != nullptr)
+                pending.push_back(current->left.get());
+            if (current->right != nullptr)
+                pending.push_back(current->right.get());
+        }
+        return leaves;
     }
 
     static size_type countNodesWithOneChild(const node_type* node) noexcept
     {
-        if (node == nullptr)
-            return 0;
-        const size_type self = (node->left == nullptr) != (node->right == nullptr) ? 1 : 0;
-        return self + countNodesWithOneChild(node->left.get())
-               + countNodesWithOneChild(node->right.get());
+        size_type count = 0;
+        std::vector<const node_type*> pending;
+        if (node != nullptr)
+            pending.push_back(node);
+        while (!pending.empty()) {
+            const node_type* current = pending.back();
+            pending.pop_back();
+            if ((current->left == nullptr) != (current->right == nullptr))
+                ++count;
+            if (current->left != nullptr)
+                pending.push_back(current->left.get());
+            if (current->right != nullptr)
+                pending.push_back(current->right.get());
+        }
+        return count;
     }
 
     template <class Predicate>
     static const node_type* findIfNode(const node_type* node, Predicate& predicate) noexcept
     {
-        if (node == nullptr)
-            return nullptr;
-        if (predicate(node->value))
-            return node;
-        if (const node_type* found = findIfNode(node->left.get(), predicate))
-            return found;
-        return findIfNode(node->right.get(), predicate);
+        std::vector<const node_type*> pending;
+        if (node != nullptr)
+            pending.push_back(node);
+        while (!pending.empty()) {
+            const node_type* current = pending.back();
+            pending.pop_back();
+            if (predicate(current->value))
+                return current;
+            if (current->right != nullptr)
+                pending.push_back(current->right.get());
+            if (current->left != nullptr)
+                pending.push_back(current->left.get());
+        }
+        return nullptr;
     }
 
     template <class Predicate>
     static size_type countIfNode(const node_type* node, Predicate& predicate) noexcept
     {
-        if (node == nullptr)
-            return 0;
-        const size_type self = predicate(node->value) ? 1 : 0;
-        return self + countIfNode(node->left.get(), predicate)
-               + countIfNode(node->right.get(), predicate);
+        size_type count = 0;
+        std::vector<const node_type*> pending;
+        if (node != nullptr)
+            pending.push_back(node);
+        while (!pending.empty()) {
+            const node_type* current = pending.back();
+            pending.pop_back();
+            if (predicate(current->value))
+                ++count;
+            if (current->left != nullptr)
+                pending.push_back(current->left.get());
+            if (current->right != nullptr)
+                pending.push_back(current->right.get());
+        }
+        return count;
     }
 
     static bool isFullNode(const node_type* node) noexcept
     {
-        if (node == nullptr)
-            return true;
-        if ((node->left == nullptr) != (node->right == nullptr))
-            return false;
-        return isFullNode(node->left.get()) && isFullNode(node->right.get());
+        std::vector<const node_type*> pending;
+        if (node != nullptr)
+            pending.push_back(node);
+        while (!pending.empty()) {
+            const node_type* current = pending.back();
+            pending.pop_back();
+            if ((current->left == nullptr) != (current->right == nullptr))
+                return false;
+            if (current->left != nullptr)
+                pending.push_back(current->left.get());
+            if (current->right != nullptr)
+                pending.push_back(current->right.get());
+        }
+        return true;
     }
 
     static bool isBalancedNode(const node_type* node) noexcept
     {
-        if (node == nullptr)
-            return true;
-        const int balance = node->balanceFactor();
-        if (balance < -1 || balance > 1)
-            return false;
-        return isBalancedNode(node->left.get()) && isBalancedNode(node->right.get());
+        std::vector<const node_type*> pending;
+        if (node != nullptr)
+            pending.push_back(node);
+        while (!pending.empty()) {
+            const node_type* current = pending.back();
+            pending.pop_back();
+            const int balance = current->balanceFactor();
+            if (balance < -1 || balance > 1)
+                return false;
+            if (current->left != nullptr)
+                pending.push_back(current->left.get());
+            if (current->right != nullptr)
+                pending.push_back(current->right.get());
+        }
+        return true;
     }
 
     static int diameterOf(const node_type* node, int& best) noexcept
     {
         if (node == nullptr)
             return 0;
-        const int left = diameterOf(node->left.get(), best);
-        const int right = diameterOf(node->right.get(), best);
-        const int through = left + right + 1;
-        if (through > best)
-            best = through;
-        return 1 + (left > right ? left : right);
+
+        std::vector<HeightFrame> pending;
+        pending.push_back({node, 0, 0, 0});
+        int completedHeight = 0;
+        while (!pending.empty()) {
+            HeightFrame& frame = pending.back();
+            if (frame.stage == 0) {
+                frame.stage = 1;
+                if (frame.node->left != nullptr)
+                    pending.push_back({frame.node->left.get(), 0, 0, 0});
+                continue;
+            }
+            if (frame.stage == 1) {
+                frame.stage = 2;
+                frame.leftHeight = frame.node->left != nullptr ? completedHeight : 0;
+                if (frame.node->right != nullptr)
+                    pending.push_back({frame.node->right.get(), 0, 0, 0});
+                continue;
+            }
+
+            frame.rightHeight = frame.node->right != nullptr ? completedHeight : 0;
+            const int through = frame.leftHeight + frame.rightHeight + 1;
+            if (through > best)
+                best = through;
+            completedHeight = 1 + (frame.leftHeight > frame.rightHeight
+                                       ? frame.leftHeight
+                                       : frame.rightHeight);
+            pending.pop_back();
+        }
+        return completedHeight;
     }
 
     static void mirrorNode(node_type* node) noexcept
     {
-        if (node == nullptr)
-            return;
-        node->left.swap(node->right);
-        mirrorNode(node->left.get());
-        mirrorNode(node->right.get());
+        std::vector<node_type*> pending;
+        if (node != nullptr)
+            pending.push_back(node);
+        while (!pending.empty()) {
+            node_type* current = pending.back();
+            pending.pop_back();
+            current->left.swap(current->right);
+            if (current->left != nullptr)
+                pending.push_back(current->left.get());
+            if (current->right != nullptr)
+                pending.push_back(current->right.get());
+        }
     }
 
     static bool equalsNode(const node_type* lhs, const node_type* rhs) noexcept
     {
         if (lhs == nullptr || rhs == nullptr)
             return lhs == rhs;
-        if (!(lhs->value == rhs->value))
-            return false;
-        return equalsNode(lhs->left.get(), rhs->left.get())
-               && equalsNode(lhs->right.get(), rhs->right.get());
+
+        std::vector<std::pair<const node_type*, const node_type*>> pending;
+        pending.emplace_back(lhs, rhs);
+        while (!pending.empty()) {
+            const std::pair<const node_type*, const node_type*> current = pending.back();
+            pending.pop_back();
+            const node_type* left = current.first;
+            const node_type* right = current.second;
+            if (left == nullptr || right == nullptr) {
+                if (left != right)
+                    return false;
+                continue;
+            }
+            if (!(left->value == right->value))
+                return false;
+            pending.emplace_back(left->left.get(), right->left.get());
+            pending.emplace_back(left->right.get(), right->right.get());
+        }
+        return true;
     }
 
     std::unique_ptr<node_type> root_;

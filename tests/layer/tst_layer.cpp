@@ -27,7 +27,9 @@
 #include <md/tokens/state_layer.h>
 
 #include <chrono>
+#include <cstddef>
 #include <memory>
+#include <stdexcept>
 #include <utility>
 #include <vector>
 
@@ -128,6 +130,47 @@ private:
     std::vector<QString>* log_ = nullptr;
 };
 
+// Attempts every stack mutation from inside paint(). The stack must ignore
+// them so the traversal it is performing stays valid.
+class MutatingLayer : public Layer
+{
+public:
+    MutatingLayer(LayerStack* stack, std::vector<QString>* log)
+        : stack_(stack)
+        , log_(log)
+    {
+    }
+
+    void paint(QPainter&, const QRectF&, const SurfaceContext&) const override
+    {
+        if (log_ != nullptr)
+            log_->push_back(QStringLiteral("mutating"));
+
+        if (stack_ == nullptr)
+            return;
+
+        stack_->add(std::make_unique<RecordingLayer>(QStringLiteral("added"), nullptr));
+        stack_->insert(0, std::make_unique<RecordingLayer>(QStringLiteral("inserted"),
+                                                          nullptr));
+        stack_->clear();
+    }
+
+private:
+    LayerStack* stack_ = nullptr;
+    std::vector<QString>* log_ = nullptr;
+};
+
+// A broken custom stage: paint() throws, and the stack must isolate the
+// failure and keep painting the rest of the composite.
+class ThrowingLayer : public Layer
+{
+public:
+    void paint(QPainter&, const QRectF&, const SurfaceContext&) const override
+    {
+        throw std::runtime_error("intentional paint failure");
+    }
+};
+
 // Records the order in which hitTest() is consulted and claims (or declines)
 // every point.
 class ProbeLayer : public Layer
@@ -181,14 +224,19 @@ class TestLayer : public QObject
 private slots:
     void surfaceContextResolvesDefaults();
     void backgroundFillsWithTonalSurface();
+    void backgroundClipIntersectsCallerClip();
     void elevationLayerDrawsOnlyAboveLevel0();
     void elevationLayerHonoursExplicitConfiguration();
+    void invalidElevationPaintsNothing();
     void stateOverlayOnlyForInteractionStates();
+    void stateOverlayClipIntersectsCallerClip();
     void focusRingOnlyWhenFocused();
     void outlineLayerStrokesContour();
     void stackPaintsInInsertionOrder();
     void stackHitTestsInReverseOrder();
     void stackInsertClearAndAnimation();
+    void stackIgnoresMutationDuringPaint();
+    void stackIsolatesPaintExceptions();
 };
 
 void TestLayer::surfaceContextResolvesDefaults()
@@ -518,6 +566,140 @@ void TestLayer::stackInsertClearAndAnimation()
     stack.clear();
     QVERIFY(stack.empty());
     QVERIFY(!stack.anyAnimated());
+}
+
+void TestLayer::backgroundClipIntersectsCallerClip()
+{
+    const Theme theme = Theme::baselineLight();
+    const QRectF bounds(20.0, 20.0, 120.0, 120.0);
+
+    BackgroundLayer background;
+
+    SurfaceContext context{theme};
+    context.shape = Shape::medium();
+
+    QImage image = newImage();
+    QPainter painter(&image);
+    painter.setClipRect(QRectF(20.0, 20.0, 40.0, 120.0));
+    const QRectF callerClip = painter.clipBoundingRect();
+
+    background.paint(painter, bounds, context);
+
+    // save/restore leaves the caller's clip in force...
+    QVERIFY(painter.hasClipping());
+    QVERIFY(painter.clipBoundingRect() == callerClip);
+    painter.end();
+
+    // ...and the fill is the intersection of that clip with the shape, not the
+    // whole shape: x = 100 is inside the bounds but outside the caller's clip.
+    QVERIFY(alphaAt(image, 40, 80) > 0);
+    QCOMPARE(alphaAt(image, 100, 80), 0);
+}
+
+void TestLayer::stateOverlayClipIntersectsCallerClip()
+{
+    const Theme theme = Theme::baselineLight();
+    const QRectF bounds(20.0, 20.0, 120.0, 120.0);
+
+    StateOverlayLayer overlay;
+
+    SurfaceContext context{theme};
+    context.shape = Shape::medium();
+    context.state = ViewStates(ViewState::Enabled | ViewState::Hovered);
+    context.contentColour = QColor(Qt::black);
+
+    QImage image = newImage();
+    QPainter painter(&image);
+    painter.setClipRect(QRectF(20.0, 20.0, 40.0, 120.0));
+    const QRectF callerClip = painter.clipBoundingRect();
+
+    overlay.paint(painter, bounds, context);
+
+    QVERIFY(painter.hasClipping());
+    QVERIFY(painter.clipBoundingRect() == callerClip);
+    painter.end();
+
+    QVERIFY(alphaAt(image, 40, 80) > 0);
+    QCOMPARE(alphaAt(image, 100, 80), 0);
+}
+
+void TestLayer::invalidElevationPaintsNothing()
+{
+    const Theme theme = Theme::baselineLight();
+    const QRectF bounds(40.0, 40.0, 80.0, 80.0);
+
+    ElevationLayer layer;
+    layer.setShape(Shape::medium());
+
+    SurfaceContext context{theme};
+    context.shape = Shape::medium();
+    context.elevation = static_cast<Elevation>(6);
+
+    // An unknown context level behaves as Level0: no reserved margin, no pixel.
+    QVERIFY(isFullyTransparent(renderLayer(layer, bounds, context)));
+    QCOMPARE(layer.shadowMargins(context), QMarginsF());
+
+    // The explicit setter normalises too, and that normalised Level0 stays
+    // authoritative over an elevated context.
+    layer.setElevation(static_cast<Elevation>(6));
+    QCOMPARE(layer.elevation(), Elevation::Level0);
+    QCOMPARE(layer.shadowMargins(), QMarginsF());
+
+    context.elevation = Elevation::Level3;
+    QVERIFY(isFullyTransparent(renderLayer(layer, bounds, context)));
+    QCOMPARE(layer.shadowMargins(context), QMarginsF());
+}
+
+void TestLayer::stackIgnoresMutationDuringPaint()
+{
+    const Theme theme = Theme::baselineLight();
+    const QRectF bounds(20.0, 20.0, 120.0, 120.0);
+
+    SurfaceContext context{theme};
+
+    std::vector<QString> log;
+    LayerStack stack;
+    stack.add(std::make_unique<MutatingLayer>(&stack, &log));
+    stack.add(std::make_unique<RecordingLayer>(QStringLiteral("after"), &log));
+
+    QImage image = newImage();
+    QPainter painter(&image);
+    stack.paint(painter, bounds, context);
+    painter.end();
+
+    // The traversal survives the add/insert/clear and still reaches the layer
+    // above the mutator.
+    QVERIFY(log.size() == std::size_t(2));
+    QCOMPARE(log[0], QStringLiteral("mutating"));
+    QCOMPARE(log[1], QStringLiteral("after"));
+
+    // The refused mutations left the stack exactly as it was.
+    QVERIFY(stack.size() == std::size_t(2));
+}
+
+void TestLayer::stackIsolatesPaintExceptions()
+{
+    const Theme theme = Theme::baselineLight();
+    const QRectF bounds(20.0, 20.0, 120.0, 120.0);
+
+    SurfaceContext context{theme};
+    context.shape = Shape::medium();
+
+    LayerStack stack;
+    stack.add(std::make_unique<ThrowingLayer>());
+    stack.add(std::make_unique<BackgroundLayer>());
+
+    QImage image = newImage();
+    QPainter painter(&image);
+    stack.paint(painter, bounds, context);
+    painter.end();
+
+    // The failing stage is skipped; the stage after it still composites.
+    QVERIFY(alphaAt(image, 80, 80) > 0);
+
+    // The painting guard was reset, so the stack accepts mutations again.
+    stack.add(std::make_unique<ProbeLayer>(0, nullptr, false));
+    QVERIFY(stack.size() == std::size_t(3));
 }
 
 QTEST_MAIN(TestLayer)

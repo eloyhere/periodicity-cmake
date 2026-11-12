@@ -25,6 +25,8 @@
 #include <QList>
 #include <Qt>
 
+#include <exception>
+
 namespace md {
 
 class Linear : public ViewGroup
@@ -159,6 +161,20 @@ protected:
 
     void arrangeChildren(const QRectF& content) override
     {
+        // Placing a child calls its own measure()/arrange() hooks, which is
+        // user code: one throw must not unwind through Qt's frame.
+        try {
+            arrangeRun(content);
+        } catch (const std::exception& error) {
+            layout_detail::reportFailure("Linear::arrangeChildren", error.what());
+        } catch (...) {
+            layout_detail::reportFailure("Linear::arrangeChildren", nullptr);
+        }
+    }
+
+private:
+    void arrangeRun(const QRectF& content)
+    {
         const bool horizontal = orientation_ == Orientation::Horizontal;
         const bool rightToLeft = layoutDirection() == Qt::RightToLeft;
 
@@ -219,10 +235,12 @@ protected:
             layout_detail::physicalAlignment(layoutDirection(), gravity_);
 
         // Pass three: the main-axis slot of every child, in pixels. A weighted
-        // run distributes the *whole* axis (minus the gaps), and the cumulative
-        // rounding puts the final boundary exactly on the axis end: the sum of
-        // the slots plus the gaps equals extentMain, never one pixel less or
-        // more.
+        // run distributes the *whole* axis (minus the gaps) while it fits, and
+        // the cumulative rounding puts the final boundary exactly on the axis
+        // end: the sum of the slots plus the gaps equals extentMain, never one
+        // pixel less or more. A weight only takes a share of *positive* spare
+        // space, so a run whose natural children overflow the axis keeps every
+        // natural size and spills over instead of being compressed into it.
         QList<int> mainSlots;
         mainSlots.reserve(children.size());
         if (weightTotal > 0.0) {
@@ -235,28 +253,35 @@ protected:
                     target += spare * weight(children.at(index)) / weightTotal;
 
                 const int boundary = qRound(target);
-                mainSlots.append(qMax(0, boundary - previous));
+
+                // Cumulative rounding must never take a pixel off a child's
+                // measurement: a slot is at least the natural length.
+                mainSlots.append(qMax(qRound(naturals.at(index)), boundary - previous));
                 previous = boundary;
             }
 
-            // The run fills the axis: give the remainder to the last child that
-            // took a weight, so the slots add up to `allocatable` even when the
-            // cumulative rounding left a pixel behind.
+            // The run fills the axis: give the rounding remainder to the last
+            // child that took a weight, so the slots add up to `allocatable`.
+            // There is no shared spare to correct while the run overflows
+            // (spare is 0), so the fix-up is skipped there — it would otherwise
+            // crush one weighted child to make the other ones fit.
             int used = 0;
             for (int slot : mainSlots)
                 used += slot;
 
-            int remainder = allocatable - used;
-            for (int index = children.size() - 1; index >= 0 && remainder != 0; --index) {
-                if (weight(children.at(index)) <= 0.0)
-                    continue;
+            if (spare > 0.0) {
+                int remainder = allocatable - used;
+                for (int index = children.size() - 1; index >= 0 && remainder != 0; --index) {
+                    if (weight(children.at(index)) <= 0.0)
+                        continue;
 
-                const int adjusted = mainSlots.at(index) + remainder;
-                if (adjusted < 0)
-                    continue;
+                    const int adjusted = mainSlots.at(index) + remainder;
+                    if (adjusted < qRound(naturals.at(index)))
+                        continue;
 
-                mainSlots[index] = adjusted;
-                remainder = 0;
+                    mainSlots[index] = adjusted;
+                    remainder = 0;
+                }
             }
         } else {
             for (qreal natural : naturals)
@@ -298,7 +323,6 @@ protected:
         }
     }
 
-private:
     void invalidate()
     {
         updateGeometry();

@@ -17,6 +17,10 @@
 // There is no ordering rule and no balance rule here; the tree contributes
 // shape, traversal and the arity questions (height, fullness). Ordering would
 // be the business of a search variant built on the same node.
+//
+// Every traversal, measurement, copy and teardown is iterative, for the same
+// reason as in the binary trees: a chain of single-child nodes is a legal
+// shape of any depth, so no operation may recurse once per level.
 
 #pragma once
 
@@ -55,8 +59,19 @@ public:
     }
 
     MultiTree(MultiTree&&) noexcept = default;
-    MultiTree& operator=(MultiTree&&) noexcept = default;
-    ~MultiTree() = default;
+
+    // Clears the current contents through the iterative teardown rather than
+    // letting the defaulted move assignment release the old root recursively.
+    MultiTree& operator=(MultiTree&& other) noexcept
+    {
+        if (this != &other) {
+            clear();
+            root_ = std::move(other.root_);
+        }
+        return *this;
+    }
+
+    ~MultiTree() { clear(); }
 
     [[nodiscard]] bool empty() const noexcept { return root_ == nullptr; }
     [[nodiscard]] size_type size() const noexcept { return sizeOf(root_.get()); }
@@ -65,9 +80,30 @@ public:
     [[nodiscard]] node_type* root() noexcept { return root_.get(); }
     [[nodiscard]] const node_type* root() const noexcept { return root_.get(); }
 
-    void setRoot(std::unique_ptr<node_type> root) noexcept { root_ = std::move(root); }
+    void setRoot(std::unique_ptr<node_type> root) noexcept
+    {
+        clear();
+        root_ = std::move(root);
+    }
+
     [[nodiscard]] std::unique_ptr<node_type> releaseRoot() noexcept { return std::move(root_); }
-    void clear() noexcept { root_.reset(); }
+
+    // Removes every node. Children are moved onto an explicit pending stack
+    // before their parent is deleted, so neither a deep hierarchy nor a wide
+    // one recurses: O(n) time and O(nodes still pending) extra space.
+    void clear() noexcept
+    {
+        std::vector<std::unique_ptr<node_type>> pending;
+        if (root_ != nullptr)
+            pending.push_back(std::move(root_));
+        while (!pending.empty()) {
+            std::unique_ptr<node_type> node = std::move(pending.back());
+            pending.pop_back();
+            for (size_type index = 0; index < node->childCount; ++index)
+                pending.push_back(std::move(node->children[index]));
+            // `node` no longer owns a child, so its destructor is O(1).
+        }
+    }
 
     node_type& insertRoot(T value)
     {
@@ -76,15 +112,20 @@ public:
         return *root_;
     }
 
-    // Appends a child to `parent`. Precondition: the parent is not full.
-    node_type& appendChild(node_type* parent, T value)
+    // Appends a child to `parent` and returns it, or nullptr when `parent` is
+    // null or already at capacity. A full parent is a recoverable failure: the
+    // value is destroyed and the tree is unchanged, so the result must be
+    // checked before it is dereferenced.
+    node_type* appendChild(node_type* parent, T value)
     {
         assert(parent != nullptr && "appendChild needs a parent");
-        assert(!parent->isFull() && "parent has no free child slot");
+        if (parent == nullptr || parent->isFull())
+            return nullptr;
+
         auto child = std::make_unique<node_type>(std::move(value));
         node_type* raw = child.get();
-        parent->appendChild(std::move(child));
-        return *raw;
+        const size_type index = parent->appendChild(std::move(child));
+        return index < N ? raw : nullptr;
     }
 
     // Removes the child at `index`, shifting the later children down.
@@ -98,25 +139,36 @@ public:
 
     [[nodiscard]] static size_type sizeOf(const node_type* node) noexcept
     {
-        if (node == nullptr)
-            return 0;
-        size_type count = 1;
-        for (size_type index = 0; index < node->childCount; ++index)
-            count += sizeOf(node->child(index));
+        size_type count = 0;
+        std::vector<const node_type*> pending;
+        if (node != nullptr)
+            pending.push_back(node);
+        while (!pending.empty()) {
+            const node_type* current = pending.back();
+            pending.pop_back();
+            ++count;
+            for (size_type index = 0; index < current->childCount; ++index)
+                pending.push_back(current->children[index].get());
+        }
         return count;
     }
 
     [[nodiscard]] static int heightOf(const node_type* node) noexcept
     {
-        if (node == nullptr)
-            return 0;
         int tallest = 0;
-        for (size_type index = 0; index < node->childCount; ++index) {
-            const int childHeight = heightOf(node->child(index));
-            if (childHeight > tallest)
-                tallest = childHeight;
+        std::vector<std::pair<const node_type*, int>> pending;
+        if (node != nullptr)
+            pending.emplace_back(node, 1);
+        while (!pending.empty()) {
+            const std::pair<const node_type*, int> current = pending.back();
+            pending.pop_back();
+            if (current.second > tallest)
+                tallest = current.second;
+            for (size_type index = 0; index < current.first->childCount; ++index)
+                pending.emplace_back(current.first->children[index].get(),
+                                     current.second + 1);
         }
-        return 1 + tallest;
+        return tallest;
     }
 
     // ---- Traversal --------------------------------------------------------
@@ -166,33 +218,56 @@ private:
     {
         if (node == nullptr)
             return nullptr;
+
         auto copy = std::make_unique<node_type>(node->value);
-        for (size_type index = 0; index < node->childCount; ++index) {
-            std::unique_ptr<node_type> child = cloneSubtree(node->child(index));
-            copy->children[index] = std::move(child);
+        std::vector<std::pair<const node_type*, node_type*>> pending;
+        pending.emplace_back(node, copy.get());
+        while (!pending.empty()) {
+            const std::pair<const node_type*, node_type*> current = pending.back();
+            pending.pop_back();
+            const node_type* source = current.first;
+            node_type* target = current.second;
+            target->childCount = source->childCount;
+            for (size_type index = 0; index < source->childCount; ++index) {
+                target->children[index] =
+                    std::make_unique<node_type>(source->children[index]->value);
+                pending.emplace_back(source->children[index].get(),
+                                     target->children[index].get());
+            }
         }
-        copy->childCount = node->childCount;
         return copy;
     }
 
     template <class Function>
     static void preorder(const node_type* node, Function& function)
     {
-        if (node == nullptr)
-            return;
-        function(node->value);
-        for (size_type index = 0; index < node->childCount; ++index)
-            preorder(node->child(index), function);
+        std::vector<const node_type*> pending;
+        if (node != nullptr)
+            pending.push_back(node);
+        while (!pending.empty()) {
+            const node_type* current = pending.back();
+            pending.pop_back();
+            function(current->value);
+            // Push in reverse so the first child is popped (and visited) first.
+            for (size_type index = current->childCount; index > 0; --index)
+                pending.push_back(current->children[index - 1].get());
+        }
     }
 
     template <class Function>
     static void preorderNodes(const node_type* node, int depth, Function& function)
     {
-        if (node == nullptr)
-            return;
-        function(*node, depth);
-        for (size_type index = 0; index < node->childCount; ++index)
-            preorderNodes(node->child(index), depth + 1, function);
+        std::vector<std::pair<const node_type*, int>> pending;
+        if (node != nullptr)
+            pending.emplace_back(node, depth);
+        while (!pending.empty()) {
+            const std::pair<const node_type*, int> current = pending.back();
+            pending.pop_back();
+            function(*current.first, current.second);
+            for (size_type index = current.first->childCount; index > 0; --index)
+                pending.emplace_back(current.first->children[index - 1].get(),
+                                     current.second + 1);
+        }
     }
 
     template <class Function>
@@ -207,44 +282,64 @@ private:
             pending.pop();
             function(current->value);
             for (size_type index = 0; index < current->childCount; ++index)
-                pending.push(current->child(index));
+                pending.push(current->children[index].get());
         }
     }
 
     static size_type countLeaves(const node_type* node) noexcept
     {
-        if (node == nullptr)
-            return 0;
-        if (node->childCount == 0)
-            return 1;
-        size_type count = 0;
-        for (size_type index = 0; index < node->childCount; ++index)
-            count += countLeaves(node->child(index));
-        return count;
+        size_type leaves = 0;
+        std::vector<const node_type*> pending;
+        if (node != nullptr)
+            pending.push_back(node);
+        while (!pending.empty()) {
+            const node_type* current = pending.back();
+            pending.pop_back();
+            if (current->childCount == 0) {
+                ++leaves;
+                continue;
+            }
+            for (size_type index = 0; index < current->childCount; ++index)
+                pending.push_back(current->children[index].get());
+        }
+        return leaves;
     }
 
     static bool isSaturatedNode(const node_type* node) noexcept
     {
-        if (node == nullptr)
-            return true;
-        if (node->childCount != 0 && node->childCount != N)
-            return false;
-        for (size_type index = 0; index < node->childCount; ++index) {
-            if (!isSaturatedNode(node->child(index)))
+        std::vector<const node_type*> pending;
+        if (node != nullptr)
+            pending.push_back(node);
+        while (!pending.empty()) {
+            const node_type* current = pending.back();
+            pending.pop_back();
+            if (current->childCount != 0 && current->childCount != N)
                 return false;
+            for (size_type index = 0; index < current->childCount; ++index)
+                pending.push_back(current->children[index].get());
         }
         return true;
     }
 
     static bool equalsNode(const node_type* lhs, const node_type* rhs) noexcept
     {
-        if (lhs == nullptr || rhs == nullptr)
-            return lhs == rhs;
-        if (!(lhs->value == rhs->value) || lhs->childCount != rhs->childCount)
-            return false;
-        for (size_type index = 0; index < lhs->childCount; ++index) {
-            if (!equalsNode(lhs->child(index), rhs->child(index)))
+        std::vector<std::pair<const node_type*, const node_type*>> pending;
+        pending.emplace_back(lhs, rhs);
+        while (!pending.empty()) {
+            const std::pair<const node_type*, const node_type*> current = pending.back();
+            pending.pop_back();
+            const node_type* left = current.first;
+            const node_type* right = current.second;
+            if (left == nullptr || right == nullptr) {
+                if (left != right)
+                    return false;
+                continue;
+            }
+            if (!(left->value == right->value) || left->childCount != right->childCount)
                 return false;
+            for (size_type index = 0; index < left->childCount; ++index)
+                pending.emplace_back(left->children[index].get(),
+                                     right->children[index].get());
         }
         return true;
     }

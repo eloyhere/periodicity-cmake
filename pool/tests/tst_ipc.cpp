@@ -20,9 +20,12 @@
 #include <QMutexLocker>
 #include <QTemporaryDir>
 
+#include <atomic>
+#include <cstddef>
 #include <cstdint>
 #include <memory>
 #include <optional>
+#include <thread>
 
 namespace ipc = md::pool::ipc;
 
@@ -78,9 +81,13 @@ class TestIpc : public QObject
 private slots:
     void frameSurvivesSplitReads();
     void frameRejectsOversizedLength();
+    void frameEncoderRejectsOversizedPayload();
     void sharedRingRoundTripInProcess();
+    void sharedRingReportsEffectiveCapacity();
+    void sharedRingUsedStaysBounded();
     void childEchoRoundTrip();
     void childStreamsIntoSharedRing();
+    void childEofMidFrameIsSignalled();
 };
 
 void TestIpc::frameSurvivesSplitReads()
@@ -138,6 +145,27 @@ void TestIpc::frameRejectsOversizedLength()
     QVERIFY(!decoder.hasError());
 }
 
+void TestIpc::frameEncoderRejectsOversizedPayload()
+{
+    // A payload at the limit still encodes: the decoder accepts exactly
+    // kMaxFrameSize bytes.
+    const QByteArray atLimit(static_cast<qsizetype>(ipc::kMaxFrameSize), 'x');
+    const QByteArray frame = ipc::encodeFrame(atLimit);
+    QVERIFY(!frame.isNull());
+    QCOMPARE(frame.size(),
+             static_cast<qsizetype>(ipc::kMaxFrameSize + ipc::kFrameHeaderSize));
+
+    // One byte over must not produce a frame the decoder would reject on
+    // arrival; encodeFrame reports the refusal with a null QByteArray.
+    const QByteArray overLimit(static_cast<qsizetype>(ipc::kMaxFrameSize + 1), 'x');
+    QVERIFY(ipc::encodeFrame(overLimit).isNull());
+
+    // An empty payload is a valid empty frame, not a failure.
+    const QByteArray empty = ipc::encodeFrame(QByteArrayView());
+    QVERIFY(!empty.isNull());
+    QCOMPARE(empty.size(), static_cast<qsizetype>(ipc::kFrameHeaderSize));
+}
+
 void TestIpc::sharedRingRoundTripInProcess()
 {
     const QString name = ipc::SharedRingBuffer::uniqueName(QStringLiteral("unit"));
@@ -182,6 +210,78 @@ void TestIpc::sharedRingRoundTripInProcess()
     QVERIFY(pushed > 0);
     QVERIFY(writer->dropped() >= 1);
     QVERIFY(writer->used() <= writer->capacity());
+}
+
+void TestIpc::sharedRingReportsEffectiveCapacity()
+{
+    const QString name = ipc::SharedRingBuffer::uniqueName(QStringLiteral("capacity"));
+    QString error;
+
+    // 5000 requests round up to 8192; the creator is told what it actually got
+    // instead of having to re-derive the rounding rule.
+    std::size_t effective = 0;
+    std::unique_ptr<ipc::SharedRingBuffer> writer =
+        ipc::SharedRingBuffer::create(name, 5000, &error, &effective);
+    QVERIFY2(writer != nullptr, qPrintable(error));
+    QCOMPARE(effective, std::size_t(8192));
+    QCOMPARE(writer->capacity(), effective);
+
+    // The header carries the layout, so a consumer does not need the creator's
+    // (rounded) byte count.
+    std::unique_ptr<ipc::SharedRingBuffer> reader =
+        ipc::SharedRingBuffer::open(name, &error);
+    QVERIFY2(reader != nullptr, qPrintable(error));
+    QCOMPARE(reader->capacity(), effective);
+
+    // The exact-capacity overload still rejects a mismatch.
+    QVERIFY(ipc::SharedRingBuffer::open(name, 4096, &error) == nullptr);
+
+    QVERIFY(writer->push(QByteArrayLiteral("hello")));
+    const std::optional<QByteArray> popped = reader->pop();
+    QVERIFY(popped.has_value());
+    QCOMPARE(*popped, QByteArrayLiteral("hello"));
+}
+
+void TestIpc::sharedRingUsedStaysBounded()
+{
+    constexpr int kFrames = 5000;
+
+    const QString name = ipc::SharedRingBuffer::uniqueName(QStringLiteral("used"));
+    QString error;
+
+    std::unique_ptr<ipc::SharedRingBuffer> writer =
+        ipc::SharedRingBuffer::create(name, 4096, &error);
+    QVERIFY2(writer != nullptr, qPrintable(error));
+    std::unique_ptr<ipc::SharedRingBuffer> reader =
+        ipc::SharedRingBuffer::open(name, &error);
+    QVERIFY2(reader != nullptr, qPrintable(error));
+
+    std::atomic<bool> underflowed{false};
+
+    std::thread producer([&writer, &underflowed] {
+        for (int frame = 0; frame < kFrames;) {
+            if (writer->push(QByteArrayLiteral("x")))
+                ++frame;
+            if (writer->used() > writer->capacity())
+                underflowed.store(true, std::memory_order_relaxed);
+        }
+    });
+
+    for (int received = 0; received < kFrames;) {
+        if (reader->pop().has_value()) {
+            ++received;
+        } else {
+            std::this_thread::yield();
+        }
+        // used() loads tail before head now; the old order wrapped to ~2^64
+        // whenever the consumer drained between the two loads.
+        if (reader->used() > reader->capacity())
+            underflowed.store(true, std::memory_order_relaxed);
+    }
+
+    producer.join();
+    QVERIFY(!underflowed.load(std::memory_order_relaxed));
+    QCOMPARE(reader->used(), std::size_t(0));
 }
 
 void TestIpc::childEchoRoundTrip()
@@ -250,6 +350,50 @@ void TestIpc::childStreamsIntoSharedRing()
 
     child->terminate();
     QVERIFY(!child->isRunning());
+}
+
+void TestIpc::childEofMidFrameIsSignalled()
+{
+    // A child that writes three bytes — less than one length header — and
+    // exits. The decoder is left holding a truncated frame; only the
+    // end-of-stream signal lets a consumer notice and give up instead of
+    // waiting for bytes that will never arrive.
+    ipc::ChildProcess::Options options;
+#ifdef Q_OS_WIN
+    options.program = QStringLiteral("cmd.exe");
+    options.arguments = {QStringLiteral("/c"), QStringLiteral("<nul set /p =abc")};
+#else
+    options.program = QStringLiteral("/bin/sh");
+    options.arguments = {QStringLiteral("-c"), QStringLiteral("printf abc")};
+#endif
+
+    ipc::FrameDecoder decoder;
+    std::atomic<bool> eof{false};
+    std::atomic<std::size_t> truncatedAtEof{0};
+
+    QString spawnError;
+    std::unique_ptr<ipc::ChildProcess> child = ipc::ChildProcess::spawn(
+        options,
+        [&decoder](QByteArrayView bytes) { decoder.append(bytes); },
+        &spawnError,
+        [&decoder, &eof, &truncatedAtEof] {
+            // Both handlers run on the reader thread, so the decoder needs no
+            // lock; the main thread only looks after `eof` is published.
+            truncatedAtEof.store(decoder.buffered(), std::memory_order_relaxed);
+            decoder.reset();
+            eof.store(true, std::memory_order_release);
+        });
+
+    QVERIFY2(child != nullptr, qPrintable(spawnError));
+    QTRY_VERIFY_WITH_TIMEOUT(eof.load(std::memory_order_acquire), 5000);
+
+    QCOMPARE(truncatedAtEof.load(std::memory_order_relaxed), std::size_t(3));
+    QCOMPARE(decoder.buffered(), std::size_t(0));
+    QVERIFY(!decoder.hasError());
+
+    // The child is gone; draining its status must still report the exit code
+    // (on POSIX, a second waitpid() after isRunning() reaped it used to fail).
+    QVERIFY(child->waitForFinished(5000) >= 0);
 }
 
 QTEST_GUILESS_MAIN(TestIpc)

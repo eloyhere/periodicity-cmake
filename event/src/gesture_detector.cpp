@@ -1,8 +1,9 @@
 // Periodicity — gesture recognition implementation (framework.md §5.10).
 //
-// All timing comes from PointerEvent::timestamp(); the detector never reads a
+// All timing comes from the event timestamps; the detector never reads a
 // clock. A long press is therefore reported lazily, from the next move or
-// release, as documented in gesture_detector.h.
+// release, and a lost press is only noticed when the next event arrives. Both
+// rules are documented in gesture_detector.h.
 
 #include <md/event/gesture_detector.h>
 
@@ -38,27 +39,89 @@ GestureDetector::GestureDetector(Callbacks callbacks, GestureConfig config, Dens
 {
 }
 
-bool GestureDetector::handle(const PointerEvent& event)
+bool GestureDetector::handle(const Event& event)
 {
-    switch (event.type()) {
-    case EventType::PointerDown:
-        begin(event);
-        return true;
-    case EventType::PointerMove:
-        return handleMove(event);
-    case EventType::PointerUp:
-        return handleUp(event);
-    default:
+    try {
+        switch (event.type()) {
+        case EventType::PointerDown:
+            return handleDown(event);
+        case EventType::PointerMove:
+            return handleMoveEvent(event);
+        case EventType::PointerUp:
+            return handleUpEvent(event);
+        case EventType::PointerLeave:
+        case EventType::FocusOut:
+            // Losing the pointer or the focus abandons the gesture; the
+            // notification itself is not part of it and is not consumed.
+            if (m_pressed) {
+                cancel(event);
+            }
+            return false;
+        default:
+            return false;
+        }
+    } catch (...) {
+        // A throwing callback must not leave a half-updated gesture behind.
+        reset();
         return false;
     }
 }
 
-bool GestureDetector::handleMove(const PointerEvent& event)
+bool GestureDetector::handleDown(const Event& event)
 {
-    if (!m_pressed) {
+    const auto* pointer = dynamic_cast<const PointerEvent*>(&event);
+    if (pointer == nullptr) {
         return false;
     }
 
+    if (m_pressed) {
+        if (!isStale(pointer->timestamp())) {
+            // Single-pointer detector: a second press must not overwrite the
+            // press position or the drag state of the gesture in progress.
+            // Consume it so the caller does not start a competing gesture.
+            return true;
+        }
+        cancel(event); // A lost release: report it before starting again.
+    }
+
+    begin(*pointer);
+    return true;
+}
+
+bool GestureDetector::handleMoveEvent(const Event& event)
+{
+    const auto* pointer = dynamic_cast<const PointerEvent*>(&event);
+    if (pointer == nullptr || !m_pressed) {
+        return false;
+    }
+
+    if (isStale(pointer->timestamp())) {
+        cancel(event);
+        return false; // A hover move, not the tail of the lost gesture.
+    }
+
+    m_lastTimestamp = pointer->timestamp();
+    return handleMove(*pointer);
+}
+
+bool GestureDetector::handleUpEvent(const Event& event)
+{
+    const auto* pointer = dynamic_cast<const PointerEvent*>(&event);
+    if (pointer == nullptr || !m_pressed) {
+        return false;
+    }
+
+    if (isStale(pointer->timestamp())) {
+        cancel(event);
+        return false;
+    }
+
+    m_lastTimestamp = pointer->timestamp();
+    return handleUp(*pointer);
+}
+
+bool GestureDetector::handleMove(const PointerEvent& event)
+{
     const QPointF delta = event.localPosition() - m_pressPosition;
 
     if (m_dragging) {
@@ -99,10 +162,6 @@ bool GestureDetector::handleMove(const PointerEvent& event)
 
 bool GestureDetector::handleUp(const PointerEvent& event)
 {
-    if (!m_pressed) {
-        return false;
-    }
-
     const QPointF delta = event.localPosition() - m_pressPosition;
 
     if (m_dragging) {
@@ -158,6 +217,7 @@ void GestureDetector::begin(const PointerEvent& event)
     m_longPressReported = false;
     m_pressPosition = event.localPosition();
     m_pressTimestamp = event.timestamp();
+    m_lastTimestamp = event.timestamp();
 }
 
 void GestureDetector::reportLongPress(const PointerEvent& event)
@@ -168,6 +228,28 @@ void GestureDetector::reportLongPress(const PointerEvent& event)
     }
 }
 
+void GestureDetector::cancel(const Event& event)
+{
+    const bool wasPressed = m_pressed;
+    // Clear the state before the callback so a callback may feed the detector
+    // again without observing a half-cancelled gesture.
+    reset();
+    if (wasPressed && m_callbacks.onCancel) {
+        m_callbacks.onCancel(event);
+    }
+}
+
+bool GestureDetector::isStale(std::chrono::milliseconds now) const noexcept
+{
+    if (!m_pressed) {
+        return false;
+    }
+    if (m_config.stalePressTimeout <= std::chrono::milliseconds{0}) {
+        return false; // Disabled.
+    }
+    return elapsedSince(m_lastTimestamp, now) >= m_config.stalePressTimeout;
+}
+
 void GestureDetector::reset()
 {
     m_pressed = false;
@@ -175,6 +257,7 @@ void GestureDetector::reset()
     m_longPressReported = false;
     m_pressPosition = QPointF();
     m_pressTimestamp = std::chrono::milliseconds{};
+    m_lastTimestamp = std::chrono::milliseconds{};
 }
 
 bool GestureDetector::isDragging() const noexcept

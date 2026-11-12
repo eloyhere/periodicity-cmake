@@ -28,6 +28,8 @@ private slots:
     void forestAggregates();
     void siblingForestBuildsNaryTrees();
     void siblingForestRemovesSubtrees();
+    void siblingForestRejectsMissingSubtree();
+    void siblingForestSurvivesDeepChain();
     void siblingForestCopies();
     void disjointSetMerges();
     void disjointSetGrows();
@@ -45,6 +47,10 @@ void TestForest::forestCollectsTrees()
     QCOMPARE(forest.treeCount(), std::size_t(2));
     QCOMPARE(forest.tree(0).root()->value, 1);
     QCOMPARE(forest.tree(1).root()->value, 4);
+
+    // The const overload accepts the last valid index as well.
+    const Forest<int>& view = forest;
+    QCOMPARE(view.tree(forest.treeCount() - 1).root()->value, 4);
 
     std::vector<int> values;
     forest.forEachPreorder([&values](int value) { values.push_back(value); });
@@ -146,6 +152,48 @@ void TestForest::siblingForestRemovesSubtrees()
     auto& added = forest.addRoot(9);
     QVERIFY(&added == forest.root(0));
     QCOMPARE(added.value, 9);
+}
+
+void TestForest::siblingForestRejectsMissingSubtree()
+{
+    SiblingForest<int> forest;
+    QVERIFY(forest.removeSubtree(nullptr) == nullptr);
+    QVERIFY(forest.empty());
+
+    auto& root = forest.addRoot(1);
+    auto removed = forest.removeSubtree(&root);
+    QVERIFY(removed != nullptr);
+    QCOMPARE(removed->value, 1);
+    QVERIFY(forest.empty());
+}
+
+void TestForest::siblingForestSurvivesDeepChain()
+{
+    // Both legal shapes may be long: a hierarchy whose every node has a single
+    // child, and a root chain of independent trees. size(), height(), traversal
+    // and teardown must not recurse once per level or per sibling.
+    constexpr int chainLength = 100000;
+
+    SiblingForest<int> chain;
+    auto& chainRoot = chain.addRoot(0);
+    SiblingForest<int>::node_type* parent = &chainRoot;
+    for (int value = 1; value < chainLength; ++value)
+        parent = &chain.appendChild(parent, value);
+
+    QCOMPARE(chain.rootCount(), std::size_t(1));
+    QCOMPARE(chain.size(), std::size_t(chainLength));
+    QCOMPARE(chain.height(), chainLength);
+    const std::vector<int> preorder = chain.toPreorder();
+    QCOMPARE(preorder.size(), std::size_t(chainLength));
+    QCOMPARE(preorder.front(), 0);
+    QCOMPARE(preorder.back(), chainLength - 1);
+
+    SiblingForest<int> roots;
+    for (int value = 0; value < chainLength; ++value)
+        roots.addRoot(value);
+    QCOMPARE(roots.rootCount(), std::size_t(chainLength));
+    QCOMPARE(roots.size(), std::size_t(chainLength));
+    QCOMPARE(roots.height(), 1);
 }
 
 void TestForest::siblingForestCopies()

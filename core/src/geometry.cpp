@@ -11,11 +11,14 @@ namespace md {
 
 namespace {
 
-// Negative radii are meaningless and become zero. Positive radii are capped
-// at `limit`, the largest radius the rectangle can carry on its shorter side.
+// Negative and non-finite radii are meaningless and become zero. Positive
+// radii are capped at `limit`, the largest radius the rectangle can carry on
+// its shorter side. The test is inverted so NaN — for which every comparison
+// is false — degenerates to a square corner instead of falling through to the
+// clamp and becoming the maximum radius. Infinity is positive, so it clamps.
 constexpr qreal clampRadius(qreal radius, qreal limit) noexcept
 {
-    if (radius <= 0.0)
+    if (!(radius > 0.0))
         return 0.0;
     return radius < limit ? radius : limit;
 }
@@ -30,6 +33,15 @@ QPainterPath CornerRadii::toPath(const QRectF& bounds) const
     // keeps the result predictable for degenerate sizes.
     if (bounds.isEmpty())
         return path;
+
+    // QRectF::isEmpty() only tests `width() <= 0 || height() <= 0`, which is
+    // false for NaN and for an infinite extent. Without this guard every
+    // radius would clamp to a non-finite limit and the path would contain NaN
+    // or infinite points; a non-finite rectangle is a no-op instead.
+    if (!qIsFinite(bounds.x()) || !qIsFinite(bounds.y())
+        || !qIsFinite(bounds.width()) || !qIsFinite(bounds.height())) {
+        return path;
+    }
 
     const qreal limit = std::min(bounds.width(), bounds.height()) / 2.0;
     const qreal startTop = clampRadius(topStart, limit);

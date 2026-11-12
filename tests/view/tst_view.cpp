@@ -7,6 +7,7 @@
 // straight into the EventTarget or sent with QApplication::sendEvent, so the
 // assertions do not depend on window activation.
 
+#include <QAccessible>
 #include <QApplication>
 #include <QColor>
 #include <QImage>
@@ -14,8 +15,10 @@
 #include <QList>
 #include <QMouseEvent>
 #include <QPainter>
+#include <QPointer>
 #include <QRect>
 #include <QRectF>
+#include <QResizeEvent>
 #include <QSize>
 #include <QSizeF>
 #include <QTest>
@@ -28,12 +31,16 @@
 #include <md/event/wheel_event.h>
 #include <md/schedule/task_queue.h>
 #include <md/theme/theme.h>
+#include <md/theme/theme_scope.h>
 #include <md/tokens/color_scheme.h>
 #include <md/tokens/elevation.h>
 #include <md/tokens/shape.h>
+#include <md/view/accessible.h>
+#include <md/view/error_guard.h>
 #include <md/view/view.h>
 #include <md/view/view_group.h>
 
+#include <stdexcept>
 #include <utility>
 
 namespace {
@@ -181,6 +188,17 @@ private slots:
     void groupTransferRemovesOldMembership();
     void groupPaintsSecondChildOverFirst();
     void parentTargetAndPointMapping();
+
+    // Guarded entry points and the issue-regression set.
+    void guardCatchesAndReports();
+    void throwingPaintContentKeepsTheWidgetPainting();
+    void childDeletedDuringPaintIsSkipped();
+    void hideClearsInteractionState();
+    void contentRectOverrideDrivesArrangement();
+    void arrangeArrangesOncePerCall();
+    void hintQueriesPreserveMeasurement();
+    void themeInstalledDuringPaintIsDeferred();
+    void disabledViewIsNotAccessibleInvalid();
 };
 
 void TestView::initTestCase()
@@ -550,6 +568,373 @@ void TestView::parentTargetAndPointMapping()
 
     // Mapping from itself is the identity.
     QCOMPARE(child.mapPointFrom(child, QPointF(7.0, 8.0)), QPointF(7.0, 8.0));
+}
+
+namespace {
+
+// A View whose paintContent() throws on demand. It records nothing else: the
+// point is that the framework, not the test, survives the exception.
+class ThrowingView : public md::View
+{
+public:
+    explicit ThrowingView(QWidget* parent = nullptr)
+        : View(parent)
+    {
+    }
+
+    void throwOnNextPaint() { throws_ = true; }
+
+protected:
+    void measureOverride(md::MeasureSpec width, md::MeasureSpec height) override
+    {
+        setMeasuredSize(QSizeF(width.resolve(kContentWidth),
+                               height.resolve(kContentHeight)));
+    }
+
+    void paintContent(QPainter& painter, const QRectF& content) override
+    {
+        if (throws_) {
+            throws_ = false;
+            throw std::runtime_error("paintContent boom");
+        }
+        painter.fillRect(content, QColor(Qt::green));
+    }
+
+private:
+    bool throws_ = false;
+};
+
+// A View that deletes a sibling from its own paintContent(), i.e. while the
+// parent's paintChildren() loop is rendering the children.
+class SiblingDeletingView : public md::View
+{
+public:
+    explicit SiblingDeletingView(QWidget* parent = nullptr)
+        : View(parent)
+    {
+    }
+
+    void setVictim(md::View* victim) { victim_ = victim; }
+
+protected:
+    void measureOverride(md::MeasureSpec width, md::MeasureSpec height) override
+    {
+        setMeasuredSize(QSizeF(width.resolve(60.0), height.resolve(40.0)));
+    }
+
+    void paintContent(QPainter& painter, const QRectF& content) override
+    {
+        painter.fillRect(content, QColor(Qt::red));
+
+        if (md::View* victim = victim_.data()) {
+            victim_ = nullptr;
+            delete victim;
+        }
+    }
+
+private:
+    QPointer<md::View> victim_;
+};
+
+// A leaf with a 4 px content inset. It only compiles while contentRect() is
+// virtual, and it records the rectangle the base class hands to
+// arrangeOverride().
+class InsetView : public BoxView
+{
+public:
+    [[nodiscard]] QRectF lastArrangedContent() const noexcept
+    {
+        return lastArrangedContent_;
+    }
+
+    // Public view of the protected override, for the assertion below.
+    [[nodiscard]] QRectF exposedContentRect() const { return contentRect(); }
+
+protected:
+    [[nodiscard]] QRectF contentRect() const override
+    {
+        return QRectF(rect()).adjusted(4.0, 4.0, -4.0, -4.0);
+    }
+
+    void arrangeOverride(const QRectF& content) override
+    {
+        lastArrangedContent_ = content;
+    }
+
+private:
+    QRectF lastArrangedContent_;
+};
+
+// Counts arrangeOverride() passes, so one arrange() call must place the content
+// exactly once even when setGeometry() emits a resize.
+class CountingView : public BoxView
+{
+public:
+    [[nodiscard]] int arrangeCount() const noexcept { return arrangeCount_; }
+
+protected:
+    void arrangeOverride(const QRectF& content) override
+    {
+        Q_UNUSED(content);
+        ++arrangeCount_;
+    }
+
+private:
+    int arrangeCount_ = 0;
+};
+
+// Installs a ThemeScope from inside paintContent(): the store-driven theme
+// change that frees the Theme the pass resolved at its start.
+class ThemeInstallingView : public md::View
+{
+public:
+    explicit ThemeInstallingView(QWidget* parent = nullptr)
+        : View(parent)
+    {
+    }
+
+    void installOnNextPaint() { installNext_ = true; }
+
+protected:
+    void measureOverride(md::MeasureSpec width, md::MeasureSpec height) override
+    {
+        setMeasuredSize(QSizeF(width.resolve(kContentWidth),
+                               height.resolve(kContentHeight)));
+    }
+
+    void paintContent(QPainter&, const QRectF&) override
+    {
+        if (!installNext_)
+            return;
+
+        installNext_ = false;
+        md::ThemeScope::install(this, md::Theme::baselineDark());
+    }
+
+private:
+    bool installNext_ = false;
+};
+
+} // namespace
+
+void TestView::guardCatchesAndReports()
+{
+    int calls = 0;
+    QVERIFY(md::view::guard("test::success", [&calls] { ++calls; }));
+    QCOMPARE(calls, 1);
+
+    // Both catch clauses cross the boundary as false, and a null site name
+    // must not turn into a crash.
+    QVERIFY(!md::view::guard("test::std", [] { throw std::runtime_error("boom"); }));
+    QVERIFY(!md::view::guard("test::anything", [] { throw 42; }));
+    QVERIFY(!md::view::guard(nullptr, [] { throw 42; }));
+
+    md::view::GuardReport report;
+    QVERIFY(!md::view::guard(
+        "test::first", 1u, report, [] { throw std::runtime_error("first"); }));
+    QCOMPARE(report.reportedSites, 1u);
+    QVERIFY(report.lastError.contains(QStringLiteral("first")));
+
+    // A second failure at the same site claims no new bit but still refreshes
+    // the diagnostic; another site claims its own bit.
+    QVERIFY(!md::view::guard(
+        "test::first", 1u, report, [] { throw std::runtime_error("second"); }));
+    QCOMPARE(report.reportedSites, 1u);
+    QVERIFY(report.lastError.contains(QStringLiteral("second")));
+
+    QVERIFY(!md::view::guard(
+        "test::second", 2u, report, [] { throw std::runtime_error("third"); }));
+    QCOMPARE(report.reportedSites, 3u);
+}
+
+void TestView::throwingPaintContentKeepsTheWidgetPainting()
+{
+    ThrowingView view;
+    view.resize(120, 40);
+    showWidget(view);
+
+    const QColor surface = md::Theme::baselineLight().colours().surface;
+    QVERIFY(view.lastError().isEmpty());
+
+    view.throwOnNextPaint();
+    const QImage failed = view.grab().toImage();
+    QVERIFY(!failed.isNull());
+
+    // The background stage ran before the content hook threw: the centre is the
+    // plain surface, not the green content fill, and the failure is recorded.
+    QCOMPARE(pixelAt(failed, QPointF(60.0, 20.0)).rgb(), surface.rgb());
+    QVERIFY(!view.lastError().isEmpty());
+    QVERIFY(view.lastError().contains(QStringLiteral("View::paintEvent")));
+    QVERIFY(view.lastError().contains(QStringLiteral("paintContent boom")));
+
+    // The next paint is a complete frame again.
+    const QImage recovered = view.grab().toImage();
+    QCOMPARE(pixelAt(recovered, QPointF(60.0, 20.0)).rgb(), QColor(Qt::green).rgb());
+}
+
+void TestView::childDeletedDuringPaintIsSkipped()
+{
+    BoxGroup group;
+    SiblingDeletingView deleter;
+    auto* victim = new BoxView;
+    victim->setFillColour(QColor(Qt::blue));
+
+    group.addView(&deleter);
+    group.addView(victim);
+
+    group.resize(200, 100);
+    group.measure(md::MeasureSpec::exactly(200.0), md::MeasureSpec::exactly(100.0));
+    group.arrange(QRect(0, 0, 200, 100));
+    showWidget(group);
+
+    QCOMPARE(group.views().size(), qsizetype(2));
+
+    deleter.setVictim(victim);
+
+    // The first child's paintContent deletes the second while paintChildren()
+    // walks its paint order; the snapshot must skip the dead entry instead of
+    // dereferencing freed memory.
+    const QImage image = group.grab().toImage();
+    QVERIFY(!image.isNull());
+    QCOMPARE(group.views().size(), qsizetype(1));
+    QVERIFY(group.views().first() == &deleter);
+    QVERIFY(group.lastError().isEmpty());
+    QCOMPARE(pixelAt(image, QPointF(30.0, 20.0)).rgb(), QColor(Qt::red).rgb());
+
+    // The group stays paintable after the deletion.
+    const QImage again = group.grab().toImage();
+    QVERIFY(!again.isNull());
+    QCOMPARE(pixelAt(again, QPointF(10.0, 10.0)).rgb(), QColor(Qt::red).rgb());
+}
+
+void TestView::hideClearsInteractionState()
+{
+    BoxView view;
+    view.resize(120, 40);
+    showWidget(view);
+
+    md::PointerEvent enter(md::EventType::PointerEnter, QPointF(10.0, 10.0),
+                           QPointF(10.0, 10.0), Qt::NoButton, Qt::NoButton,
+                           Qt::NoModifier);
+    QVERIFY(view.onEvent(enter));
+
+    md::PointerEvent press(md::EventType::PointerDown, QPointF(10.0, 10.0),
+                           QPointF(10.0, 10.0), Qt::LeftButton, Qt::LeftButton,
+                           Qt::NoModifier);
+    QVERIFY(view.onEvent(press));
+    view.setState(md::ViewState::Dragged, true);
+
+    QVERIFY(view.state().testFlag(md::ViewState::Hovered));
+    QVERIFY(view.state().testFlag(md::ViewState::Pressed));
+    QVERIFY(view.state().testFlag(md::ViewState::Dragged));
+
+    view.hide();
+    QCOMPARE(view.lifecycleState(), md::LifecycleState::Hidden);
+    QVERIFY(!view.state().testFlag(md::ViewState::Hovered));
+    QVERIFY(!view.state().testFlag(md::ViewState::Pressed));
+    QVERIFY(!view.state().testFlag(md::ViewState::Dragged));
+
+    // Showing again re-enables the feedback path but must not resurrect the
+    // interaction state of the previous visibility.
+    view.show();
+    QTest::qWait(0);
+    QCOMPARE(view.lifecycleState(), md::LifecycleState::Shown);
+    QVERIFY(!view.state().testFlag(md::ViewState::Pressed));
+    QVERIFY(view.isInteractionFeedbackEnabled());
+}
+
+void TestView::contentRectOverrideDrivesArrangement()
+{
+    InsetView view;
+    view.arrange(QRect(0, 0, 120, 40));
+
+    QCOMPARE(view.exposedContentRect(), QRectF(4.0, 4.0, 112.0, 32.0));
+    QCOMPARE(view.lastArrangedContent(), QRectF(4.0, 4.0, 112.0, 32.0));
+}
+
+void TestView::arrangeArrangesOncePerCall()
+{
+    CountingView view;
+    view.resize(120, 40);
+    showWidget(view);
+    view.measure(md::MeasureSpec::exactly(200.0), md::MeasureSpec::exactly(80.0));
+
+    // show() may already have arranged once; count from here.
+    const int start = view.arrangeCount();
+
+    // A changing rectangle runs arrangeOverride() once: setGeometry() emits a
+    // resize, and the resize path must not arrange a second time.
+    view.arrange(QRect(10, 20, 200, 80));
+    QCOMPARE(view.arrangeCount(), start + 1);
+
+    // An unchanged rectangle still arranges, exactly once.
+    view.arrange(QRect(10, 20, 200, 80));
+    QCOMPARE(view.arrangeCount(), start + 2);
+
+    // A resize that Qt delivers directly (not through arrange()) still
+    // arranges, exactly once.
+    QResizeEvent resizeEvent(QSize(180, 70), QSize(200, 80));
+    QApplication::sendEvent(&view, &resizeEvent);
+    QCOMPARE(view.arrangeCount(), start + 3);
+}
+
+void TestView::hintQueriesPreserveMeasurement()
+{
+    BoxView view;
+    view.measure(md::MeasureSpec::exactly(300.0), md::MeasureSpec::exactly(100.0));
+    QCOMPARE(view.measuredSize(), QSizeF(300.0, 100.0));
+
+    // Qt's geometry questions are answered, but they do not overwrite the size
+    // a container read through measuredSize().
+    QCOMPARE(view.sizeHint(), QSize(120, 40));
+    QCOMPARE(view.measuredSize(), QSizeF(300.0, 100.0));
+
+    QCOMPARE(view.minimumSizeHint(), QSize(0, 0));
+    QCOMPARE(view.measuredSize(), QSizeF(300.0, 100.0));
+
+    QCOMPARE(view.heightForWidth(80), 40);
+    QCOMPARE(view.measuredSize(), QSizeF(300.0, 100.0));
+}
+
+void TestView::themeInstalledDuringPaintIsDeferred()
+{
+    ThemeInstallingView view;
+    view.resize(120, 40);
+    showWidget(view);
+
+    const QColor light = md::Theme::baselineLight().colours().surface;
+    const QColor dark = md::Theme::baselineDark().colours().surface;
+    QVERIFY(light.rgb() != dark.rgb());
+
+    // The first paint installs the dark scope from inside paintContent(); the
+    // pass keeps the light snapshot it started with instead of reading the
+    // Theme the install just freed.
+    view.installOnNextPaint();
+    QCOMPARE(pixelAt(view.grab().toImage(), QPointF(60.0, 20.0)).rgb(), light.rgb());
+
+    // The next pass resolves the scope that was installed during the first one.
+    QCOMPARE(pixelAt(view.grab().toImage(), QPointF(60.0, 20.0)).rgb(), dark.rgb());
+    QVERIFY(view.lastError().isEmpty());
+}
+
+void TestView::disabledViewIsNotAccessibleInvalid()
+{
+    md::view::installAccessibility();
+
+    BoxView view;
+    view.setEnabled(false);
+
+    QAccessibleInterface* iface = QAccessible::queryAccessibleInterface(&view);
+    QVERIFY(iface != nullptr);
+    QVERIFY(iface->isValid());
+    QVERIFY(dynamic_cast<md::view::ViewAccessible*>(iface) != nullptr);
+    QVERIFY(iface->state().disabled);
+    QVERIFY(!iface->state().invalid);
+
+    // Enabling the view clears disabled; invalid stays clear either way.
+    view.setEnabled(true);
+    QVERIFY(!iface->state().disabled);
+    QVERIFY(!iface->state().invalid);
 }
 
 QTEST_MAIN(TestView)

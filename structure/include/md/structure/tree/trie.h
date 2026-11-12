@@ -81,8 +81,28 @@ public:
         return *this;
     }
 
-    Trie(Trie&&) noexcept = default;
-    Trie& operator=(Trie&&) noexcept = default;
+    // A moved-from trie is a valid empty trie: the implicit root is recreated
+    // so every member — including size(), nodeCount(), insert() and copying —
+    // keeps working. The defaulted move would leave a null root behind while
+    // size_ stayed set.
+    Trie(Trie&& other) noexcept
+        : root_(std::move(other.root_)), size_(other.size_)
+    {
+        other.size_ = 0;
+        other.root_ = std::make_unique<node_type>();
+    }
+
+    Trie& operator=(Trie&& other) noexcept
+    {
+        if (this != &other) {
+            root_ = std::move(other.root_);
+            size_ = other.size_;
+            other.size_ = 0;
+            other.root_ = std::make_unique<node_type>();
+        }
+        return *this;
+    }
+
     ~Trie() = default;
 
     [[nodiscard]] bool empty() const noexcept { return size_ == 0; }

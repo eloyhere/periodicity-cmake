@@ -56,7 +56,8 @@ struct CornerRadii
     // The rounded-rectangle outline for `bounds`. Each radius is clamped to
     // half the shorter side of the rectangle, which keeps the path valid for
     // pills and for rectangles smaller than the nominal radius. A rectangle
-    // with no area yields an empty path.
+    // with no area, or with non-finite bounds, yields an empty path; a NaN or
+    // non-positive radius yields a square corner.
     [[nodiscard]] QPainterPath toPath(const QRectF& bounds) const;
 
     [[nodiscard]] friend constexpr bool operator==(const CornerRadii& lhs,

@@ -25,6 +25,8 @@
 #include <QWheelEvent>
 
 #include <chrono>
+#include <functional>
+#include <stdexcept>
 #include <utility>
 
 using namespace std::chrono_literals;
@@ -94,6 +96,11 @@ public:
                 m_positions->append(pointer->localPosition());
             }
         }
+        if (m_wheelPositions != nullptr) {
+            if (const auto* wheel = dynamic_cast<const md::WheelEvent*>(&event)) {
+                m_wheelPositions->append(wheel->position());
+            }
+        }
         if (m_targets != nullptr) {
             m_targets->append(event.target());
         }
@@ -105,13 +112,23 @@ public:
             event.accept();
         }
 
+        if (m_handler) {
+            // Copy before calling: the handler may delete this target (and with
+            // it m_handler), so no member may be touched once it returns.
+            const std::function<void(md::Event&)> handler = m_handler;
+            handler(event);
+        }
+
         return event.isAccepted();
     }
 
-    bool onInterceptEvent(md::Event&) override
+    bool onInterceptEvent(md::Event& event) override
     {
         if (m_interceptLog != nullptr) {
             m_interceptLog->append(m_name);
+        }
+        if (m_interceptHandler) {
+            return m_interceptHandler(event);
         }
         return m_intercept;
     }
@@ -126,7 +143,10 @@ public:
     QStringList* m_log = nullptr;
     QStringList* m_interceptLog = nullptr;
     QList<QPointF>* m_positions = nullptr;
+    QList<QPointF>* m_wheelPositions = nullptr;
     QList<md::EventTarget*>* m_targets = nullptr;
+    std::function<void(md::Event&)> m_handler;
+    std::function<bool(md::Event&)> m_interceptHandler;
     int m_eventCount = 0;
 
 private:
@@ -152,14 +172,23 @@ private slots:
     void acceptOnTargetStopsBubble();
     void interceptionRetargets();
     void pointerTranslationPerNode();
+    void wheelTranslationPerNode();
     void cycleGuard();
     void eventReuse();
+    void reentrantDispatchKeepsOuterState();
+    void recursiveDispatchIsCapped();
+    void destroyedTargetAbortsDispatch();
+    void throwingHandlerDoesNotBreakBubble();
     void gestureTap();
     void gestureLongPressFromMove();
     void gestureLongPressFromUp();
     void gestureDragSequence();
     void gestureSlopInDp();
     void gestureReset();
+    void gestureCancelOnFocusLoss();
+    void gestureStalePressCancels();
+    void gestureSecondPressKeepsDrag();
+    void gestureThrowingCallbackDoesNotWedge();
     void mouseBridge();
     void keyBridge();
     void wheelBridge();
@@ -219,8 +248,10 @@ void TestEvent::dispatchOrderThreeNodeChain()
     };
     QCOMPARE(order, expected);
 
-    // The event ends on the target it was dispatched to, in the last phase.
-    QVERIFY(event.target() == &leaf);
+    // The dispatcher detaches the target when a top-level pass returns, so a
+    // retained event cannot name a target that may have been destroyed; the
+    // phase still records the last pass.
+    QVERIFY(event.target() == nullptr);
     QCOMPARE(event.phase(), md::EventPhase::Bubble);
     QVERIFY(!event.isAccepted());
     QCOMPARE(root.m_eventCount, 2);
@@ -309,7 +340,9 @@ void TestEvent::interceptionRetargets()
     };
     QCOMPARE(order, expected);
     QCOMPARE(intercepts, QStringList({QStringLiteral("root"), QStringLiteral("middle")}));
-    QVERIFY(event.target() == &middle);
+    // The target is detached when dispatch returns; the recorded list below
+    // still shows which target every handler saw.
+    QVERIFY(event.target() == nullptr);
     QCOMPARE(leaf.m_eventCount, 0);
     QCOMPARE(middle.m_eventCount, 2);
 
@@ -372,6 +405,47 @@ void TestEvent::pointerTranslationPerNode()
     QCOMPARE(positions.at(4), QPointF(15.0, 25.0));
 }
 
+void TestEvent::wheelTranslationPerNode()
+{
+    FakeTarget root(QStringLiteral("root"));
+    FakeTarget middle(QStringLiteral("middle"), &root);
+    FakeTarget leaf(QStringLiteral("leaf"), &middle);
+    root.m_mappingOffset = QPointF(10.0, 20.0);
+    middle.m_mappingOffset = QPointF(100.0, 200.0);
+
+    QList<QPointF> positions;
+    for (FakeTarget* node : {&root, &middle, &leaf}) {
+        node->m_wheelPositions = &positions;
+    }
+
+    md::WheelEvent event(QPoint(0, 120),
+                         QPoint(0, 0),
+                         QPointF(5.0, 5.0),
+                         Qt::NoModifier,
+                         10ms);
+
+    QVERIFY(!md::EventDispatcher::dispatch(event, leaf));
+
+    // Same order and mapping contract as a pointer event: the wheel position is
+    // expressed in each receiving target's frame, and the original target keeps
+    // the caller's position.
+    QCOMPARE(static_cast<int>(positions.size()), 5);
+    QCOMPARE(positions.at(0), QPointF(15.0, 25.0));
+    QCOMPARE(positions.at(1), QPointF(105.0, 205.0));
+    QCOMPARE(positions.at(2), QPointF(5.0, 5.0));
+    QCOMPARE(positions.at(3), QPointF(105.0, 205.0));
+    QCOMPARE(positions.at(4), QPointF(15.0, 25.0));
+
+    // The caller's frame is restored so the event can be reused.
+    QCOMPARE(event.position(), QPointF(5.0, 5.0));
+    QVERIFY(event.target() == nullptr);
+
+    // setPosition is the dispatcher's translation hook; it behaves like the
+    // constructor argument.
+    event.setPosition(QPointF(7.0, 9.0));
+    QCOMPARE(event.position(), QPointF(7.0, 9.0));
+}
+
 void TestEvent::cycleGuard()
 {
     // A target that is its own parent must terminate: the revisit guard turns
@@ -385,7 +459,7 @@ void TestEvent::cycleGuard()
     QVERIFY(!md::EventDispatcher::dispatch(event, selfish));
     QCOMPARE(order, QStringList{QStringLiteral("selfish:target")});
     QCOMPARE(selfish.m_eventCount, 1);
-    QVERIFY(event.target() == &selfish);
+    QVERIFY(event.target() == nullptr);
 
     // A two-node cycle terminates as well, at the first revisited node.
     FakeTarget first(QStringLiteral("first"));
@@ -444,6 +518,198 @@ void TestEvent::eventReuse()
     QVERIFY(!md::EventDispatcher::dispatch(event, leaf));
     QVERIFY(!event.isAccepted());
     QCOMPARE(leaf.m_eventCount, 3);
+}
+
+void TestEvent::reentrantDispatchKeepsOuterState()
+{
+    FakeTarget root(QStringLiteral("root"));
+    FakeTarget middle(QStringLiteral("middle"), &root);
+    FakeTarget leaf(QStringLiteral("leaf"), &middle);
+    FakeTarget other(QStringLiteral("other"));
+
+    QStringList order;
+    root.m_log = &order;
+    middle.m_log = &order;
+    leaf.m_log = &order;
+
+    bool innerRan = false;
+    bool innerSawCleanState = false;
+    bool innerResult = true;
+    md::EventPhase phaseAfterInner = md::EventPhase::Capture;
+    md::EventTarget* targetAfterInner = nullptr;
+    bool acceptedAfterInner = false;
+    bool stoppedAfterInner = false;
+
+    other.m_handler = [&](md::Event& event) {
+        innerRan = true;
+        innerSawCleanState = event.target() == &other && !event.isAccepted()
+                             && !event.isPropagationStopped();
+    };
+
+    leaf.m_handler = [&](md::Event& event) {
+        // The outer pass settles its own outcome first ...
+        event.accept();
+        event.stopPropagation();
+        // ... then dispatches the event it is handling to another target.
+        innerResult = md::EventDispatcher::dispatch(event, other);
+        phaseAfterInner = event.phase();
+        targetAfterInner = event.target();
+        acceptedAfterInner = event.isAccepted();
+        stoppedAfterInner = event.isPropagationStopped();
+    };
+
+    md::Event event(md::EventType::PointerDown);
+    QVERIFY(md::EventDispatcher::dispatch(event, leaf));
+
+    QVERIFY(innerRan);
+    QVERIFY(innerSawCleanState);
+    QVERIFY(!innerResult);
+
+    // The inner pass reset the flags and retargeted the event; the outer pass's
+    // phase, target and both flags were restored before the handler resumed.
+    QCOMPARE(phaseAfterInner, md::EventPhase::Target);
+    QVERIFY(targetAfterInner == &leaf);
+    QVERIFY(acceptedAfterInner);
+    QVERIFY(stoppedAfterInner);
+
+    const QStringList expected{
+        QStringLiteral("root:capture"),
+        QStringLiteral("middle:capture"),
+        QStringLiteral("leaf:target"),
+    };
+    QCOMPARE(order, expected);
+    QVERIFY(event.isAccepted());
+    QVERIFY(event.isPropagationStopped());
+    QVERIFY(event.target() == nullptr);
+}
+
+void TestEvent::recursiveDispatchIsCapped()
+{
+    FakeTarget node(QStringLiteral("node"));
+    int deliveries = 0;
+
+    node.m_handler = [&](md::Event& event) {
+        ++deliveries;
+        static_cast<void>(md::EventDispatcher::dispatch(event, node));
+    };
+
+    md::Event event(md::EventType::PointerDown);
+    QVERIFY(!md::EventDispatcher::dispatch(event, node));
+
+    // Every re-entry adds one delivery; the first pass beyond the nesting cap
+    // is refused, which unwinds the recursion instead of overflowing the stack.
+    QVERIFY(deliveries >= 2);
+    QVERIFY(deliveries <= 32);
+    QVERIFY(event.target() == nullptr);
+    QVERIFY(!event.isAccepted());
+    QVERIFY(!event.isPropagationStopped());
+}
+
+void TestEvent::destroyedTargetAbortsDispatch()
+{
+    // (a) The target handler destroys an ancestor. The bubble must not call the
+    // freed node: dispatch aborts at the next boundary.
+    auto* root = new FakeTarget(QStringLiteral("root"));
+    auto* middle = new FakeTarget(QStringLiteral("middle"), root);
+    auto* leaf = new FakeTarget(QStringLiteral("leaf"), middle);
+
+    QStringList order;
+    root->m_log = &order;
+    middle->m_log = &order;
+    leaf->m_log = &order;
+
+    leaf->m_handler = [&](md::Event&) {
+        delete middle;
+        middle = nullptr;
+    };
+
+    md::Event event(md::EventType::PointerDown);
+    QVERIFY(!md::EventDispatcher::dispatch(event, *leaf));
+
+    const QStringList expected{
+        QStringLiteral("root:capture"),
+        QStringLiteral("middle:capture"),
+        QStringLiteral("leaf:target"),
+    };
+    QCOMPARE(order, expected);
+    QCOMPARE(root->m_eventCount, 1); // captured once; never reached by the bubble
+    QVERIFY(event.target() == nullptr);
+
+    delete leaf;
+    delete root;
+
+    // (b) The delivery target destroys itself. The chain's liveness token lets
+    // the dispatcher stop without touching the freed target, and the event no
+    // longer names it afterwards.
+    auto* root2 = new FakeTarget(QStringLiteral("root"));
+    auto* leaf2 = new FakeTarget(QStringLiteral("leaf"), root2);
+
+    QStringList order2;
+    root2->m_log = &order2;
+    leaf2->m_log = &order2;
+
+    leaf2->m_handler = [&](md::Event&) {
+        delete leaf2;
+        leaf2 = nullptr;
+    };
+
+    md::Event second(md::EventType::PointerUp);
+    QVERIFY(!md::EventDispatcher::dispatch(second, *leaf2));
+
+    const QStringList expected2{
+        QStringLiteral("root:capture"),
+        QStringLiteral("leaf:target"),
+    };
+    QCOMPARE(order2, expected2);
+    QCOMPARE(root2->m_eventCount, 1);
+    QVERIFY(second.target() == nullptr);
+
+    delete root2;
+}
+
+void TestEvent::throwingHandlerDoesNotBreakBubble()
+{
+    FakeTarget root(QStringLiteral("root"));
+    FakeTarget middle(QStringLiteral("middle"), &root);
+    FakeTarget leaf(QStringLiteral("leaf"), &middle);
+
+    QStringList order;
+    for (FakeTarget* node : {&root, &middle, &leaf}) {
+        node->m_log = &order;
+    }
+
+    const QStringList expected{
+        QStringLiteral("root:capture"),
+        QStringLiteral("middle:capture"),
+        QStringLiteral("leaf:target"),
+        QStringLiteral("middle:bubble"),
+        QStringLiteral("root:bubble"),
+    };
+
+    // A throwing onEvent is contained and treated as an unhandled delivery, so
+    // the bubble still reaches every ancestor.
+    leaf.m_handler = [](md::Event&) { throw std::runtime_error("boom"); };
+
+    md::Event event(md::EventType::PointerDown);
+    QVERIFY(!md::EventDispatcher::dispatch(event, leaf));
+    QCOMPARE(order, expected);
+    QVERIFY(!event.isAccepted());
+    QVERIFY(!event.isPropagationStopped());
+    QVERIFY(event.target() == nullptr);
+
+    // The same containment applies to onInterceptEvent: a throwing interceptor
+    // counts as "does not claim the gesture".
+    leaf.m_handler = nullptr;
+    middle.m_interceptHandler = [](md::Event&) -> bool {
+        throw std::runtime_error("intercept");
+    };
+
+    order.clear();
+    md::Event second(md::EventType::PointerDown);
+    QVERIFY(!md::EventDispatcher::dispatch(second, leaf));
+    QCOMPARE(order, expected);
+    QVERIFY(!second.isAccepted());
+    QVERIFY(second.target() == nullptr);
 }
 
 void TestEvent::gestureTap()
@@ -663,6 +929,196 @@ void TestEvent::gestureReset()
     QCOMPARE(taps, 0);
 
     detector.reset(); // idempotent
+}
+
+void TestEvent::gestureCancelOnFocusLoss()
+{
+    int cancels = 0;
+    int taps = 0;
+    int dragStarts = 0;
+    int drags = 0;
+    int dragEnds = 0;
+    md::EventType cancelType = md::EventType::None;
+
+    md::GestureDetector::Callbacks callbacks;
+    callbacks.onTap = [&taps](const md::PointerEvent&) { ++taps; };
+    callbacks.onDragStart = [&dragStarts](const md::PointerEvent&) { ++dragStarts; };
+    callbacks.onDrag = [&drags](const md::PointerEvent&, QPointF) { ++drags; };
+    callbacks.onDragEnd = [&dragEnds](const md::PointerEvent&) { ++dragEnds; };
+    callbacks.onCancel = [&cancels, &cancelType](const md::Event& event) {
+        ++cancels;
+        cancelType = event.type();
+    };
+
+    md::GestureDetector detector(callbacks);
+
+    QVERIFY(detector.handle(makePointerEvent(md::EventType::PointerDown, QPointF(0.0, 0.0), 0ms)));
+    QVERIFY(detector.handle(makePointerEvent(md::EventType::PointerMove, QPointF(20.0, 0.0), 10ms)));
+    QCOMPARE(dragStarts, 1);
+    QCOMPARE(drags, 1);
+    QVERIFY(detector.isDragging());
+
+    // Losing focus abandons the drag: onCancel runs, onDragEnd does not, and
+    // the notification itself is not consumed.
+    QVERIFY(!detector.handle(md::FocusEvent(false, 20ms)));
+    QCOMPARE(cancels, 1);
+    QCOMPARE(cancelType, md::EventType::FocusOut);
+    QVERIFY(!detector.isDragging());
+    QCOMPARE(dragEnds, 0);
+
+    // The abandoned gesture no longer consumes the pointer stream.
+    QVERIFY(!detector.handle(makePointerEvent(md::EventType::PointerMove, QPointF(40.0, 0.0), 30ms)));
+    QVERIFY(!detector.handle(makePointerEvent(md::EventType::PointerUp, QPointF(40.0, 0.0), 40ms)));
+    QCOMPARE(drags, 1);
+    QCOMPARE(cancels, 1);
+    QCOMPARE(taps, 0);
+
+    // PointerLeave cancels a press that has not become a drag yet.
+    QVERIFY(detector.handle(makePointerEvent(md::EventType::PointerDown, QPointF(5.0, 5.0), 100ms)));
+    QVERIFY(!detector.handle(makePointerEvent(md::EventType::PointerLeave, QPointF(5.0, 5.0), 110ms)));
+    QCOMPARE(cancels, 2);
+    QCOMPARE(cancelType, md::EventType::PointerLeave);
+    QVERIFY(!detector.isDragging());
+
+    // A focus loss without a gesture is a no-op.
+    QVERIFY(!detector.handle(md::FocusEvent(false, 120ms)));
+    QCOMPARE(cancels, 2);
+}
+
+void TestEvent::gestureStalePressCancels()
+{
+    int cancels = 0;
+    int taps = 0;
+    int longPresses = 0;
+    int dragStarts = 0;
+    int dragEnds = 0;
+    md::EventType cancelType = md::EventType::None;
+
+    md::GestureDetector::Callbacks callbacks;
+    callbacks.onTap = [&taps](const md::PointerEvent&) { ++taps; };
+    callbacks.onLongPress = [&longPresses](const md::PointerEvent&) { ++longPresses; };
+    callbacks.onDragStart = [&dragStarts](const md::PointerEvent&) { ++dragStarts; };
+    callbacks.onDrag = [](const md::PointerEvent&, QPointF) {};
+    callbacks.onDragEnd = [&dragEnds](const md::PointerEvent&) { ++dragEnds; };
+    callbacks.onCancel = [&cancels, &cancelType](const md::Event& event) {
+        ++cancels;
+        cancelType = event.type();
+    };
+
+    md::GestureDetector detector(callbacks);
+
+    // A move that arrives long after the press belongs to a different
+    // interaction: the lost press is cancelled and the move is not consumed.
+    QVERIFY(detector.handle(makePointerEvent(md::EventType::PointerDown, QPointF(0.0, 0.0), 0ms)));
+    QVERIFY(!detector.handle(makePointerEvent(md::EventType::PointerMove, QPointF(20.0, 0.0), 20000ms)));
+    QCOMPARE(cancels, 1);
+    QCOMPARE(cancelType, md::EventType::PointerMove);
+    QVERIFY(!detector.isDragging());
+    QVERIFY(!detector.handle(makePointerEvent(md::EventType::PointerUp, QPointF(20.0, 0.0), 20010ms)));
+    QCOMPARE(cancels, 1);
+    QCOMPARE(taps, 0);
+    QCOMPARE(dragStarts, 0);
+
+    // The deadline measures inactivity, not the total press duration: a slow
+    // drag that keeps sending moves survives.
+    QVERIFY(detector.handle(makePointerEvent(md::EventType::PointerDown, QPointF(0.0, 0.0), 30000ms)));
+    QVERIFY(detector.handle(makePointerEvent(md::EventType::PointerMove, QPointF(20.0, 0.0), 30010ms)));
+    QCOMPARE(dragStarts, 1);
+    QVERIFY(detector.isDragging());
+    QVERIFY(detector.handle(makePointerEvent(md::EventType::PointerMove, QPointF(25.0, 0.0), 34000ms)));
+    QVERIFY(detector.handle(makePointerEvent(md::EventType::PointerUp, QPointF(25.0, 0.0), 38000ms)));
+    QCOMPARE(dragEnds, 1);
+    QCOMPARE(cancels, 1);
+
+    // A reported long press followed by a stalled stream is stale as well.
+    QVERIFY(detector.handle(makePointerEvent(md::EventType::PointerDown, QPointF(0.0, 0.0), 50000ms)));
+    QVERIFY(detector.handle(makePointerEvent(md::EventType::PointerMove, QPointF(2.0, 0.0), 50600ms)));
+    QCOMPARE(longPresses, 1);
+    QVERIFY(!detector.handle(makePointerEvent(md::EventType::PointerMove, QPointF(4.0, 0.0), 60000ms)));
+    QCOMPARE(cancels, 2);
+    QCOMPARE(cancelType, md::EventType::PointerMove);
+    QVERIFY(!detector.isDragging());
+}
+
+void TestEvent::gestureSecondPressKeepsDrag()
+{
+    int cancels = 0;
+    int taps = 0;
+    int dragStarts = 0;
+    int drags = 0;
+    int dragEnds = 0;
+    QList<QPointF> deltas;
+
+    md::GestureDetector::Callbacks callbacks;
+    callbacks.onTap = [&taps](const md::PointerEvent&) { ++taps; };
+    callbacks.onDragStart = [&dragStarts](const md::PointerEvent&) { ++dragStarts; };
+    callbacks.onDrag = [&drags, &deltas](const md::PointerEvent&, QPointF delta) {
+        ++drags;
+        deltas.append(delta);
+    };
+    callbacks.onDragEnd = [&dragEnds](const md::PointerEvent&) { ++dragEnds; };
+    callbacks.onCancel = [&cancels](const md::Event&) { ++cancels; };
+
+    md::GestureDetector detector(callbacks);
+
+    QVERIFY(detector.handle(makePointerEvent(md::EventType::PointerDown, QPointF(0.0, 0.0), 0ms)));
+    QVERIFY(detector.handle(makePointerEvent(md::EventType::PointerMove, QPointF(20.0, 0.0), 10ms)));
+    QCOMPARE(dragStarts, 1);
+    QCOMPARE(drags, 1);
+    QVERIFY(detector.isDragging());
+
+    // A second press inside the stale deadline is ignored: the drag keeps its
+    // press position, so the next delta is still measured from (0, 0).
+    QVERIFY(detector.handle(makePointerEvent(md::EventType::PointerDown, QPointF(100.0, 100.0), 20ms)));
+    QCOMPARE(cancels, 0);
+    QCOMPARE(dragStarts, 1);
+    QVERIFY(detector.isDragging());
+
+    QVERIFY(detector.handle(makePointerEvent(md::EventType::PointerMove, QPointF(30.0, 5.0), 30ms)));
+    QCOMPARE(drags, 2);
+    QCOMPARE(static_cast<int>(deltas.size()), 2);
+    QCOMPARE(deltas.at(1), QPointF(30.0, 5.0));
+
+    QVERIFY(detector.handle(makePointerEvent(md::EventType::PointerUp, QPointF(30.0, 5.0), 40ms)));
+    QCOMPARE(dragEnds, 1);
+
+    // Past the deadline the old press is lost: the replacing press cancels it
+    // and starts a new gesture from the new position.
+    QVERIFY(detector.handle(makePointerEvent(md::EventType::PointerDown, QPointF(0.0, 0.0), 50000ms)));
+    QVERIFY(detector.handle(makePointerEvent(md::EventType::PointerMove, QPointF(20.0, 0.0), 50010ms)));
+    QVERIFY(detector.isDragging());
+    QVERIFY(detector.handle(makePointerEvent(md::EventType::PointerDown, QPointF(5.0, 5.0), 60000ms)));
+    QCOMPARE(cancels, 1);
+    QVERIFY(!detector.isDragging());
+
+    // The new press is the active one: a small move and a release are a tap,
+    // not the continuation of the old drag.
+    QVERIFY(detector.handle(makePointerEvent(md::EventType::PointerMove, QPointF(6.0, 5.0), 60010ms)));
+    QVERIFY(detector.handle(makePointerEvent(md::EventType::PointerUp, QPointF(6.0, 5.0), 60020ms)));
+    QCOMPARE(taps, 1);
+    QCOMPARE(dragEnds, 1);
+    QCOMPARE(drags, 3);
+}
+
+void TestEvent::gestureThrowingCallbackDoesNotWedge()
+{
+    int taps = 0;
+
+    md::GestureDetector::Callbacks callbacks;
+    callbacks.onDragStart = [](const md::PointerEvent&) { throw std::runtime_error("drag"); };
+    callbacks.onTap = [&taps](const md::PointerEvent&) { ++taps; };
+
+    md::GestureDetector detector(callbacks);
+
+    QVERIFY(detector.handle(makePointerEvent(md::EventType::PointerDown, QPointF(0.0, 0.0), 0ms)));
+    // The throwing drag callback is contained: the gesture is abandoned, the
+    // event is not consumed and the detector stays usable.
+    QVERIFY(!detector.handle(makePointerEvent(md::EventType::PointerMove, QPointF(20.0, 0.0), 10ms)));
+    QVERIFY(!detector.isDragging());
+
+    QVERIFY(detector.handle(makePointerEvent(md::EventType::PointerDown, QPointF(0.0, 0.0), 100ms)));
+    QVERIFY(detector.handle(makePointerEvent(md::EventType::PointerUp, QPointF(1.0, 1.0), 110ms)));
+    QCOMPARE(taps, 1);
 }
 
 void TestEvent::mouseBridge()

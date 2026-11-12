@@ -26,9 +26,15 @@ namespace md::pool::ipc {
 inline constexpr std::size_t kFrameHeaderSize = 4;
 inline constexpr std::size_t kMaxFrameSize = std::size_t{1} << 20; // 1 MiB
 
+// Encodes one frame. A payload above kMaxFrameSize has no legal encoding — the
+// decoder rejects the length — so this returns a null QByteArray instead of a
+// message the far end can never accept. An empty payload is still a valid
+// frame (a 4-byte header), so callers must test isNull(), not isEmpty().
 inline QByteArray encodeFrame(QByteArrayView payload)
 {
     const std::size_t length = payload.size();
+    if (length > kMaxFrameSize)
+        return QByteArray();
 
     QByteArray frame;
     frame.resize(static_cast<qsizetype>(kFrameHeaderSize + length));

@@ -179,6 +179,11 @@ bool ThreadPool::drain(std::chrono::milliseconds timeout)
 
 bool ThreadPool::post(std::function<void()> task)
 {
+    return enqueue(std::move(task), {});
+}
+
+bool ThreadPool::enqueue(std::function<void()> task, std::function<void()> completion)
+{
     if (!task)
         return false;
 
@@ -200,6 +205,7 @@ bool ThreadPool::post(std::function<void()> task)
         }
 
         node->fn = std::move(task);
+        node->completion = std::move(completion);
         ready_.push_back(node);
         ++submitted_;
     }
@@ -232,18 +238,26 @@ void ThreadPool::parallelFor(std::size_t count, std::function<void(std::size_t)>
 
     std::atomic<std::size_t> next{0};
     std::latch pending(static_cast<std::ptrdiff_t>(chunkCount));
-    std::size_t queuedChunks = 0;
 
+    // The node's completion hook counts the chunk down wherever the node dies:
+    // after the body ran, after it threw (the worker catches), or when stop()
+    // discarded the still-queued node. A count_down() at the end of the body
+    // alone would be skipped on the throw path and never reached on the discard
+    // path — either one used to leave the wait below stuck forever.
+    const std::function<void()> release = [&pending] { pending.count_down(); };
+
+    std::size_t queuedChunks = 0;
     for (std::size_t chunk = 0; chunk < chunkCount; ++chunk) {
-        const bool queued = post([&next, &body, &pending, count] {
-            for (;;) {
-                const std::size_t index = next.fetch_add(1, std::memory_order_relaxed);
-                if (index >= count)
-                    break;
-                body(index);
-            }
-            pending.count_down();
-        });
+        const bool queued = enqueue(
+            [&next, &body, count] {
+                for (;;) {
+                    const std::size_t index = next.fetch_add(1, std::memory_order_relaxed);
+                    if (index >= count)
+                        break;
+                    body(index);
+                }
+            },
+            release);
 
         if (queued)
             ++queuedChunks;

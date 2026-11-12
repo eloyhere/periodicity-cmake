@@ -9,6 +9,12 @@
 //
 // The stack is a value type that owns its layers: moving it is cheap, copying
 // it is deleted because a layer is a unique object.
+//
+// MUTATION RULE. A layer's paint() callback must not add, insert or clear
+// layers. Those calls are ignored while paint() is running, and a re-entrant
+// paint() is ignored as well, so the paint traversal can never be invalidated
+// from inside itself. advance() and hitTest() are not guarded: their callbacks
+// must not mutate the stack either.
 
 #pragma once
 
@@ -58,6 +64,9 @@ public:
     [[nodiscard]] const Layer* at(std::size_t index) const noexcept;
 
     // Paints every layer in insertion order with the same bounds and context.
+    // Each stage is isolated: an exception thrown by one layer is caught and
+    // the remaining layers still paint. Mutating the stack from a paint
+    // callback is ignored for the duration of the call.
     void paint(QPainter& painter, const QRectF& bounds,
                const SurfaceContext& context) const;
 
@@ -73,6 +82,12 @@ public:
 
 private:
     std::vector<std::unique_ptr<Layer>> layers_;
+
+    // True while paint() walks layers_. Mutators ignore a call made in that
+    // window so the vector cannot be cleared or reallocated under the
+    // traversal; paint() ignores a re-entrant call for the same reason.
+    // Mutable because paint() is const.
+    mutable bool painting_ = false;
 };
 
 } // namespace md::layer

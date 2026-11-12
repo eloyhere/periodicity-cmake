@@ -40,7 +40,18 @@ public:
     // Paints into `bounds`, in the painter's logical coordinates. The painter
     // is supplied by the caller and may target a QImage with no widget behind
     // it; an implementation saves and restores the painter state it changes.
+    // A paint must never let an exception escape: a drawable that fails is
+    // skipped, not allowed to abort the composite around it.
     virtual void draw(QPainter& painter, const QRectF& bounds) const = 0;
+
+    // The device pixel ratio a raster must be sized, keyed and tagged with.
+    // A painter can be backed by a device whose ratio is not usable yet (a
+    // QImage stores whatever setDevicePixelRatio() was given, including 0 and
+    // NaN), and a ratio of 0 collapses every device-pixel size and divides by
+    // zero when Qt derives logical geometry. Every cached drawable goes
+    // through this one validated value so its sizing, cache key and tag can
+    // never disagree.
+    [[nodiscard]] static qreal effectiveDevicePixelRatio(const QPainter& painter) noexcept;
 
     // The size the drawable would like to have, in logical pixels. An empty
     // size means "no preference": a background or a layer composite fills

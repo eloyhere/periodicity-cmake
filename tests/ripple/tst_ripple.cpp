@@ -66,6 +66,11 @@ private slots:
     void invalidContentColourUsesThemeDefault();
     void pointerMovedDoesNotAnimate();
     void repaintRequestedTracksFrames();
+    void invisibleSurfaceDoesNotAnimate();
+    void emptyBoundsDropRunningRipples();
+    void suspendStopsInFlightRipple();
+    void pressBurstReusesAnimators();
+    void repaintRequestedIsNotReentrant();
 };
 
 void TestRipple::specMatchesTokens()
@@ -262,6 +267,213 @@ void TestRipple::repaintRequestedTracksFrames()
 
     QTRY_VERIFY_WITH_TIMEOUT(!controller.isAnimating(), 3000);
     QVERIFY(repaints.count() > 2);
+}
+
+void TestRipple::invisibleSurfaceDoesNotAnimate()
+{
+    const Theme theme = Theme::baselineLight();
+
+    // No bounds at all: there is nothing to clip a circle to.
+    {
+        RippleController controller;
+        controller.setTheme(theme);
+        controller.setSpec(slowSpec(theme, 1000, 1000));
+
+        QSignalSpy repaints(&controller, &RippleController::repaintRequested);
+        QTest::qWait(10);
+        repaints.clear();
+
+        controller.pointerEntered(QPointF(40, 40));
+        controller.pointerPressed(QPointF(40, 40));
+        QVERIFY(!controller.isAnimating());
+
+        QTest::qWait(50);
+        QCOMPARE(repaints.count(), 0);
+    }
+
+    // Zero opacity: every circle would blend to nothing.
+    {
+        RippleController controller;
+        controller.setTheme(theme);
+        controller.setBounds(QRectF(0, 0, 200, 200));
+        RippleSpec spec = slowSpec(theme, 1000, 1000);
+        spec.pressedOpacity = 0.0;
+        controller.setSpec(spec);
+
+        QSignalSpy repaints(&controller, &RippleController::repaintRequested);
+        QTest::qWait(10);
+        repaints.clear();
+
+        controller.pointerPressed(QPointF(100, 100));
+        QVERIFY(!controller.isAnimating());
+
+        QTest::qWait(50);
+        QCOMPARE(repaints.count(), 0);
+        QCOMPARE(alphaAt(render(controller), 100, 100), 0);
+    }
+
+    // A non-positive radius scale: the circle never grows.
+    {
+        RippleController controller;
+        controller.setTheme(theme);
+        controller.setBounds(QRectF(0, 0, 200, 200));
+        RippleSpec spec = slowSpec(theme, 1000, 1000);
+        spec.maxRadiusScale = 0.0;
+        controller.setSpec(spec);
+
+        QSignalSpy repaints(&controller, &RippleController::repaintRequested);
+        QTest::qWait(10);
+        repaints.clear();
+
+        controller.pointerEntered(QPointF(100, 100));
+        QVERIFY(!controller.isAnimating());
+
+        QTest::qWait(50);
+        QCOMPARE(repaints.count(), 0);
+    }
+
+    // A transparent content colour paints nothing either.
+    {
+        RippleController controller;
+        controller.setTheme(theme);
+        controller.setBounds(QRectF(0, 0, 200, 200));
+        controller.setSpec(slowSpec(theme, 1000, 1000));
+        controller.setContentColour(QColor(255, 0, 0, 0));
+
+        QSignalSpy repaints(&controller, &RippleController::repaintRequested);
+        QTest::qWait(10);
+        repaints.clear();
+
+        controller.pointerPressed(QPointF(100, 100));
+        QVERIFY(!controller.isAnimating());
+
+        QTest::qWait(50);
+        QCOMPARE(repaints.count(), 0);
+    }
+}
+
+void TestRipple::emptyBoundsDropRunningRipples()
+{
+    const Theme theme = Theme::baselineLight();
+    RippleController controller;
+    controller.setTheme(theme);
+    controller.setBounds(QRectF(0, 0, 200, 200));
+    controller.setSpec(slowSpec(theme, 1000, 1000));
+
+    controller.pointerPressed(QPointF(100, 100));
+    QVERIFY(controller.isAnimating());
+
+    QSignalSpy repaints(&controller, &RippleController::repaintRequested);
+    controller.setBounds(QRectF());
+
+    // The run is dropped, not merely clipped away.
+    QVERIFY(!controller.isAnimating());
+    QTest::qWait(10);
+    repaints.clear();
+    QTest::qWait(100);
+    QCOMPARE(repaints.count(), 0);
+
+    QCOMPARE(alphaAt(render(controller), 100, 100), 0);
+}
+
+void TestRipple::suspendStopsInFlightRipple()
+{
+    const Theme theme = Theme::baselineLight();
+    RippleController controller;
+    controller.setTheme(theme);
+    controller.setBounds(QRectF(0, 0, 200, 200));
+    controller.setSpec(slowSpec(theme, 1000, 1000));
+
+    controller.pointerPressed(QPointF(100, 100));
+    QTest::qWait(60);
+    QVERIFY(controller.isAnimating());
+
+    controller.suspend();
+    QVERIFY(!controller.isSurfaceVisible());
+    QVERIFY(controller.isEnabled());
+    QVERIFY(!controller.isAnimating());
+
+    QSignalSpy repaints(&controller, &RippleController::repaintRequested);
+    QTest::qWait(10);
+    repaints.clear();
+    QTest::qWait(120);
+    QCOMPARE(repaints.count(), 0);
+
+    // A hidden surface shows nothing, ignores input, and a re-show cannot
+    // reveal the circle that was in flight.
+    QCOMPARE(alphaAt(render(controller), 100, 100), 0);
+    controller.pointerPressed(QPointF(100, 100));
+    QVERIFY(!controller.isAnimating());
+
+    controller.setSurfaceVisible(true);
+    QVERIFY(controller.isSurfaceVisible());
+    controller.pointerPressed(QPointF(100, 100));
+    QVERIFY(controller.isAnimating());
+
+    controller.setEnabled(false);
+    QVERIFY(!controller.isAnimating());
+}
+
+void TestRipple::pressBurstReusesAnimators()
+{
+    const Theme theme = Theme::baselineLight();
+    RippleController controller;
+    controller.setTheme(theme);
+    controller.setBounds(QRectF(0, 0, 200, 200));
+    controller.setSpec(slowSpec(theme, 1000, 1000));
+
+    // A synchronous burst far beyond the eight-press cap. Every eviction
+    // recycles its animator, so the cap also bounds how many ever exist.
+    for (int press = 0; press < 24; ++press)
+        controller.pointerPressed(QPointF(100, 100));
+
+    int animators = 0;
+    for (QObject* child : controller.findChildren<QObject*>()) {
+        if (child->inherits("md::animation::Animator"))
+            ++animators;
+    }
+
+    QVERIFY2(animators <= 8,
+             qPrintable(QStringLiteral("24 presses allocated %1 animators").arg(animators)));
+    QVERIFY(controller.isAnimating());
+
+    QTRY_VERIFY_WITH_TIMEOUT(!controller.isAnimating(), 6000);
+}
+
+void TestRipple::repaintRequestedIsNotReentrant()
+{
+    const Theme theme = Theme::baselineLight();
+    RippleController controller;
+    controller.setTheme(theme);
+    controller.setBounds(QRectF(0, 0, 200, 200));
+    controller.setSpec(slowSpec(theme, 800, 800));
+
+    int notifications = 0;
+    bool disabled = false;
+    QObject::connect(&controller, &RippleController::repaintRequested, &controller, [&] {
+        ++notifications;
+        if (disabled)
+            return;
+
+        // A directly connected slot that reacts by disabling the controller used
+        // to run inside the animator callback, where removeAll() destroyed the
+        // function that was executing. The notification is queued now, so this
+        // is safe and the controller ends up idle.
+        disabled = true;
+        controller.setEnabled(false);
+    });
+
+    controller.pointerPressed(QPointF(100, 100));
+
+    QTRY_VERIFY_WITH_TIMEOUT(disabled, 2000);
+    QVERIFY(!controller.isEnabled());
+    QVERIFY(!controller.isAnimating());
+
+    // No further animation frames arrive once the controller is disabled.
+    QTest::qWait(50);
+    const int settled = notifications;
+    QTest::qWait(100);
+    QCOMPARE(notifications, settled);
 }
 
 QTEST_MAIN(TestRipple)

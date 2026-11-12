@@ -7,25 +7,47 @@
 //
 // The controller stores geometry and motion state only; the circles themselves
 // are painted from the current theme, so a theme change never needs a cached
-// raster. Each ripple owns one animator, created as a child of the controller:
+// raster. Each ripple drives one animator, created as a child of the controller:
 // that lifetime link lets the public header stay free of md/animation while the
-// implementation still reuses the shared animation layer.
+// implementation still reuses the shared animation layer. A ripple that ends or
+// is dropped returns its animator to an idle pool instead of destroying it, so
+// the eight-press cap also bounds the number of animators that ever exist.
+//
+// repaintRequested is coalesced onto the next event-loop turn and is never
+// emitted from inside an animation callback, so a host slot may disable,
+// suspend or destroy the controller without re-entering the state that
+// notified it.
 
 #include <md/ripple/ripple.h>
 
 #include <md/animation/animator.h>
 #include <md/core/geometry.h>
 
+#include <QDebug>
 #include <QLineF>
+#include <QMetaObject>
 #include <QPainter>
 #include <QPainterPath>
 #include <QPointF>
 
 #include <algorithm>
+#include <memory>
 #include <utility>
 #include <vector>
 
 namespace md::ripple {
+
+namespace {
+
+// True when `rect` encloses a finite, positive area — the only case in which a
+// ripple circle can produce a pixel.
+bool hasDrawableArea(const QRectF& rect)
+{
+    return rect.width() > 0.0 && rect.height() > 0.0 && qIsFinite(rect.x())
+        && qIsFinite(rect.y()) && qIsFinite(rect.width()) && qIsFinite(rect.height());
+}
+
+} // namespace
 
 RippleSpec RippleSpec::fromTheme(const Theme& theme)
 {
@@ -52,8 +74,10 @@ public:
     enum class Kind { Hover, Press };
     enum class Phase { Expanding, Fading };
 
-    // One circle and its single animator. A run starts as an expansion; the
-    // same animator later drives the fade, so a ripple never owns two timers.
+    // One circle and its animator. A run starts as an expansion; the same
+    // animator later drives the fade, so a ripple never owns two timers. The
+    // animator is borrowed from the controller's pool and returned when the
+    // ripple goes away.
     struct Ripple
     {
         Kind kind = Kind::Hover;
@@ -61,7 +85,6 @@ public:
         qreal expansion = 0.0;
         qreal fade = 0.0;
         Phase phase = Phase::Expanding;
-        quint64 serial = 0;
         animation::Animator* animator = nullptr;
     };
 
@@ -75,11 +98,14 @@ public:
 
     ~Impl()
     {
-        // The animators are children of the controller and are deleted by its
-        // QObject destructor after this member; stopping them here clears every
-        // callback that captures this Impl before any of them could run.
+        // The animators are children of the controller and are destroyed by its
+        // QObject destructor right after this member. Detach every connection
+        // and callback first, so no late signal can reach the state that is
+        // about to disappear.
         for (const auto& ripple : ripples_)
-            ripple->animator->stop();
+            detachAnimator(ripple->animator);
+        for (animation::Animator* animator : idleAnimators_)
+            detachAnimator(animator);
     }
 
     Impl(const Impl&) = delete;
@@ -90,7 +116,8 @@ public:
     // cached so a resize takes effect on the next paint.
     [[nodiscard]] qreal maximumRadius(const QPointF& origin) const
     {
-        if (!bounds_.isValid() || bounds_.isEmpty() || spec_.maxRadiusScale <= 0.0)
+        if (!hasDrawableArea(bounds_) || !qIsFinite(spec_.maxRadiusScale)
+            || !(spec_.maxRadiusScale > 0.0))
             return 0.0;
 
         const QPointF corners[4] = {bounds_.topLeft(), bounds_.topRight(),
@@ -103,6 +130,28 @@ public:
         return farthest * spec_.maxRadiusScale;
     }
 
+    // True when `kind` has an opacity that paints a pixel at the current spec.
+    [[nodiscard]] bool specCanShow(Kind kind) const
+    {
+        if (!qIsFinite(spec_.maxRadiusScale) || !(spec_.maxRadiusScale > 0.0))
+            return false;
+
+        const qreal opacity =
+            kind == Kind::Hover ? spec_.hoverOpacity : spec_.pressedOpacity;
+        if (!qIsFinite(opacity) || !(opacity > 0.0))
+            return false;
+
+        return contentColour_.alphaF() > 0.0;
+    }
+
+    // A ripple that cannot be seen must not animate: the host would keep asking
+    // for frames for a circle that paint() never draws.
+    [[nodiscard]] bool canShow(Kind kind) const
+    {
+        return enabled_ && surfaceVisible_ && hasDrawableArea(bounds_)
+            && specCanShow(kind);
+    }
+
     [[nodiscard]] Ripple* hoverRipple() const
     {
         for (const auto& ripple : ripples_) {
@@ -112,10 +161,10 @@ public:
         return nullptr;
     }
 
-    [[nodiscard]] Ripple* findBySerial(quint64 serial) const
+    [[nodiscard]] Ripple* findByAnimator(const animation::Animator* animator) const
     {
         for (const auto& ripple : ripples_) {
-            if (ripple->serial == serial)
+            if (ripple->animator == animator)
                 return ripple.get();
         }
         return nullptr;
@@ -131,28 +180,82 @@ public:
         return count;
     }
 
-    void notify() { Q_EMIT owner_->repaintRequested(); }
+    // Queues one repaint request for the next event-loop turn. The signal is
+    // deliberately not emitted synchronously: the callers include the animator
+    // callbacks, and a host slot that reacts by disabling or destroying the
+    // controller must not do so while the animation that reported the frame is
+    // still on the stack.
+    void notify()
+    {
+        if (notifyQueued_)
+            return;
 
-    Ripple* addRipple(Kind kind, const QPointF& origin)
+        notifyQueued_ = true;
+        QMetaObject::invokeMethod(owner_, [this] {
+            if (!notifyQueued_)
+                return;
+            notifyQueued_ = false;
+
+            try {
+                Q_EMIT owner_->repaintRequested();
+            } catch (...) {
+                // An observer that throws must not unwind through the event
+                // loop; the host loses one repaint request, nothing else.
+                qWarning() << "md::ripple::RippleController: a repaintRequested"
+                              " observer threw; the exception was isolated";
+            }
+        }, Qt::QueuedConnection);
+    }
+
+    animation::Animator* acquireAnimator()
+    {
+        if (!idleAnimators_.empty()) {
+            animation::Animator* animator = idleAnimators_.back();
+            idleAnimators_.pop_back();
+            return animator;
+        }
+
+        auto* animator = new animation::Animator(owner_);
+        // One connection per animator, looking the ripple up by animator rather
+        // than by a serial: a pooled animator needs no reconnection, and a late
+        // signal from a dropped run simply finds no ripple.
+        QObject::connect(animator, &animation::Animator::finished, owner_,
+                         [this, animator] { onAnimatorFinished(animator); });
+        return animator;
+    }
+
+    void releaseAnimator(animation::Animator* animator)
+    {
+        if (animator == nullptr)
+            return;
+
+        // stop() detaches the value callback, which captures the Ripple that is
+        // going away, and leaves the animator ready for the next run.
+        animator->stop();
+        idleAnimators_.push_back(animator);
+    }
+
+    void detachAnimator(animation::Animator* animator)
+    {
+        if (animator == nullptr)
+            return;
+
+        QObject::disconnect(animator, nullptr, owner_, nullptr);
+        animator->stop();
+    }
+
+    void addRipple(Kind kind, const QPointF& origin)
     {
         auto ripple = std::make_unique<Ripple>();
         ripple->kind = kind;
         ripple->origin = origin;
-        ripple->serial = nextSerial_++;
-
-        auto* animator = new animation::Animator(owner_);
-        ripple->animator = animator;
-
-        const quint64 serial = ripple->serial;
-        QObject::connect(animator, &animation::Animator::finished, owner_,
-                         [this, serial] { onAnimatorFinished(serial); });
+        ripple->animator = acquireAnimator();
 
         Ripple* raw = ripple.get();
         ripples_.push_back(std::move(ripple));
 
         startExpansion(*raw);
         notify();
-        return raw;
     }
 
     void startExpansion(Ripple& ripple)
@@ -161,6 +264,9 @@ public:
         ripple.expansion = 0.0;
         ripple.fade = 0.0;
 
+        // The callback only updates the geometry and queues a repaint; no host
+        // code runs inside the animation, so the ripple cannot be destroyed
+        // from under the function that is reporting the frame.
         Ripple* raw = &ripple;
         ripple.animator->start(spec_.expansion, [this, raw](qreal value) {
             raw->expansion = qBound(qreal(0.0), value, qreal(1.0));
@@ -180,9 +286,9 @@ public:
         });
     }
 
-    void onAnimatorFinished(quint64 serial)
+    void onAnimatorFinished(animation::Animator* animator)
     {
-        Ripple* ripple = findBySerial(serial);
+        Ripple* ripple = findByAnimator(animator);
         if (ripple == nullptr)
             return;
 
@@ -207,14 +313,8 @@ public:
             return;
 
         animation::Animator* animator = (*it)->animator;
-
-        // A removal can happen inside the animator's own finished() signal, so
-        // the animator is stopped (which clears the callback) and destroyed on
-        // a later turn rather than deleted under the emission.
-        animator->stop();
-        animator->deleteLater();
-
         ripples_.erase(it);
+        releaseAnimator(animator);
         notify();
     }
 
@@ -234,11 +334,26 @@ public:
 
     void removeAll()
     {
-        for (const auto& ripple : ripples_) {
-            ripple->animator->stop();
-            ripple->animator->deleteLater();
-        }
+        for (const auto& ripple : ripples_)
+            releaseAnimator(ripple->animator);
         ripples_.clear();
+    }
+
+    // Drops every ripple the surface can no longer show: empty bounds, a hidden
+    // or disabled surface, or a spec/colour that paints nothing.
+    void dropInvisibleRipples()
+    {
+        for (auto it = ripples_.begin(); it != ripples_.end();) {
+            Ripple* ripple = it->get();
+            if (canShow(ripple->kind)) {
+                ++it;
+                continue;
+            }
+
+            animation::Animator* animator = ripple->animator;
+            it = ripples_.erase(it);
+            releaseAnimator(animator);
+        }
     }
 
     void setTheme(Theme theme)
@@ -249,6 +364,7 @@ public:
         if (!contentColourExplicit_)
             contentColour_ = theme_.colours().onSurface;
 
+        dropInvisibleRipples();
         notify();
     }
 
@@ -258,6 +374,10 @@ public:
             return;
 
         bounds_ = bounds;
+
+        // A surface without a drawable area cannot show a ripple: stop the runs
+        // instead of animating them invisibly until they finish.
+        dropInvisibleRipples();
         notify();
     }
 
@@ -275,6 +395,7 @@ public:
     {
         contentColourExplicit_ = colour.isValid();
         contentColour_ = contentColourExplicit_ ? colour : theme_.colours().onSurface;
+        dropInvisibleRipples();
         notify();
     }
 
@@ -291,9 +412,25 @@ public:
         notify();
     }
 
+    void setSurfaceVisible(bool visible)
+    {
+        if (surfaceVisible_ == visible)
+            return;
+
+        surfaceVisible_ = visible;
+
+        // A hidden surface stops animating: the runs are dropped rather than
+        // paused, so showing the surface again cannot reveal a stale circle.
+        if (!surfaceVisible_)
+            removeAll();
+
+        notify();
+    }
+
     void setSpec(const RippleSpec& spec)
     {
         spec_ = spec;
+        dropInvisibleRipples();
         notify();
     }
 
@@ -308,7 +445,7 @@ public:
 
     void pointerEntered(const QPointF& position)
     {
-        if (!enabled_)
+        if (!canShow(Kind::Hover))
             return;
 
         // One hover ripple at a time: a second entry replaces the first rather
@@ -326,10 +463,12 @@ public:
 
     void pointerPressed(const QPointF& position)
     {
-        if (!enabled_)
+        if (!canShow(Kind::Press))
             return;
 
-        // Bound the animator count during a stuck or repeated press.
+        // Bound the animator count during a stuck or repeated press. An evicted
+        // ripple's animator goes back to the pool, so this loop reuses one
+        // animator instead of allocating a new one per press.
         while (pressCount() >= kMaxPressRipples)
             removeOldestPress();
 
@@ -348,9 +487,9 @@ public:
 
     void paint(QPainter& painter) const
     {
-        if (!enabled_ || ripples_.empty())
+        if (!enabled_ || !surfaceVisible_ || ripples_.empty())
             return;
-        if (!bounds_.isValid() || bounds_.isEmpty())
+        if (!hasDrawableArea(bounds_))
             return;
 
         const QPainterPath clip =
@@ -396,8 +535,14 @@ public:
     QColor contentColour_;
     bool contentColourExplicit_ = false;
     bool enabled_ = true;
-    quint64 nextSerial_ = 0;
+    // False while the host has suspended the surface (hidden window or tab).
+    // Unlike enabled_, this says nothing about whether interaction is allowed.
+    bool surfaceVisible_ = true;
+    bool notifyQueued_ = false;
     std::vector<std::unique_ptr<Ripple>> ripples_;
+    // Stopped animators waiting for the next ripple. The list never grows past
+    // the peak number of simultaneous ripples, so the cap bounds allocations.
+    std::vector<animation::Animator*> idleAnimators_;
 
     // More simultaneous ripples than this cannot be produced by a single
     // pointer and would only obscure the surface.
@@ -440,6 +585,21 @@ void RippleController::setEnabled(bool enabled)
 bool RippleController::isEnabled() const noexcept
 {
     return impl_->enabled_;
+}
+
+void RippleController::suspend()
+{
+    impl_->setSurfaceVisible(false);
+}
+
+void RippleController::setSurfaceVisible(bool visible)
+{
+    impl_->setSurfaceVisible(visible);
+}
+
+bool RippleController::isSurfaceVisible() const noexcept
+{
+    return impl_->surfaceVisible_;
 }
 
 void RippleController::setSpec(const RippleSpec& spec)

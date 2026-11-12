@@ -1,8 +1,8 @@
 // Periodicity — theme bundle and resolution (framework.md §5.3, §10.1–10.3).
 //
 // The bundle itself is a value type; the only state this file owns is the
-// application-wide theme, held in a function-local static so that resolution
-// from `forWidget(nullptr)` cannot fail and cannot allocate.
+// application-wide theme, published as an immutable snapshot behind a mutex so
+// a worker can resolve it without racing a GUI-thread theme switch.
 
 #include <md/theme/theme.h>
 
@@ -14,23 +14,105 @@
 #include <QCoreApplication>
 #include <QEvent>
 #include <QList>
+#include <QMutex>
+#include <QMutexLocker>
 #include <QThread>
 #include <QWidget>
 
+#include <algorithm>
+#include <memory>
 #include <utility>
+#include <vector>
 
 namespace md {
 
 namespace {
 
-// The application-wide theme, created on first use as the baseline light
-// theme. `setApplicationTheme` replaces the value; because the storage has
-// static lifetime, references handed out by applicationTheme() stay valid for
-// the life of the process.
-Theme& applicationThemeStorage()
+// Bounds for the density stored in a Theme. A zero or negative scale would
+// collapse or invert every dp value; an unbounded one would overflow the
+// integer geometry that consumes dp(). Density itself stays a plain core value
+// type; the Theme boundary is where it is normalised.
+constexpr qreal kMinDensityScale = 0.1;
+constexpr qreal kMaxDensityScale = 4.0;
+
+qreal normalisedScale(qreal value)
 {
-    static Theme stored = Theme::baselineLight();
-    return stored;
+    // A non-finite or non-positive scale means "no zoom": treat it as 1.0
+    // rather than clamping a broken value to the lower bound.
+    if (!qIsFinite(value) || value <= 0.0)
+        return 1.0;
+    return std::clamp(value, kMinDensityScale, kMaxDensityScale);
+}
+
+Density normalisedDensity(Density density)
+{
+    density.scale = normalisedScale(density.scale);
+    density.fontScale = normalisedScale(density.fontScale);
+    return density;
+}
+
+// A default-constructed ColorScheme has uninitialised (invalid) QColors. The
+// theme only requires the core roles to be usable; a scheme that has them is
+// taken as-is, anything else falls back to the baseline light palette.
+bool hasUsablePalette(const ColorScheme& colours)
+{
+    return colours.surface.isValid() && colours.onSurface.isValid() && colours.primary.isValid();
+}
+
+ColorScheme sanitisedColours(ColorScheme colours)
+{
+    if (hasUsablePalette(colours))
+        return colours;
+    return ColorScheme::baselineLight();
+}
+
+// The published application theme. `current` is an immutable snapshot and
+// `retained` keeps every replaced snapshot alive, so a reference handed out by
+// applicationTheme() remains valid for the lifetime of the process — the
+// documented contract, and the reason the storage is not freed when it is
+// replaced.
+struct ApplicationThemeStorage
+{
+    QMutex mutex;
+    std::shared_ptr<const Theme> current;
+    std::vector<std::shared_ptr<const Theme>> retained;
+};
+
+ApplicationThemeStorage& applicationThemeStorage()
+{
+    // Deliberately leaked: resolution can run during static destruction, and a
+    // returned reference must outlive the widgets that read it.
+    static ApplicationThemeStorage* storage = [] {
+        auto* created = new ApplicationThemeStorage;
+        created->current = std::make_shared<Theme>(Theme::baselineLight());
+        return created;
+    }();
+    return *storage;
+}
+
+std::shared_ptr<const Theme> applicationThemeSnapshot()
+{
+    ApplicationThemeStorage& storage = applicationThemeStorage();
+    QMutexLocker locker(&storage.mutex);
+    return storage.current;
+}
+
+// Publishes `theme` as the application theme. Returns false when it equals the
+// current theme, in which case nothing is re-resolved and nothing is posted.
+bool publishApplicationTheme(Theme theme)
+{
+    auto snapshot = std::make_shared<Theme>(std::move(theme));
+
+    ApplicationThemeStorage& storage = applicationThemeStorage();
+    QMutexLocker locker(&storage.mutex);
+    if (*storage.current == *snapshot)
+        return false;
+
+    // Copy (not move) the old snapshot into retained: if the vector allocation
+    // threw, `current` would otherwise be left null.
+    storage.retained.push_back(storage.current);
+    storage.current = std::move(snapshot);
+    return true;
 }
 
 // Posts a ThemeChange to `root` and every descendant. Posting (rather than
@@ -39,7 +121,7 @@ Theme& applicationThemeStorage()
 // setter that started the propagation.
 void postThemeChangeToSubtree(QWidget* root)
 {
-    if (root == nullptr)
+    if (root == nullptr || QCoreApplication::instance() == nullptr)
         return;
 
     QCoreApplication::postEvent(root, new QEvent(QEvent::ThemeChange));
@@ -51,20 +133,26 @@ void postThemeChangeToSubtree(QWidget* root)
 
 } // namespace
 
+Theme::Theme()
+    : Theme(ColorScheme::baselineLight(), TypeScale::baseline(), ShapeScale::baseline(),
+            MotionScheme::baseline(), Density{})
+{
+}
+
 Theme::Theme(ColorScheme colours, TypeScale type, ShapeScale shapes, MotionScheme motion,
              Density density)
-    : colours_(std::move(colours))
+    : colours_(sanitisedColours(std::move(colours)))
     , type_(std::move(type))
     , shapes_(std::move(shapes))
     , motion_(std::move(motion))
-    , density_(density)
+    , density_(normalisedDensity(density))
 {
 }
 
 Theme Theme::withColours(ColorScheme colours) const
 {
     Theme themed = *this;
-    themed.colours_ = std::move(colours);
+    themed.colours_ = sanitisedColours(std::move(colours));
     return themed;
 }
 
@@ -92,33 +180,39 @@ Theme Theme::withMotion(MotionScheme motion) const
 Theme Theme::withDensity(Density density) const
 {
     Theme themed = *this;
-    themed.density_ = density;
+    themed.density_ = normalisedDensity(density);
     return themed;
 }
 
 QPalette Theme::toPalette() const
 {
+    // The constructors already sanitise the scheme; this fallback keeps a theme
+    // that was produced some other way from mapping invalid colours into a
+    // QPalette, which would make stock widgets transparent black.
+    const ColorScheme colours =
+        hasUsablePalette(colours_) ? colours_ : ColorScheme::baselineLight();
+
     QPalette palette;
 
-    palette.setColor(QPalette::Window, colours_.surface);
-    palette.setColor(QPalette::WindowText, colours_.onSurface);
-    palette.setColor(QPalette::Base, colours_.surfaceContainerLowest);
-    palette.setColor(QPalette::Text, colours_.onSurface);
-    palette.setColor(QPalette::Button, colours_.surfaceContainer);
-    palette.setColor(QPalette::ButtonText, colours_.onSurface);
-    palette.setColor(QPalette::Highlight, colours_.primary);
-    palette.setColor(QPalette::HighlightedText, colours_.onPrimary);
-    palette.setColor(QPalette::ToolTipBase, colours_.inverseSurface);
-    palette.setColor(QPalette::ToolTipText, colours_.inverseOnSurface);
-    palette.setColor(QPalette::PlaceholderText, colours_.onSurfaceVariant);
+    palette.setColor(QPalette::Window, colours.surface);
+    palette.setColor(QPalette::WindowText, colours.onSurface);
+    palette.setColor(QPalette::Base, colours.surfaceContainerLowest);
+    palette.setColor(QPalette::Text, colours.onSurface);
+    palette.setColor(QPalette::Button, colours.surfaceContainer);
+    palette.setColor(QPalette::ButtonText, colours.onSurface);
+    palette.setColor(QPalette::Highlight, colours.primary);
+    palette.setColor(QPalette::HighlightedText, colours.onPrimary);
+    palette.setColor(QPalette::ToolTipBase, colours.inverseSurface);
+    palette.setColor(QPalette::ToolTipText, colours.inverseOnSurface);
+    palette.setColor(QPalette::PlaceholderText, colours.onSurfaceVariant);
 
     // Disabled content is the ordinary content colour at the token opacity,
     // not a separately chosen grey (framework.md §3.6).
-    QColor disabledText = colours_.onSurface;
+    QColor disabledText = colours.onSurface;
     disabledText.setAlphaF(static_cast<float>(kDisabledContentOpacity));
     palette.setColor(QPalette::Disabled, QPalette::Text, disabledText);
 
-    QColor disabledButtonText = colours_.onSurface;
+    QColor disabledButtonText = colours.onSurface;
     disabledButtonText.setAlphaF(static_cast<float>(kDisabledContentOpacity));
     palette.setColor(QPalette::Disabled, QPalette::ButtonText, disabledButtonText);
 
@@ -139,12 +233,21 @@ Theme Theme::baselineDark()
 
 const Theme& Theme::forWidget(const QWidget* widget)
 {
-    // The scope on the widget itself counts as the nearest scope: a component
-    // may theme its own subtree rather than requiring an ancestor to do it.
-    for (const QWidget* current = widget; current != nullptr;
-         current = current->parentWidget()) {
-        if (const ThemeScope* scope = ThemeScope::find(current))
-            return scope->theme();
+    if (widget != nullptr) {
+        // Walking the widget parent chain is GUI-thread-only; resolving the
+        // application theme without a widget is not.
+        const QCoreApplication* application = QCoreApplication::instance();
+        Q_ASSERT(application == nullptr || QThread::currentThread() == application->thread());
+        Q_UNUSED(application);
+
+        // The scope on the widget itself counts as the nearest scope: a
+        // component may theme its own subtree rather than requiring an
+        // ancestor to do it.
+        for (const QWidget* current = widget; current != nullptr;
+             current = current->parentWidget()) {
+            if (const ThemeScope* scope = ThemeScope::find(current))
+                return scope->theme();
+        }
     }
 
     return applicationTheme();
@@ -154,16 +257,17 @@ void Theme::setApplicationTheme(Theme theme)
 {
     QCoreApplication* application = QCoreApplication::instance();
 
-    // The widget tree is GUI-thread-only. Reject the call rather than post
-    // events from a worker thread; the stored theme is left untouched so that
-    // the failure leaves a coherent state behind.
+    // Posting to the widget tree is GUI-thread-only. Reject the call rather
+    // than post events from a worker thread; the stored theme is left untouched
+    // so that the failure leaves a coherent state behind.
     if (application != nullptr && QThread::currentThread() != application->thread()) {
         qCWarning(mdTheme) << "Theme::setApplicationTheme() must be called on the GUI thread;"
                               " the application theme was not changed";
         return;
     }
 
-    applicationThemeStorage() = std::move(theme);
+    if (!publishApplicationTheme(std::move(theme)))
+        return;
 
     if (application == nullptr)
         return;
@@ -172,6 +276,16 @@ void Theme::setApplicationTheme(Theme theme)
     if (widgetApplication == nullptr)
         return;
 
+    // Every scope lives on some widget, so walking all widgets finds the
+    // derived scopes even when their host has not been shown yet. Derived
+    // scopes must see the new application theme before their hosts process the
+    // ThemeChange that follows.
+    const QWidgetList widgets = QApplication::allWidgets();
+    for (QWidget* widget : widgets) {
+        if (ThemeScope::find(widget) != nullptr)
+            ThemeScope::refreshAdaptersInSubtree(widget, nullptr);
+    }
+
     const QWidgetList topLevels = QApplication::topLevelWidgets();
     for (QWidget* topLevel : topLevels)
         postThemeChangeToSubtree(topLevel);
@@ -179,7 +293,10 @@ void Theme::setApplicationTheme(Theme theme)
 
 const Theme& Theme::applicationTheme()
 {
-    return applicationThemeStorage();
+    // The snapshot is owned by the storage for the lifetime of the process, so
+    // dropping the local shared_ptr does not invalidate the reference.
+    const std::shared_ptr<const Theme> snapshot = applicationThemeSnapshot();
+    return *snapshot;
 }
 
 } // namespace md
