@@ -1,0 +1,36 @@
+# Periodicity package configuration file.
+#
+# Installed to <prefix>/lib/cmake/Periodicity and located by
+#
+#   find_package(Periodicity 0.1 CONFIG REQUIRED)
+#
+# Consumers link the layers they need, for example
+#
+#   target_link_libraries(my_app PRIVATE periodicity::components)
+#
+# Generated from cmake/PeriodicityConfig.cmake.in by configure_package_config_file().
+# @PACKAGE_INIT@ expands to the install-prefix bookkeeping plus the
+# check_required_components() helper macro.
+
+@PACKAGE_INIT@
+
+include(CMakeFindDependencyMacro)
+
+# The exported targets carry Qt in their public link interface: Core and Gui are
+# used by every layer, Widgets by theme/view/layout/components, and Network by
+# components (Avatar's url loader). Qt Test is only linked by the test
+# executables, which are not installed, so it is deliberately not requested.
+find_dependency(Qt6 6.8 COMPONENTS Core Gui Widgets Network)
+
+# periodicity::pool links Threads::Threads publicly, so that imported target has
+# to exist before PeriodicityTargets.cmake references it.
+find_dependency(Threads)
+
+# The imported targets are created once. A repeated find_package(Periodicity)
+# re-enters this file, and re-including the targets file would then redefine
+# them and fail.
+if(NOT TARGET periodicity::core)
+  include("${CMAKE_CURRENT_LIST_DIR}/PeriodicityTargets.cmake")
+endif()
+
+check_required_components(Periodicity)

@@ -1,0 +1,106 @@
+# Visual regression: build only the gallery, capture every page with its
+# unattended --screenshot mode, and compare the PNGs against the committed
+# baseline in tests/visual/baseline.
+#
+# Kept separate from msbuild.yml on purpose: that workflow builds the whole
+# solution in Debug and Release, this one builds one target and renders it.
+# A red run here means "the pixels moved", not "the build broke".
+#
+# Qt is installed with the same action, version and architecture as
+# msbuild.yml (6.8.3 / win64_msvc2022_64); the gallery's screenshots must come
+# from the same Qt build the baseline was captured with.
+name: Visual regression
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  QT_VERSION: '6.8.3'
+  BUILD_DIR: out/build/visual
+  # Screenshots are captured in device pixels, so a runner (or developer) at
+  # 125 % display scaling would produce larger images than the baseline.
+  QT_SCALE_FACTOR: '1'
+
+jobs:
+  screenshots:
+    name: Gallery screenshots
+    # windows-latest is intentional; msbuild.yml pins windows-2022 because it
+    # needs a particular Visual Studio toolset, while this job only needs the
+    # compiler CMake selects by default. Do not add -G here: the image moves
+    # between Visual Studio versions and the committed Qt binaries are ABI
+    # compatible with the newer MSVC toolset.
+    runs-on: windows-latest
+    timeout-minutes: 45
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Qt
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: ${{ env.QT_VERSION }}
+          arch: win64_msvc2022_64
+          cache: true
+
+      - name: Install Pillow
+        shell: pwsh
+        run: python -m pip install --disable-pip-version-check --quiet pillow
+
+      - name: Check the baseline
+        shell: pwsh
+        run: |
+          # An empty baseline would make every comparison pass with nothing to
+          # compare against, so refuse to run rather than report a false green.
+          $images = @(Get-ChildItem tests/visual/baseline -Recurse -Filter *.png -File -ErrorAction SilentlyContinue)
+          if ($images.Count -eq 0) {
+            throw "tests/visual/baseline holds no PNGs. Create the baseline locally with 'python tools/visual_regression.py --exe <gallery> --update', review the images, and commit them under tests/visual/baseline/."
+          }
+          Write-Host "Baseline: $($images.Count) images."
+
+      - name: Configure
+        shell: pwsh
+        run: >
+          cmake -S . -B $env:BUILD_DIR
+          -A x64
+          -DCMAKE_PREFIX_PATH="$env:QT_ROOT_DIR"
+
+      - name: Build the gallery
+        shell: pwsh
+        run: cmake --build $env:BUILD_DIR --target periodicity_gallery --config Debug --parallel
+
+      - name: Locate the gallery executable
+        id: gallery
+        shell: pwsh
+        run: |
+          $exe = Get-ChildItem $env:BUILD_DIR -Recurse -Filter periodicity_gallery.exe -File |
+              Select-Object -First 1
+          if (-not $exe) { throw "periodicity_gallery.exe was not produced under $env:BUILD_DIR" }
+          Write-Host "Gallery: $($exe.FullName)"
+          "path=$($exe.FullName)" >> $env:GITHUB_OUTPUT
+
+      - name: Compare screenshots with the baseline
+        shell: pwsh
+        timeout-minutes: 10
+        run: >
+          python tools/visual_regression.py
+          --exe "${{ steps.gallery.outputs.path }}"
+          --baseline tests/visual/baseline
+          --out out/visual/actual
+          --strict
+
+      - name: Upload the visual diff
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: visual-diff
+          path: out/visual
+          if-no-files-found: ignore
+          retention-days: 14

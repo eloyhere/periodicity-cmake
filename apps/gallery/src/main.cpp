@@ -27,7 +27,15 @@
 #include <md/components/avatar.h>
 #include <md/components/badge.h>
 #include <md/components/banner.h>
+#include <md/components/bottom_sheet.h>
 #include <md/components/button.h>
+#include <md/components/chip.h>
+#include <md/components/divider.h>
+#include <md/components/fab.h>
+#include <md/components/icon_button.h>
+#include <md/components/navigation_bar.h>
+#include <md/components/search_bar.h>
+#include <md/components/switch.h>
 #include <md/components/calendar.h>
 #include <md/components/card.h>
 #include <md/components/carousel.h>
@@ -119,6 +127,8 @@
 #include <QStackedWidget>
 #include <QStandardItemModel>
 #include <QTime>
+#include <QElapsedTimer>
+#include <QStyle>
 #include <QTimer>
 #include <QVBoxLayout>
 #include <QWidget>
@@ -3513,6 +3523,247 @@ QWidget* poolPage(const Theme& theme)
     return page;
 }
 
+// The first wave from docs/component-gaps.md: the controls a real product
+// screen needs before the catalogue is usable end to end, in one place so the
+// visual regression baseline has a single page to review.
+QWidget* additionsPage(const Theme& theme)
+{
+    auto* page = new Page(theme);
+
+    page->addTitle(QStringLiteral("Additions"));
+    page->addLead(QStringLiteral(
+        "The P0 gaps from the component report: Switch and Divider for settings, "
+        "IconButton and FAB for actions, the four chip variants, SearchBar, a "
+        "bottom NavigationBar and a modal BottomSheet. Everything is keyboard "
+        "reachable and painted through the same View pipeline as the rest."));
+
+    const auto standardIcon = [page](QStyle::StandardPixmap pixmap) {
+        return page->style()->standardIcon(pixmap);
+    };
+
+    // ---- Switch and divider ---------------------------------------------
+    auto* wifi = new md::Switch;
+    wifi->setChecked(true);
+    auto* bluetooth = new md::Switch;
+    auto* bluetoothNote = new md::Text(QStringLiteral("Bluetooth: off"));
+    bluetoothNote->setRole(md::Text::TextRole::Caption);
+    QObject::connect(bluetooth, &md::Switch::toggled, bluetoothNote, [bluetoothNote](bool on) {
+        bluetoothNote->setText(on ? QStringLiteral("Bluetooth: on")
+                                  : QStringLiteral("Bluetooth: off"));
+    });
+
+    auto* settingsColumn = new QWidget;
+    auto* settingsLayout = new QVBoxLayout(settingsColumn);
+    settingsLayout->setContentsMargins(0, 0, 0, 0);
+    settingsLayout->setSpacing(8);
+    settingsLayout->addWidget(row({new md::Text(QStringLiteral("Wi-Fi")), wifi}));
+    settingsLayout->addWidget(new md::Divider);
+    settingsLayout->addWidget(row({new md::Text(QStringLiteral("Bluetooth")), bluetooth}));
+    settingsLayout->addWidget(new md::Divider);
+    settingsLayout->addWidget(bluetoothNote);
+    page->addCard(QStringLiteral("Switch and divider"),
+                  QStringLiteral("A 52x48 dp switch whose thumb slides over the short4 "
+                                 "motion token (and snaps under reduced motion), above a "
+                                 "1 dp outlineVariant divider. Space toggles the switch."),
+                  settingsColumn);
+
+    // ---- Actions: icon buttons and FABs ----------------------------------
+    auto* standardButton = new md::IconButton(standardIcon(QStyle::SP_FileIcon));
+    auto* filledButton = new md::IconButton(standardIcon(QStyle::SP_DialogSaveButton));
+    filledButton->setVariant(md::IconButton::Variant::Filled);
+    auto* tonalButton = new md::IconButton(standardIcon(QStyle::SP_MediaPlay));
+    tonalButton->setVariant(md::IconButton::Variant::Tonal);
+    auto* outlinedButton = new md::IconButton(standardIcon(QStyle::SP_TrashIcon));
+    outlinedButton->setVariant(md::IconButton::Variant::Outlined);
+    auto* toggleButton = new md::IconButton(standardIcon(QStyle::SP_BrowserReload));
+    toggleButton->setCheckable(true);
+
+    auto* smallFab = new md::Fab(standardIcon(QStyle::SP_FileIcon));
+    smallFab->setSize(md::Fab::Size::Small);
+    auto* regularFab = new md::Fab(standardIcon(QStyle::SP_DialogSaveButton));
+    auto* largeFab = new md::Fab(standardIcon(QStyle::SP_MediaPlay));
+    largeFab->setSize(md::Fab::Size::Large);
+    auto* extendedFab = new md::Fab(standardIcon(QStyle::SP_FileIcon));
+    extendedFab->setExtended(true);
+    extendedFab->setText(QStringLiteral("Compose"));
+
+    auto* actionNote = new md::Text(QStringLiteral("last action: none"));
+    actionNote->setRole(md::Text::TextRole::Caption);
+
+    const auto report = [actionNote](const QString& what) {
+        actionNote->setText(QStringLiteral("last action: %1").arg(what));
+    };
+    QObject::connect(standardButton, &md::IconButton::clicked, actionNote,
+                     [report] { report(QStringLiteral("standard icon button")); });
+    QObject::connect(filledButton, &md::IconButton::clicked, actionNote,
+                     [report] { report(QStringLiteral("filled icon button")); });
+    QObject::connect(tonalButton, &md::IconButton::clicked, actionNote,
+                     [report] { report(QStringLiteral("tonal icon button")); });
+    QObject::connect(outlinedButton, &md::IconButton::clicked, actionNote,
+                     [report] { report(QStringLiteral("outlined icon button")); });
+    QObject::connect(toggleButton, &md::IconButton::toggled, actionNote,
+                     [report](bool on) { report(on ? QStringLiteral("toggle on")
+                                                   : QStringLiteral("toggle off")); });
+    for (md::Fab* fab : {smallFab, regularFab, largeFab, extendedFab}) {
+        QObject::connect(fab, &md::Fab::clicked, actionNote,
+                         [report, fab] { report(fab->isExtended() ? QStringLiteral("extended FAB")
+                                                                  : QStringLiteral("FAB")); });
+    }
+
+    auto* actionColumn = new QWidget;
+    auto* actionLayout = new QVBoxLayout(actionColumn);
+    actionLayout->setContentsMargins(0, 0, 0, 0);
+    actionLayout->setSpacing(12);
+    actionLayout->addWidget(row({standardButton, filledButton, tonalButton,
+                                 outlinedButton, toggleButton}));
+    actionLayout->addWidget(row({smallFab, regularFab, largeFab, extendedFab}));
+    actionLayout->addWidget(actionNote);
+    page->addCard(QStringLiteral("Actions"),
+                  QStringLiteral("IconButton in all four variants, one checkable, and the "
+                                 "FAB at 40, 56 and 96 dp plus the extended pill."),
+                  actionColumn);
+
+    // ---- Chips -----------------------------------------------------------
+    auto* assistChip = new md::Chip(QStringLiteral("Assist"));
+    assistChip->setVariant(md::Chip::Variant::Assist);
+    assistChip->setLeadingIcon(standardIcon(QStyle::SP_DialogOpenButton));
+    auto* filterChip = new md::Chip(QStringLiteral("Filter"));
+    filterChip->setVariant(md::Chip::Variant::Filter);
+    filterChip->setSelected(true);
+    auto* inputChip = new md::Chip(QStringLiteral("Input"));
+    inputChip->setVariant(md::Chip::Variant::Input);
+    inputChip->setClosable(true);
+    auto* suggestionChip = new md::Chip(QStringLiteral("Suggestion"));
+    suggestionChip->setVariant(md::Chip::Variant::Suggestion);
+
+    auto* chipNote = new md::Text(QStringLiteral("Filter is selected; Input is closable"));
+    chipNote->setRole(md::Text::TextRole::Caption);
+    QObject::connect(filterChip, &md::Chip::selectedChanged, chipNote, [chipNote](bool selected) {
+        chipNote->setText(selected ? QStringLiteral("Filter selected")
+                                   : QStringLiteral("Filter cleared"));
+    });
+    QObject::connect(inputChip, &md::Chip::closed, chipNote,
+                     [chipNote] { chipNote->setText(QStringLiteral("Input chip closed")); });
+
+    auto* chipColumn = new QWidget;
+    auto* chipLayout = new QVBoxLayout(chipColumn);
+    chipLayout->setContentsMargins(0, 0, 0, 0);
+    chipLayout->setSpacing(12);
+    chipLayout->addWidget(row({assistChip, filterChip, inputChip, suggestionChip}));
+    chipLayout->addWidget(chipNote);
+    page->addCard(QStringLiteral("Chips"),
+                  QStringLiteral("Assist, filter (selected, leading check), input (24 dp "
+                                 "close target) and suggestion. Assist and suggestion are "
+                                 "stateless by design."),
+                  chipColumn);
+
+    // ---- Search ----------------------------------------------------------
+    auto* search = new md::SearchBar;
+    search->setPlaceholder(QStringLiteral("Search components"));
+    search->setSuggestions({QStringLiteral("Button"), QStringLiteral("Card"),
+                            QStringLiteral("Chip"), QStringLiteral("Dialog"),
+                            QStringLiteral("Divider"), QStringLiteral("FAB"),
+                            QStringLiteral("Switch")});
+    auto* searchNote = new md::Text(QStringLiteral("type to filter, Return to submit"));
+    searchNote->setRole(md::Text::TextRole::Caption);
+    QObject::connect(search, &md::SearchBar::submitted, searchNote, [searchNote](const QString& text) {
+        searchNote->setText(QStringLiteral("submitted: %1").arg(text));
+    });
+    QObject::connect(search, &md::SearchBar::suggestionActivated, searchNote,
+                     [searchNote](const QString& text) {
+                         searchNote->setText(QStringLiteral("suggestion: %1").arg(text));
+                     });
+
+    auto* searchColumn = new QWidget;
+    auto* searchLayout = new QVBoxLayout(searchColumn);
+    searchLayout->setContentsMargins(0, 0, 0, 0);
+    searchLayout->setSpacing(12);
+    searchLayout->addWidget(search);
+    searchLayout->addWidget(searchNote);
+    page->addCard(QStringLiteral("Search"),
+                  QStringLiteral("A 56 dp pill with a Qt-backed line edit, a 48 dp clear "
+                                 "target and an anchored suggestion list (Up/Down + Return)."),
+                  searchColumn);
+
+    // ---- Navigation bar --------------------------------------------------
+    auto* navigation = new md::NavigationBar;
+    navigation->addDestination({standardIcon(QStyle::SP_FileIcon), QIcon(),
+                                QStringLiteral("Home"), QString()});
+    navigation->addDestination({standardIcon(QStyle::SP_DirIcon), QIcon(),
+                                QStringLiteral("Files"), QStringLiteral("3")});
+    navigation->addDestination({standardIcon(QStyle::SP_MediaPlay), QIcon(),
+                                QStringLiteral("Media"), QString()});
+    navigation->addDestination({standardIcon(QStyle::SP_DialogSaveButton), QIcon(),
+                                QStringLiteral("Saved"), QString()});
+    auto* navigationNote = new md::Text(QStringLiteral("Home"));
+    navigationNote->setRole(md::Text::TextRole::Caption);
+    QObject::connect(navigation, &md::NavigationBar::destinationActivated, navigationNote,
+                     [navigation, navigationNote](int index) {
+                         navigationNote->setText(
+                             QStringLiteral("%1 activated").arg(navigation->destinationAt(index).label));
+                     });
+
+    auto* navigationColumn = new QWidget;
+    auto* navigationLayout = new QVBoxLayout(navigationColumn);
+    navigationLayout->setContentsMargins(0, 0, 0, 0);
+    navigationLayout->setSpacing(12);
+    navigationLayout->addWidget(navigation);
+    navigationLayout->addWidget(navigationNote);
+    page->addCard(QStringLiteral("Navigation bar"),
+                  QStringLiteral("80 dp bar with an active 32 dp indicator pill, a badge and "
+                                 "arrow keys plus Home/End; RTL mirrors the order."),
+                  navigationColumn);
+
+    // ---- Bottom sheet ----------------------------------------------------
+    auto* openSheet = new md::Button(QStringLiteral("Open bottom sheet"));
+    openSheet->setVariant(md::Button::ButtonVariant::FilledTonal);
+    auto* sheetNote = new md::Text(QStringLiteral("the sheet opens over a 32% scrim"));
+    sheetNote->setRole(md::Text::TextRole::Caption);
+    QObject::connect(openSheet, &md::Button::clicked, page, [page, sheetNote] {
+        auto* sheet = new md::BottomSheet(page->window());
+        sheet->setTitle(QStringLiteral("Filters"));
+
+        auto* content = new QWidget;
+        auto* contentLayout = new QVBoxLayout(content);
+        contentLayout->setContentsMargins(0, 0, 0, 0);
+        contentLayout->setSpacing(12);
+        auto* text = new QLabel(
+            QStringLiteral("A modal sheet: the scrim, the focus trap and the Escape key "
+                           "come from the Modal layer. Drag the handle down past a quarter "
+                           "of the height (or press Escape) to dismiss."));
+        text->setWordWrap(true);
+        contentLayout->addWidget(text);
+        auto* close = new md::Button(QStringLiteral("Done"));
+        close->setVariant(md::Button::ButtonVariant::Filled);
+        contentLayout->addWidget(close, 0, Qt::AlignLeft);
+
+        sheet->setContent(content);
+        QObject::connect(close, &md::Button::clicked, sheet, [sheet] { sheet->close(); });
+        QObject::connect(sheet, &md::BottomSheet::closed, sheet, &QObject::deleteLater);
+        QObject::connect(sheet, &md::BottomSheet::closed, sheetNote, [sheetNote] {
+            sheetNote->setText(QStringLiteral("sheet closed"));
+        });
+
+        sheet->open();
+        sheetNote->setText(QStringLiteral("sheet open"));
+    });
+
+    auto* sheetColumn = new QWidget;
+    auto* sheetLayout = new QVBoxLayout(sheetColumn);
+    sheetLayout->setContentsMargins(0, 0, 0, 0);
+    sheetLayout->setSpacing(12);
+    sheetLayout->addWidget(openSheet, 0, Qt::AlignLeft);
+    sheetLayout->addWidget(sheetNote);
+    page->addCard(QStringLiteral("Bottom sheet"),
+                  QStringLiteral("A bottom-anchored surface with a drag handle, a 28 dp top "
+                                 "corner and a scrollable body, registered with the Modal "
+                                 "layer just below dialogs."),
+                  sheetColumn);
+
+    page->addStretch();
+    return page;
+}
+
 } // namespace
 
 // The window owns the page registry so that --screenshot can walk it without a
@@ -3581,6 +3832,32 @@ public:
             area->verticalScrollBar()->setValue(area->verticalScrollBar()->maximum());
             QCoreApplication::processEvents();
         }
+    }
+
+    // The toolbar tints itself from the active page's scroll offset, so the
+    // capture walks every page from a known top position. A page that is
+    // already at zero still gets a nudge, because the toolbar only reacts to a
+    // scroll notification and would otherwise keep the previous page's tint.
+    void scrollPageToTop(int index)
+    {
+        if (auto* area = qobject_cast<QScrollArea*>(stack_->widget(index))) {
+            QScrollBar* bar = area->verticalScrollBar();
+            if (bar->value() == 0 && bar->maximum() > 0)
+                bar->setValue(1);
+            bar->setValue(0);
+            QCoreApplication::processEvents();
+        }
+    }
+
+    // Scroll-driven chrome (the toolbar tint, the scrollbars) animates for a
+    // frame or two after the offset changes. A capture has to wait for that to
+    // finish, or two runs disagree on whatever frame they happened to catch.
+    static void settle(int milliseconds = 250)
+    {
+        QElapsedTimer clock;
+        clock.start();
+        while (clock.elapsed() < milliseconds)
+            QCoreApplication::processEvents(QEventLoop::AllEvents, 10);
     }
 
     // Drives the Pool page's controls without a pointer, then waits for the
@@ -3724,6 +4001,9 @@ private:
             {QStringLiteral("Pool"),
              QStringLiteral("Pools, threads, IO and IPC"),
              &poolPage},
+            {QStringLiteral("Additions"),
+             QStringLiteral("Switch, chips, actions, search, sheets"),
+             &additionsPage},
         };
 
         auto* root = new md::Constraint;
@@ -3942,15 +4222,22 @@ int main(int argc, char* argv[])
 
         for (int index = 0; index < window.pageCount(); ++index) {
             window.showPage(index);
-            QCoreApplication::processEvents();
+            window.scrollPageToTop(index);
+            GalleryWindow::settle();
             const QString stem = QStringLiteral("%1/%2").arg(
                 directory, window.pageTitle(index).toLower());
             if (!window.grab().save(stem + QStringLiteral(".png")))
                 return 2;
 
             window.scrollPageToBottom(index);
+            GalleryWindow::settle();
             if (!window.grab().save(stem + QStringLiteral("-bottom.png")))
                 return 2;
+
+            // Leave the page at the top so the next capture starts from the
+            // same toolbar state no matter which page came before.
+            window.scrollPageToTop(index);
+            GalleryWindow::settle(120);
         }
         return 0;
     }
