@@ -4,8 +4,8 @@ The gallery in `apps/gallery/` is the only place where the library's painting,
 measurement and theming are visible end to end. It can render itself without a
 user: `periodicity_gallery.exe --screenshot <dir>` walks every page, grabs the
 window twice per page (top and scrolled to the bottom), and writes
-`<page>.png` / `<page>-bottom.png`. That is one PNG pair per page: 32 images
-for the current 16 pages, roughly 1180x840 each.
+`<page>.png` / `<page>-bottom.png`. That is one PNG pair per page: 36 images
+for the current 18 pages, roughly 1180x840 each.
 
 `tools/visual_regression.py` runs that mode and compares the result with the
 committed baseline in `tests/visual/baseline/`. It turns "the button lost its

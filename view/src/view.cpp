@@ -66,6 +66,7 @@ constexpr quint32 kPaintSite = 1u << 0;
 constexpr quint32 kMeasureSite = 1u << 1;
 constexpr quint32 kArrangeSite = 1u << 2;
 constexpr quint32 kEventSite = 1u << 3;
+constexpr quint32 kGpuSite = 1u << 4;
 
 // The ripple controller clips to a single radius, so an asymmetric shape uses
 // its largest corner as the clip. That keeps a pill and a rounded card clean;
@@ -904,6 +905,90 @@ void View::setInteractionFeedbackEnabled(bool enabled)
 bool View::isInteractionFeedbackEnabled() const noexcept
 {
     return interactionFeedbackEnabled_;
+}
+
+// ---------------------------------------------------------------------------
+// GPU acceleration (opt-in)
+// ---------------------------------------------------------------------------
+
+void View::setGpuAccelerated(bool enabled)
+{
+    if (enabled && !isGpuAccelerationAvailable()) {
+        recordGpuFallback(QStringLiteral(
+            "this build or QPA platform has no usable OpenGL widget surface"));
+        enabled = false;
+    } else if (enabled && !hasGpuCompositorAncestor()) {
+        recordGpuFallback(QStringLiteral(
+            "the view is not inside a GpuCompositor; it keeps painting on the "
+            "software path"));
+        enabled = false;
+    }
+
+    applyGpuAccelerated(enabled);
+
+    // The flag is inherited by the current subtree, the same way a ThemeScope
+    // applies to descendants. It is applied at call time: a view added later
+    // starts on Software and receives the next call.
+    const QList<View*> descendants = findChildren<View*>();
+    for (View* descendant : descendants) {
+        if (descendant != nullptr && descendant != this)
+            descendant->applyGpuAccelerated(enabled);
+    }
+}
+
+bool View::isGpuAccelerated() const noexcept
+{
+    return gpuAccelerated_;
+}
+
+bool View::isGpuAccelerationAvailable() const
+{
+    return isBackendAvailable(RenderBackend::OpenGL);
+}
+
+void View::setRenderBackend(RenderBackend backend)
+{
+    setGpuAccelerated(backend == RenderBackend::OpenGL);
+}
+
+RenderBackend View::renderBackend() const noexcept
+{
+    return gpuAccelerated_ ? RenderBackend::OpenGL : RenderBackend::Software;
+}
+
+void View::applyGpuAccelerated(bool enabled)
+{
+    if (gpuAccelerated_ == enabled)
+        return;
+
+    gpuAccelerated_ = enabled;
+    onGpuAccelerationChanged(enabled);
+    emit gpuAccelerationChanged(enabled);
+    requestUpdate();
+}
+
+void View::recordGpuFallback(const QString& reason)
+{
+    guardReport_.lastError = QStringLiteral("md::view: GPU acceleration unavailable: %1")
+                                 .arg(reason);
+
+    if ((guardReport_.reportedSites & kGpuSite) == 0) {
+        guardReport_.reportedSites |= kGpuSite;
+        qWarning("%s", qUtf8Printable(guardReport_.lastError));
+    }
+}
+
+bool View::hasGpuCompositorAncestor() const
+{
+    // Property-based rather than a qobject_cast so the kernel does not need to
+    // know the concrete container (GpuCompositor and GpuCanvas both mark
+    // themselves). That keeps components/ out of view/'s dependency graph.
+    for (QWidget* widget = parentWidget(); widget != nullptr;
+         widget = widget->parentWidget()) {
+        if (widget->property("mdGpuHost").toBool())
+            return true;
+    }
+    return false;
 }
 
 void View::onStoreChanged(Store* store, const QString& key, const QVariant& value)

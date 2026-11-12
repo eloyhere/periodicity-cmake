@@ -39,6 +39,7 @@
 #include <md/tokens/shape.h>
 #include <md/view/error_guard.h>
 #include <md/view/lifecycle.h>
+#include <md/view/render_backend.h>
 
 #include <QColor>
 #include <QList>
@@ -131,6 +132,38 @@ public:
     void setInteractionFeedbackEnabled(bool enabled);
     [[nodiscard]] bool isInteractionFeedbackEnabled() const noexcept;
 
+    // GPU acceleration (opt-in) -------------------------------------------
+    //
+    // The default is off: every view paints with QPainter on the software
+    // path, exactly as before this API existed. The switch is the same for
+    // every component because it lives on the kernel, not on a component.
+    //
+    // The flag is a declaration of intent that a GPU container honours. The
+    // container is md::GpuCompositor: it renders each enabled direct child
+    // once into a texture and composites the textures on the GPU. A view that
+    // is enabled but is not inside a compositor keeps painting on the software
+    // path and records that fact in lastError().
+    //
+    // setGpuAccelerated() applies to this view and, recursively, to its
+    // current View descendants, so a caller may flip one root and have the
+    // subtree follow (this mirrors how a ThemeScope applies to descendants).
+    // A later reparent does not retroactively change the flag: call it again
+    // after building a new subtree.
+    //
+    // Requesting an unavailable backend records the reason in lastError() and
+    // leaves the view (and its descendants) on Software. isGpuAccelerated()
+    // then returns false. Availability is compile-time (Qt6::OpenGLWidgets) and
+    // run-time (a non-headless QPA platform with a creatable GL context).
+    void setGpuAccelerated(bool enabled);
+    [[nodiscard]] bool isGpuAccelerated() const noexcept;
+    [[nodiscard]] bool isGpuAccelerationAvailable() const;
+
+    // The same switch expressed as a backend. setRenderBackend(OpenGL) is
+    // setGpuAccelerated(true); the getter reports Software whenever the request
+    // could not be honoured, so it always names the path the view is on.
+    void setRenderBackend(RenderBackend backend);
+    [[nodiscard]] RenderBackend renderBackend() const noexcept;
+
     void setElevation(Elevation level);
     [[nodiscard]] Elevation elevation() const noexcept;
 
@@ -184,6 +217,10 @@ public:
 signals:
     void storeChanged(const QString& key, const QVariant& value);
     void storeBindingChanged();
+
+    // Emitted whenever the effective flag changes. GpuCompositor listens to
+    // this to start or stop uploading the view's frame as a texture.
+    void gpuAccelerationChanged(bool enabled);
 
 protected:
     // The framework applies "theme" by installing a ThemeScope on this view;
@@ -245,6 +282,11 @@ protected:
     virtual void onThemeChanged() {}
     virtual void onEnabledChanged(bool enabled) { Q_UNUSED(enabled); }
 
+    // Called after the effective GPU flag changed. The default does nothing;
+    // a component whose paint output is cached in a texture may invalidate it
+    // here. The hook runs on the UI thread.
+    virtual void onGpuAccelerationChanged(bool enabled) { Q_UNUSED(enabled); }
+
     // Stores the result of one measurement pass. Negative sizes are clamped
     // to zero.
     void setMeasuredSize(QSizeF size);
@@ -283,6 +325,17 @@ private:
     // focusable. Every path that changes one of the three re-applies it.
     void syncRippleEnabled();
 
+    // Applies the effective flag without consulting availability. The public
+    // setter resolves availability once and then walks the subtree.
+    void applyGpuAccelerated(bool enabled);
+
+    // Builds the diagnostic for a request that could not be honoured and
+    // records it in the guard report (lastError). Warns once per view.
+    void recordGpuFallback(const QString& reason);
+
+    // True when this widget or one of its ancestors is a GpuCompositor.
+    [[nodiscard]] bool hasGpuCompositorAncestor() const;
+
     // How large the view asked to be. Zero until the first measurement pass.
     QSizeF measuredSize_{0.0, 0.0};
 
@@ -313,6 +366,11 @@ private:
     // programmatic focus), false when a mouse press or a popup established it.
     // The focus ring is a keyboard indicator; the state layer covers the rest.
     bool keyboardFocus_ = false;
+
+    // Effective GPU opt-in. False (the software path) until a successful
+    // setGpuAccelerated(true), and forced back to false whenever the request
+    // cannot be honoured.
+    bool gpuAccelerated_ = false;
 
     layer::BackgroundLayer backgroundLayer_;
     layer::ElevationLayer elevationLayer_;

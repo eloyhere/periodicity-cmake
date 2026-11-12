@@ -138,15 +138,33 @@ struct ChartSeries
 // The ChartAnimation::Driver base is private: it is how ChartAnimation asks the
 // chart to start or stop the run, not part of the chart's public surface.
 // Antialiasing strategy for the data marks. Qt's raster engine exposes only an
-// on/off antialiasing switch, so the supersampled modes are implemented by the
-// base: the plot is rendered into an offscreen image at Nx and blitted down with
-// a smooth transform. That trades fill rate for edge quality, which is why the
-// default is the cheap grey raster and the caller opts into supersampling.
+// on/off antialiasing switch, so every other strategy is implemented by the
+// base. They fall into four families:
+//
+//   * aliased / coverage: None draws hard edges, Grayscale is Qt's raster
+//     coverage antialiasing.
+//   * coverage sampling: Supersample2x/4x render the plot into an offscreen
+//     image at Nx and blit it down with a smooth transform.
+//   * sample accumulation: Jittered4x/8x render the marks once per sub-pixel
+//     offset in a fixed sample pattern and average the premultiplied frames.
+//   * post-process: Fxaa, Fmaa, Mlaa, Smaa and Cmaa render the marks aliased and
+//     filter the finished plot image, each with its own edge model.
+//
+// The sampling modes trade fill rate for edge quality; the post-process modes
+// trade a little edge accuracy for a single aliased render. The default is the
+// cheap grey raster, and the caller opts into the more expensive modes.
 enum class ChartAntialiasing {
     None,            // Aliased edges; cheapest, useful for dense heat maps.
     Grayscale,       // Qt's raster antialiasing; the default.
     Supersample2x,   // 2x2 supersampling, downsampled on blit.
     Supersample4x,   // 4x4 supersampling, the highest quality offered.
+    Fxaa,            // Post-process edge filter (FXAA family) on the plot image.
+    Fmaa,            // Fast morphological AA (MLAA family), run-length based.
+    Mlaa,            // Morphological AA, span-classified trapezoid blending.
+    Smaa,            // Area-based core of the SMAA family; no lookup texture.
+    Cmaa,            // Conservative morphological AA; monotone edges only.
+    Jittered4x,      // Four rotated-grid samples, averaged in a buffer.
+    Jittered8x,      // Eight eight-queens samples, averaged in a buffer.
 };
 
 class ChartBase : public View, private ChartAnimation::Driver
@@ -209,7 +227,7 @@ public:
     void setAnimated(bool animated);
 
     // How the data marks are antialiased. Changing it invalidates the plot (not
-    // the cached furniture, which never uses the supersampled path) and repaints.
+    // the cached furniture, which never uses the plot strategy) and repaints.
     void setAntialiasing(ChartAntialiasing mode);
     [[nodiscard]] ChartAntialiasing antialiasing() const noexcept;
     [[nodiscard]] bool isAnimated() const noexcept;

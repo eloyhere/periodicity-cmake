@@ -51,11 +51,14 @@
 #include <QSizePolicy>
 
 #include <algorithm>
+#include <cstddef>
+#include <cstdlib>
 #include <cmath>
 #include <exception>
 #include <limits>
 #include <stdexcept>
 #include <utility>
+#include <vector>
 
 namespace md {
 
@@ -920,6 +923,539 @@ void ChartBase::measureOverride(MeasureSpec width, MeasureSpec height)
     }
 }
 
+// --- Post-process antialiasing ------------------------------------------------
+//
+// The filters below operate on the finished plot image, which the base renders
+// at widget resolution into an ARGB32 pre-multiplied buffer. They exist because
+// the raster engine only offers on/off coverage antialiasing: a chart that wants
+// a sharper result at a lower fill cost than 4x supersampling can filter the
+// image afterwards instead. Jittered accumulation is built in the same place: it
+// renders the marks several times rather than filtering a single pass.
+
+namespace {
+
+inline int lumaOf(QRgb pixel)
+{
+    return (77 * qRed(pixel) + 150 * qGreen(pixel) + 29 * qBlue(pixel)) >> 8;
+}
+
+// Mixes two premultiplied pixels; `weight` is the share of `second`, 0..256.
+inline QRgb lerpPremultiplied(QRgb first, QRgb second, int weight)
+{
+    const int inverse = 256 - weight;
+    return qRgba((qRed(first) * inverse + qRed(second) * weight) >> 8,
+                 (qGreen(first) * inverse + qGreen(second) * weight) >> 8,
+                 (qBlue(first) * inverse + qBlue(second) * weight) >> 8,
+                 (qAlpha(first) * inverse + qAlpha(second) * weight) >> 8);
+}
+
+// The luminance plane of a premultiplied image. The morphological filters read
+// each neighbour several times while they trace spans, so they materialise the
+// 8-bit luminance once instead of re-deriving it from the pixels.
+class LumaPlane
+{
+public:
+    explicit LumaPlane(const QImage& image)
+        : width_(image.width())
+        , height_(image.height())
+        , values_(static_cast<std::size_t>(width_) * static_cast<std::size_t>(height_))
+    {
+        for (int y = 0; y < height_; ++y) {
+            const QRgb* row = reinterpret_cast<const QRgb*>(image.constScanLine(y));
+            for (int x = 0; x < width_; ++x)
+                values_[index(x, y)] = lumaOf(row[x]);
+        }
+    }
+
+    [[nodiscard]] int at(int x, int y) const noexcept { return values_[index(x, y)]; }
+
+private:
+    [[nodiscard]] std::size_t index(int x, int y) const noexcept
+    {
+        return static_cast<std::size_t>(y) * static_cast<std::size_t>(width_)
+             + static_cast<std::size_t>(x);
+    }
+
+    int width_ = 0;
+    int height_ = 0;
+    std::vector<int> values_;
+};
+
+inline QRgb pixelAt(const QImage& image, int x, int y)
+{
+    return reinterpret_cast<const QRgb*>(image.constScanLine(y))[x];
+}
+
+inline void setPixelAt(QImage& image, int x, int y, QRgb value)
+{
+    reinterpret_cast<QRgb*>(image.scanLine(y))[x] = value;
+}
+
+// FXAA-family filter: find pixels whose 4-neighbourhood spans a luminance range
+// beyond `threshold` and blend them towards the neighbourhood average. Flat
+// interior pixels and flat background are left untouched, so text and solid
+// fills keep their weight.
+void filterFxaa(QImage& image, int threshold = 12)
+{
+    const int width = image.width();
+    const int height = image.height();
+    if (width < 3 || height < 3)
+        return;
+
+    const QImage source = image.copy();
+
+    for (int y = 1; y < height - 1; ++y) {
+        const QRgb* rowUp = reinterpret_cast<const QRgb*>(source.constScanLine(y - 1));
+        const QRgb* row = reinterpret_cast<const QRgb*>(source.constScanLine(y));
+        const QRgb* rowDown = reinterpret_cast<const QRgb*>(source.constScanLine(y + 1));
+        QRgb* out = reinterpret_cast<QRgb*>(image.scanLine(y));
+
+        for (int x = 1; x < width - 1; ++x) {
+            const int centre = lumaOf(row[x]);
+            const int north = lumaOf(rowUp[x]);
+            const int south = lumaOf(rowDown[x]);
+            const int west = lumaOf(row[x - 1]);
+            const int east = lumaOf(row[x + 1]);
+
+            const int lowest = std::min(std::min(north, south), std::min(west, east));
+            const int highest = std::max(std::max(north, south), std::max(west, east));
+            if (highest - lowest < threshold)
+                continue;
+
+            const QRgb blended = qRgb((qRed(row[x]) * 4 + qRed(rowUp[x]) + qRed(rowDown[x])
+                                       + qRed(row[x - 1]) + qRed(row[x + 1])) / 8,
+                                      (qGreen(row[x]) * 4 + qGreen(rowUp[x]) + qGreen(rowDown[x])
+                                       + qGreen(row[x - 1]) + qGreen(row[x + 1])) / 8,
+                                      (qBlue(row[x]) * 4 + qBlue(rowUp[x]) + qBlue(rowDown[x])
+                                       + qBlue(row[x - 1]) + qBlue(row[x + 1])) / 8);
+            out[x] = qRgba(qRed(blended), qGreen(blended), qBlue(blended), qAlpha(row[x]));
+        }
+    }
+}
+
+// Fast morphological filter, MLAA family: locate horizontal and vertical edges,
+// measure the run length of each edge, then blend the two pixels that straddle
+// the edge in proportion to the run. Short runs (the usual stair steps of a
+// shallow diagonal) get a half-pixel blend; long runs stay crisp.
+void filterFmaa(QImage& image, int threshold = 24)
+{
+    const int width = image.width();
+    const int height = image.height();
+    if (width < 3 || height < 3)
+        return;
+
+    const QImage source = image.copy();
+    constexpr int kMaxRun = 4;
+
+    // Horizontal edges: a vertical luminance step between (x, y) and (x+1, y).
+    for (int y = 0; y < height; ++y) {
+        const QRgb* row = reinterpret_cast<const QRgb*>(source.constScanLine(y));
+        QRgb* out = reinterpret_cast<QRgb*>(image.scanLine(y));
+        for (int x = 0; x < width - 1; ++x) {
+            if (std::abs(lumaOf(row[x + 1]) - lumaOf(row[x])) < threshold)
+                continue;
+
+            int run = 1;
+            while (run < kMaxRun && x + run < width - 1
+                   && std::abs(lumaOf(row[x + 1 + run]) - lumaOf(row[x + run])) >= threshold)
+                ++run;
+
+            const int weight = std::min(run, kMaxRun) * 32;
+            const auto mix = [weight](QRgb a, QRgb b) {
+                return qRgb((qRed(a) * (64 - weight) + qRed(b) * weight) / 64,
+                            (qGreen(a) * (64 - weight) + qGreen(b) * weight) / 64,
+                            (qBlue(a) * (64 - weight) + qBlue(b) * weight) / 64);
+            };
+            out[x + 1] = qRgba(qRed(mix(row[x], row[x + 1])), qGreen(mix(row[x], row[x + 1])),
+                               qBlue(mix(row[x], row[x + 1])), qAlpha(row[x + 1]));
+        }
+    }
+
+    // Vertical edges: the same idea on columns. The horizontal pass already
+    // softened their crossings, so re-read the image for this one.
+    const QImage columns = image.copy();
+    for (int x = 0; x < width; ++x) {
+        for (int y = 0; y < height - 1; ++y) {
+            const QRgb upper = columns.pixel(x, y);
+            const QRgb lower = columns.pixel(x, y + 1);
+            if (std::abs(lumaOf(lower) - lumaOf(upper)) < threshold)
+                continue;
+
+            int run = 1;
+            while (run < kMaxRun && y + run < height - 1
+                   && std::abs(lumaOf(columns.pixel(x, y + 1 + run))
+                               - lumaOf(columns.pixel(x, y + run))) >= threshold)
+                ++run;
+
+            const int weight = std::min(run, kMaxRun) * 32;
+            const QRgb mixed = qRgb((qRed(upper) * (64 - weight) + qRed(lower) * weight) / 64,
+                                    (qGreen(upper) * (64 - weight) + qGreen(lower) * weight) / 64,
+                                    (qBlue(upper) * (64 - weight) + qBlue(lower) * weight) / 64);
+            QRgb* target = reinterpret_cast<QRgb*>(image.scanLine(y + 1));
+            target[x] = qRgba(qRed(mixed), qGreen(mixed), qBlue(mixed), qAlpha(lower));
+        }
+    }
+}
+
+// MLAA: classify each edge span as step/corner/cap and blend the straddling
+// pair with trapezoid weights; omits the reference filter's Z/U area tables.
+void filterMlaa(QImage& image, int threshold = 20)
+{
+    const int width = image.width();
+    const int height = image.height();
+    if (width < 3 || height < 3)
+        return;
+
+    const QImage source = image.copy();
+    const LumaPlane luma(source);
+
+    // A pair edge is the boundary between two adjacent pixels. The sign records
+    // which side is brighter, so a span never mixes a rising edge with a falling
+    // one.
+    const auto horizontalEdge = [&](int x, int y) -> qint8 {
+        if (x < 0 || x >= width || y < 0 || y >= height - 1)
+            return 0;
+        const int delta = luma.at(x, y + 1) - luma.at(x, y);
+        return delta >= threshold ? qint8(1) : delta <= -threshold ? qint8(-1) : qint8(0);
+    };
+    const auto verticalEdge = [&](int x, int y) -> qint8 {
+        if (x < 0 || x >= width - 1 || y < 0 || y >= height)
+            return 0;
+        const int delta = luma.at(x + 1, y) - luma.at(x, y);
+        return delta >= threshold ? qint8(1) : delta <= -threshold ? qint8(-1) : qint8(0);
+    };
+
+    constexpr int kMaxSpan = 16;
+
+    // Horizontal pass: a run of horizontal edges is a near-horizontal boundary.
+    // The two rows straddle it; a perpendicular edge at either end turns the
+    // trapezoid into a corner or a step.
+    for (int y = 0; y + 1 < height; ++y) {
+        int x = 0;
+        while (x < width) {
+            const qint8 sign = horizontalEdge(x, y);
+            if (sign == 0) {
+                ++x;
+                continue;
+            }
+            int end = x + 1;
+            while (end < width && horizontalEdge(end, y) == sign)
+                ++end;
+
+            const int span = end - x;
+            // A span on the image border, or one longer than the search limit,
+            // has no classified end: treat it as a straight line and leave it.
+            if (span <= kMaxSpan && x > 0 && end < width) {
+                const bool leftCrossing = verticalEdge(x - 1, y) != 0
+                                       || verticalEdge(x - 1, y + 1) != 0;
+                const bool rightCrossing = verticalEdge(end - 1, y) != 0
+                                        || verticalEdge(end - 1, y + 1) != 0;
+                for (int i = 0; i < span; ++i) {
+                    // Trapezoid position across the span: the share of the
+                    // diagonal boundary that falls inside this column.
+                    const int position = ((2 * i + 1) * 256) / (2 * span);
+                    int coverage = position;
+                    if (leftCrossing && rightCrossing) {
+                        coverage = position;              // step: full trapezoid
+                    } else if (leftCrossing) {
+                        coverage = (256 - position) / 2;  // corner at the left
+                    } else if (rightCrossing) {
+                        coverage = position / 2;          // corner at the right
+                    } else {
+                        coverage = 64;                    // loose cap
+                    }
+
+                    const int column = x + i;
+                    const QRgb top = pixelAt(source, column, y);
+                    const QRgb bottom = pixelAt(source, column, y + 1);
+                    setPixelAt(image, column, y,
+                               lerpPremultiplied(top, bottom, (256 - coverage) / 2));
+                    setPixelAt(image, column, y + 1,
+                               lerpPremultiplied(bottom, top, coverage / 2));
+                }
+            }
+            x = end;
+        }
+    }
+
+    // Vertical pass on the image the horizontal pass produced.
+    const QImage columns = image.copy();
+    for (int x = 0; x + 1 < width; ++x) {
+        int y = 0;
+        while (y < height) {
+            const qint8 sign = verticalEdge(x, y);
+            if (sign == 0) {
+                ++y;
+                continue;
+            }
+            int end = y + 1;
+            while (end < height && verticalEdge(x, end) == sign)
+                ++end;
+
+            const int span = end - y;
+            if (span <= kMaxSpan && y > 0 && end < height) {
+                const bool topCrossing = horizontalEdge(x, y - 1) != 0
+                                      || horizontalEdge(x + 1, y - 1) != 0;
+                const bool bottomCrossing = horizontalEdge(x, end - 1) != 0
+                                         || horizontalEdge(x + 1, end - 1) != 0;
+                for (int i = 0; i < span; ++i) {
+                    const int position = ((2 * i + 1) * 256) / (2 * span);
+                    int coverage = position;
+                    if (topCrossing && bottomCrossing) {
+                        coverage = position;
+                    } else if (topCrossing) {
+                        coverage = (256 - position) / 2;
+                    } else if (bottomCrossing) {
+                        coverage = position / 2;
+                    } else {
+                        coverage = 64;
+                    }
+
+                    const int row = y + i;
+                    const QRgb left = pixelAt(columns, x, row);
+                    const QRgb right = pixelAt(columns, x + 1, row);
+                    setPixelAt(image, x, row,
+                               lerpPremultiplied(left, right, (256 - coverage) / 2));
+                    setPixelAt(image, x + 1, row,
+                               lerpPremultiplied(right, left, coverage / 2));
+                }
+            }
+            y = end;
+        }
+    }
+}
+
+// SMAA core (area-based, not the full reference): 3x3 luma masks build edge
+// spans and analytic trapezoid areas blend the darker pixel; omits the textures.
+void filterSmaa(QImage& image, int threshold = 18)
+{
+    const int width = image.width();
+    const int height = image.height();
+    if (width < 3 || height < 3)
+        return;
+
+    const QImage source = image.copy();
+    const LumaPlane luma(source);
+
+    // Per-pixel 3x3 tests: a pixel sits on a vertical edge when the luminance
+    // left and right of it differs, and on a horizontal edge when the luminance
+    // above and below differs.
+    const auto verticalMask = [&](int x, int y) {
+        return std::abs(luma.at(std::min(width - 1, x + 1), y)
+                        - luma.at(std::max(0, x - 1), y))
+            >= threshold;
+    };
+    const auto horizontalMask = [&](int x, int y) {
+        return std::abs(luma.at(x, std::min(height - 1, y + 1))
+                        - luma.at(x, std::max(0, y - 1)))
+            >= threshold;
+    };
+
+    // An edge pair exists where both pixels of the pair see the same 3x3
+    // gradient. This keeps the mask from turning one thin line into two
+    // parallel edges.
+    const auto verticalEdge = [&](int x, int y) -> qint8 {
+        if (x < 0 || x >= width - 1 || y < 0 || y >= height)
+            return 0;
+        if (!verticalMask(x, y) || !verticalMask(x + 1, y))
+            return 0;
+        const int delta = luma.at(x + 1, y) - luma.at(x, y);
+        return delta >= threshold ? qint8(1) : delta <= -threshold ? qint8(-1) : qint8(0);
+    };
+    const auto horizontalEdge = [&](int x, int y) -> qint8 {
+        if (x < 0 || x >= width || y < 0 || y >= height - 1)
+            return 0;
+        if (!horizontalMask(x, y) || !horizontalMask(x, y + 1))
+            return 0;
+        const int delta = luma.at(x, y + 1) - luma.at(x, y);
+        return delta >= threshold ? qint8(1) : delta <= -threshold ? qint8(-1) : qint8(0);
+    };
+
+    constexpr int kMaxSpan = 16;
+
+    // The darker pixel of a pair receives the brighter colour; the weight is the
+    // area of the brighter region inside it, up to a quarter at a span centre.
+    const auto blendDarker = [](QImage& target, int darkX, int darkY, int brightX,
+                                int brightY, int weight) {
+        const QRgb dark = pixelAt(target, darkX, darkY);
+        const QRgb bright = pixelAt(target, brightX, brightY);
+        setPixelAt(target, darkX, darkY, lerpPremultiplied(dark, bright, weight));
+    };
+
+    for (int y = 0; y + 1 < height; ++y) {
+        int x = 0;
+        while (x < width) {
+            const qint8 sign = horizontalEdge(x, y);
+            if (sign == 0) {
+                ++x;
+                continue;
+            }
+            int end = x + 1;
+            while (end < width && horizontalEdge(end, y) == sign)
+                ++end;
+
+            const int span = end - x;
+            if (span <= kMaxSpan && x > 0 && end < width) {
+                for (int i = 0; i < span; ++i) {
+                    const int coverage = ((2 * i + 1) * 128) / (2 * span);
+                    const int column = x + i;
+                    if (sign > 0) {
+                        blendDarker(image, column, y, column, y + 1, coverage);
+                    } else {
+                        blendDarker(image, column, y + 1, column, y, coverage);
+                    }
+                }
+            }
+            x = end;
+        }
+    }
+
+    // Vertical pass; the horizontal pass softened the crossings, so read its
+    // result before writing.
+    const QImage columns = image.copy();
+    for (int x = 0; x + 1 < width; ++x) {
+        int y = 0;
+        while (y < height) {
+            const qint8 sign = verticalEdge(x, y);
+            if (sign == 0) {
+                ++y;
+                continue;
+            }
+            int end = y + 1;
+            while (end < height && verticalEdge(x, end) == sign)
+                ++end;
+
+            const int span = end - y;
+            if (span <= kMaxSpan && y > 0 && end < height) {
+                for (int i = 0; i < span; ++i) {
+                    const int coverage = ((2 * i + 1) * 128) / (2 * span);
+                    const int row = y + i;
+                    if (sign > 0) {
+                        blendDarker(image, x, row, x + 1, row, coverage);
+                    } else {
+                        blendDarker(image, x + 1, row, x, row, coverage);
+                    }
+                }
+            }
+            y = end;
+        }
+    }
+}
+
+// CMAA: blend only edges whose four-sample cross profile is monotone; omits span
+// tracing, so text strokes and corners keep their weight.
+void filterCmaa(QImage& image, int threshold = 24)
+{
+    const int width = image.width();
+    const int height = image.height();
+    if (width < 4 || height < 4)
+        return;
+
+    const QImage source = image.copy();
+    const LumaPlane luma(source);
+    constexpr int kWeight = 64; // a quarter, the conservative blend
+
+    const auto monotone = [](int a, int b, int c, int d) {
+        const bool rising = a <= b && b <= c && c <= d;
+        const bool falling = a >= b && b >= c && c >= d;
+        return (rising || falling) && a != d;
+    };
+
+    // Horizontal edges: the profile runs through both rows and one pixel on
+    // each side.
+    for (int y = 1; y + 2 < height; ++y) {
+        for (int x = 0; x < width; ++x) {
+            if (std::abs(luma.at(x, y + 1) - luma.at(x, y)) < threshold)
+                continue;
+            if (!monotone(luma.at(x, y - 1), luma.at(x, y), luma.at(x, y + 1),
+                          luma.at(x, y + 2)))
+                continue;
+
+            const QRgb top = pixelAt(source, x, y);
+            const QRgb bottom = pixelAt(source, x, y + 1);
+            setPixelAt(image, x, y, lerpPremultiplied(top, bottom, kWeight));
+            setPixelAt(image, x, y + 1, lerpPremultiplied(bottom, top, kWeight));
+        }
+    }
+
+    // Vertical edges use the same monotone test on the horizontal profile.
+    const QImage rows = image.copy();
+    for (int x = 1; x + 2 < width; ++x) {
+        for (int y = 0; y < height; ++y) {
+            if (std::abs(luma.at(x + 1, y) - luma.at(x, y)) < threshold)
+                continue;
+            if (!monotone(luma.at(x - 1, y), luma.at(x, y), luma.at(x + 1, y),
+                          luma.at(x + 2, y)))
+                continue;
+
+            const QRgb left = pixelAt(rows, x, y);
+            const QRgb right = pixelAt(rows, x + 1, y);
+            setPixelAt(image, x, y, lerpPremultiplied(left, right, kWeight));
+            setPixelAt(image, x + 1, y, lerpPremultiplied(right, left, kWeight));
+        }
+    }
+}
+
+// Jittered accumulation: average four rotated-grid or eight eight-queens
+// samples (one per row and column, no shared diagonal); omits adaptive sampling.
+template <typename DrawMarks>
+QImage renderJittered(const QSize& pixelSize, qreal ratio, const QRectF& plot,
+                      int sampleCount, DrawMarks&& drawMarks)
+{
+    static const QPointF kRotatedGrid[4] = {
+        QPointF(0.375, 0.125), QPointF(0.875, 0.375),
+        QPointF(0.125, 0.625), QPointF(0.625, 0.875),
+    };
+    static const QPointF kQueensPattern[8] = {
+        QPointF(0.0625, 0.0625), QPointF(0.1875, 0.5625),
+        QPointF(0.3125, 0.9375), QPointF(0.4375, 0.6875),
+        QPointF(0.5625, 0.3125), QPointF(0.6875, 0.8125),
+        QPointF(0.8125, 0.1875), QPointF(0.9375, 0.4375),
+    };
+
+    const bool eight = sampleCount >= 8;
+    const QPointF* offsets = eight ? kQueensPattern : kRotatedGrid;
+    const int count = eight ? 8 : 4;
+
+    QImage result(pixelSize, QImage::Format_ARGB32_Premultiplied);
+    result.setDevicePixelRatio(ratio);
+    result.fill(Qt::transparent);
+    QImage frame(pixelSize, QImage::Format_ARGB32_Premultiplied);
+
+    for (int sample = 0; sample < count; ++sample) {
+        frame.fill(Qt::transparent);
+        {
+            QPainter painter(&frame);
+            painter.setRenderHint(QPainter::Antialiasing, false);
+            painter.setRenderHint(QPainter::SmoothPixmapTransform, false);
+            painter.scale(ratio, ratio);
+            painter.translate(-plot.topLeft() + offsets[sample]);
+            drawMarks(painter);
+        }
+
+        // Running mean in place: after `sample` previous frames each channel is
+        // their average, so the new mean is
+        // (previous * sample + incoming) / (sample + 1).
+        const int divisor = sample + 1;
+        for (int y = 0; y < pixelSize.height(); ++y) {
+            const QRgb* incoming = reinterpret_cast<const QRgb*>(frame.constScanLine(y));
+            QRgb* accumulated = reinterpret_cast<QRgb*>(result.scanLine(y));
+            for (int x = 0; x < pixelSize.width(); ++x) {
+                const QRgb previous = accumulated[x];
+                const QRgb next = incoming[x];
+                accumulated[x] =
+                    qRgba((qRed(previous) * sample + qRed(next)) / divisor,
+                          (qGreen(previous) * sample + qGreen(next)) / divisor,
+                          (qBlue(previous) * sample + qBlue(next)) / divisor,
+                          (qAlpha(previous) * sample + qAlpha(next)) / divisor);
+            }
+        }
+    }
+    return result;
+}
+
+} // namespace
+
 void ChartBase::setAntialiasing(ChartAntialiasing mode)
 {
     if (antialiasing_ == mode)
@@ -972,37 +1508,118 @@ void ChartBase::paintContent(QPainter& painter, const QRectF& content)
                     paintEmptyState(target, plot);
             };
 
-            const int factor = antialiasing_ == ChartAntialiasing::Supersample2x ? 2
-                             : antialiasing_ == ChartAntialiasing::Supersample4x ? 4
-                                                                                 : 0;
+            const qreal ratio = devicePixelRatioF();
+            const auto pixelSizeFor = [&](int scale) {
+                return (plot.size() * ratio * scale).toSize();
+            };
+            const auto withinRasterLimit = [](const QSize& pixelSize) {
+                return !pixelSize.isEmpty() && pixelSize.width() <= 16384
+                    && pixelSize.height() <= 16384;
+            };
+            // Beyond the raster limit the buffer would be illegal; fall back to
+            // the grey raster instead of failing the paint. Every buffered
+            // family below goes through this same guard.
+            const auto drawGreyFallback = [&] {
+                painter.setRenderHint(QPainter::Antialiasing, true);
+                drawMarks(painter);
+            };
 
-            if (factor == 0) {
+            // The one dispatch over the strategy families:
+            //   aliased / coverage   -> the direct painter;
+            //   coverage sampling    -> Nx buffer, smooth downscale;
+            //   sample accumulation  -> jittered buffer average;
+            //   post-process         -> aliased buffer, then an edge filter.
+            switch (antialiasing_) {
+            case ChartAntialiasing::None:
+            case ChartAntialiasing::Grayscale:
                 painter.setRenderHint(QPainter::Antialiasing,
                                       antialiasing_ != ChartAntialiasing::None);
                 drawMarks(painter);
-            } else {
-                const qreal ratio = devicePixelRatioF();
-                const QSize pixelSize = (plot.size() * ratio * factor).toSize();
-                if (pixelSize.isEmpty() || pixelSize.width() > 16384
-                    || pixelSize.height() > 16384) {
-                    // Beyond the raster limit supersampling would allocate an
-                    // image the engine cannot hold; fall back to the grey raster.
-                    painter.setRenderHint(QPainter::Antialiasing, true);
-                    drawMarks(painter);
-                } else {
-                    QImage buffer(pixelSize, QImage::Format_ARGB32_Premultiplied);
-                    buffer.setDevicePixelRatio(ratio * factor);
-                    buffer.fill(Qt::transparent);
-                    {
-                        QPainter offscreen(&buffer);
-                        offscreen.setRenderHint(QPainter::Antialiasing, true);
-                        offscreen.setRenderHint(QPainter::SmoothPixmapTransform, true);
-                        offscreen.translate(-plot.topLeft());
-                        drawMarks(offscreen);
-                    }
-                    painter.setRenderHint(QPainter::SmoothPixmapTransform, true);
-                    painter.drawImage(plot.topLeft(), buffer);
+                break;
+
+            case ChartAntialiasing::Supersample2x:
+            case ChartAntialiasing::Supersample4x: {
+                const int factor =
+                    antialiasing_ == ChartAntialiasing::Supersample2x ? 2 : 4;
+                const QSize pixelSize = pixelSizeFor(factor);
+                if (!withinRasterLimit(pixelSize)) {
+                    drawGreyFallback();
+                    break;
                 }
+
+                QImage buffer(pixelSize, QImage::Format_ARGB32_Premultiplied);
+                buffer.setDevicePixelRatio(ratio * factor);
+                buffer.fill(Qt::transparent);
+                {
+                    QPainter offscreen(&buffer);
+                    // Supersampling relies on the device transform for its
+                    // quality: the marks are drawn antialiased at Nx.
+                    offscreen.setRenderHint(QPainter::Antialiasing, true);
+                    offscreen.setRenderHint(QPainter::SmoothPixmapTransform, true);
+                    offscreen.translate(-plot.topLeft());
+                    drawMarks(offscreen);
+                }
+                painter.setRenderHint(QPainter::SmoothPixmapTransform, true);
+                painter.drawImage(plot.topLeft(), buffer);
+                break;
+            }
+
+            case ChartAntialiasing::Jittered4x:
+            case ChartAntialiasing::Jittered8x: {
+                const QSize pixelSize = pixelSizeFor(1);
+                if (!withinRasterLimit(pixelSize)) {
+                    drawGreyFallback();
+                    break;
+                }
+
+                const int samples =
+                    antialiasing_ == ChartAntialiasing::Jittered8x ? 8 : 4;
+                const QImage buffer =
+                    renderJittered(pixelSize, ratio, plot, samples, drawMarks);
+                painter.setRenderHint(QPainter::SmoothPixmapTransform, true);
+                painter.drawImage(plot.topLeft(), buffer);
+                break;
+            }
+
+            case ChartAntialiasing::Fxaa:
+            case ChartAntialiasing::Fmaa:
+            case ChartAntialiasing::Mlaa:
+            case ChartAntialiasing::Smaa:
+            case ChartAntialiasing::Cmaa: {
+                const QSize pixelSize = pixelSizeFor(1);
+                if (!withinRasterLimit(pixelSize)) {
+                    drawGreyFallback();
+                    break;
+                }
+
+                QImage buffer(pixelSize, QImage::Format_ARGB32_Premultiplied);
+                buffer.setDevicePixelRatio(ratio);
+                buffer.fill(Qt::transparent);
+                {
+                    QPainter offscreen(&buffer);
+                    // The post-process filters want hard edges to work on, so
+                    // they render aliased and filter the finished image.
+                    offscreen.setRenderHint(QPainter::Antialiasing, false);
+                    offscreen.setRenderHint(QPainter::SmoothPixmapTransform, true);
+                    offscreen.translate(-plot.topLeft());
+                    drawMarks(offscreen);
+                }
+
+                if (antialiasing_ == ChartAntialiasing::Fxaa)
+                    filterFxaa(buffer);
+                else if (antialiasing_ == ChartAntialiasing::Fmaa)
+                    filterFmaa(buffer);
+                else if (antialiasing_ == ChartAntialiasing::Mlaa)
+                    filterMlaa(buffer);
+                else if (antialiasing_ == ChartAntialiasing::Smaa)
+                    filterSmaa(buffer);
+                else
+                    filterCmaa(buffer);
+
+                painter.setRenderHint(QPainter::SmoothPixmapTransform, true);
+                painter.drawImage(plot.topLeft(), buffer);
+                break;
+            }
             }
         }
     } catch (const std::exception& error) {
