@@ -161,6 +161,29 @@ out\build\x64-debug\periodicity_gallery.exe --screenshot .tmp\shots --dark   # d
 `--screenshot` also writes a `*-bottom.png` per page (scrolled to the end) so the cards
 below the fold are covered.
 
+## Troubleshooting
+
+### Unresolved meta-object symbols after pulling
+
+`unresolved external symbol "...::staticMetaObject"`, `"...::toggled"` and the
+like mean AUTOMOC did not regenerate the class. Each target caches a timestamp in
+the build tree; a header that appeared after the target was last scanned is not
+mocced even though the glob picks up its `.cpp`. Clear the cache and rebuild:
+
+```powershell
+Get-ChildItem out\build -Recurse -Directory -Filter '*_autogen' |
+  ForEach-Object { Remove-Item (Join-Path $_.FullName 'timestamp') -Force -ErrorAction SilentlyContinue }
+cmake --build --preset x64-debug
+```
+
+A fresh build tree never has this problem.
+
+### `Could not find the Qt platform plugin "offscreen"`
+
+`periodicity_deploy_qt_runtime()` deploys only the `windows` platform plugin, so
+`QT_QPA_PLATFORM=offscreen` aborts with a debug assertion dialog. Run the gallery
+with the default platform; `tools/visual_regression.py` does the same.
+
 ## Status
 
 Periodicity is still under construction. The chain from `core` to `components` now builds,

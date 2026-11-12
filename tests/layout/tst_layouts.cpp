@@ -510,7 +510,10 @@ void TestLayouts::badgeCountTruncates()
     QCOMPARE(badge.text(), QStringLiteral("7"));
 
     const QSize textSize = badge.sizeHint();
-    QVERIFY(textSize.width() > textSize.height());
+    // A single digit is the circular form of a badge, so the width is never
+    // narrower than the height and only grows past it when the glyph is wide.
+    // The metric must not depend on which platform plugin supplies the font.
+    QVERIFY(textSize.width() >= textSize.height());
     QVERIFY(textSize.height() >= 16);
 
     // A dot is square and has no content.
