@@ -635,7 +635,7 @@ void PopUp::paintContent(QPainter& painter, const QRectF& content)
             body.adjusted(-spread, -spread + density.dp(1.5), spread, spread + density.dp(1.5))));
     }
 
-    // M3 menus/popups separate the panel with a level-2 shadow only; an
+    // Design baseline menus/popups separate the panel with a level-2 shadow only; an
     // outlineVariant stroke would double the border on top of it.
     painter.setPen(Qt::NoPen);
     painter.setBrush(colours.surfaceContainer);

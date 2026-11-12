@@ -419,7 +419,7 @@ void Dropdown::paintContent(QPainter& painter, const QRectF& content)
                                 radius + spread, radius + spread);
     }
 
-    // An M3 menu-like surface is separated from the page by its elevation
+    // A design baseline menu-like surface is separated from the page by its elevation
     // shadow, not by a stroke: drawing outline-variant on top of the shadow
     // stacked two borders on the same edge.
     painter.setPen(Qt::NoPen);

@@ -1,6 +1,6 @@
 // Periodicity — Tag (media/content batch).
 //
-// An M3 chip in its three baseline container treatments — Filled, Tonal and
+// A design baseline chip in its three container treatments — Filled, Tonal and
 // Outlined — with an optional leading colour dot, an optional tinted icon, an
 // optional selected state and an optional close affordance. The component is
 // the 32 dp, 8 dp-corner chip painted from the theme's small shape token; it

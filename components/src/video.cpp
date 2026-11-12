@@ -5,13 +5,18 @@
 // file and never talks to an audio device. The 16 ms ticker advances the
 // position while Playing, and pulls a provider frame for each new position.
 //
-// The visual contract is the Material 3 media control: a bottom scrim that
+// The visual contract is the baseline media control: a bottom scrim that
 // fades from transparent to 60% black, a large play/pause on the left, the
 // elapsed and total time in tabular figures, a thin progress track (buffered
 // segment, played segment, round thumb) that can be dragged to seek, and
-// volume plus full-screen on the right. The controls are hover-revealed and
-// stay visible while paused; the seek is a drag, so the ticker is suspended
-// for its duration.
+// volume, settings and full-screen on the right. The controls are
+// hover-revealed and stay visible while paused; the seek is a drag, so the
+// ticker is suspended for its duration.
+//
+// The icons do not come from a font and are not fitted by eye per call site:
+// videoIcons() below is the whole set: the filled 24 dp path data parsed
+// once at start-up. Every glyph is centred in a 48 dp target by one painter, so
+// the eleven shapes share one grid, one weight and one optical centre.
 
 #include <md/components/video.h>
 
@@ -22,6 +27,7 @@
 #include <QEvent>
 #include <QFont>
 #include <QFontMetricsF>
+#include <QHelpEvent>
 #include <QKeyEvent>
 #include <QLinearGradient>
 #include <QMouseEvent>
@@ -29,14 +35,17 @@
 #include <QPainterPath>
 #include <QPen>
 #include <QPointF>
-#include <QPolygonF>
 #include <QRectF>
 #include <QSizeF>
+#include <QString>
 #include <QTimer>
-#include <QtMath>
+#include <QToolTip>
 
 #include <algorithm>
+#include <array>
 #include <cmath>
+#include <utility>
+#include <vector>
 
 namespace md {
 
@@ -47,22 +56,45 @@ constexpr int kFadeIntervalMs = 16;
 constexpr qint64 kSeekStepMs = 5000;
 constexpr qreal kVolumeStep = 0.05;
 
-// The M3 media bar is 56 dp high; the play button is the large 48 dp target,
-// the two right-hand buttons the 40 dp compact one.
+// Layout, in dp. The bar is the baseline 56 dp media strip. Every action keeps a
+// full 48 dp target inside it, with 8 dp between neighbours and 12 dp to the
+// edge, so a finger never lands between two actions and a pointer never has to
+// aim at a 40 dp compromise.
 constexpr qreal kBarHeightDp = 56.0;
-constexpr qreal kPlayButtonDp = 48.0;
-constexpr qreal kSmallButtonDp = 40.0;
-constexpr qreal kBarPaddingDp = 8.0;
-// The bar is 56 dp, so a 4 dp vertical margin leaves the full 48 dp M3 icon
-// target for the transport. The bar padding positions the *row*, not the
-// target: using it for both shrank the 48 dp play button to 40 dp.
-constexpr qreal kButtonMarginDp = 4.0;
-constexpr qreal kButtonGapDp = 8.0;
+constexpr qreal kBarInsetDp = 12.0;
+constexpr qreal kTouchTargetDp = 48.0;
+constexpr qreal kControlGapDp = 8.0;
+constexpr qreal kIconDp = 24.0;
+constexpr qreal kIconGridDp = 24.0;
 constexpr qreal kTimeWidthDp = 104.0;
+constexpr qreal kTimeMinWidthDp = 56.0;
 constexpr qreal kTimeToTrackGapDp = 12.0;
 constexpr qreal kTrackHeightDp = 4.0;
+constexpr qreal kMinTrackDp = 48.0;
 constexpr qreal kThumbRadiusDp = 6.0;
 constexpr qreal kPlaceholderRadiusDp = 36.0;
+constexpr qreal kPlaceholderIconDp = 40.0;
+
+// Below this width the bar keeps the primary transport (play, volume, settings,
+// full screen) and puts replay and the two seeks into the settings panel: the
+// alternative — a 40 dp or 32 dp target — is what the touch model forbids.
+constexpr qreal kFullBarMinDp = 600.0;
+
+// State layers and the disabled ink (M3 media controls: 12% hover, 16% press,
+// 38% for a disabled action).
+constexpr qreal kHoverLayerAlpha = 0.12;
+constexpr qreal kPressedLayerAlpha = 0.16;
+constexpr qreal kDisabledAlpha = 0.38;
+constexpr qreal kStateLayerDp = 40.0;
+
+// The settings panel.
+constexpr qreal kPanelWidthDp = 216.0;
+constexpr qreal kPanelPaddingDp = 8.0;
+constexpr qreal kPanelRowHeightDp = 40.0;
+constexpr qreal kPanelSeparatorHeightDp = 9.0;
+constexpr qreal kPanelRadiusDp = 12.0;
+constexpr qreal kPanelOffsetDp = 8.0;
+constexpr int kPanelRowCount = 4; // replay, back, forward, loop
 
 // The scrim reaches from 60% black at the bottom edge up to nothing about two
 // and a half bars above it, so the controls never sit on a hard black strip.
@@ -75,6 +107,44 @@ const QColor kControlTextColour = QColor(255, 255, 255, 235);
 const QColor kTrackColour = QColor(255, 255, 255, 60);
 const QColor kBufferedColour = QColor(255, 255, 255, 115);
 const QColor kThumbColour = QColor(255, 255, 255);
+
+// The bar is an overlay on the letterbox, not a themed surface: the picture
+// underneath is arbitrary, so its content uses the light on-scrim pair, exactly
+// as the elapsed time always has. These are the fallbacks `onScrimInk()` keeps
+// for the schemes whose surface roles are too dark to read on the scrim.
+const QColor kScrimInk = QColor(255, 255, 255, 235);
+const QColor kScrimInkActive = QColor(255, 255, 255);
+
+QColor withAlpha(const QColor& colour, qreal alpha)
+{
+    QColor result = colour;
+    result.setAlphaF(static_cast<float>(std::clamp(alpha, qreal(0.0), qreal(1.0))));
+    return result;
+}
+
+qreal linearChannel(qreal channel)
+{
+    return channel <= 0.03928 ? channel / 12.92
+                              : std::pow((channel + 0.055) / 1.055, 2.4);
+}
+
+// WCAG relative luminance: the scrim is black, so a role needs a luminance of
+// about 0.1 to clear 3:1 against it.
+qreal relativeLuminance(const QColor& colour)
+{
+    return 0.2126 * linearChannel(colour.redF()) + 0.7152 * linearChannel(colour.greenF())
+        + 0.0722 * linearChannel(colour.blueF());
+}
+
+// The bar paints on the scrim, so a surface role is only usable when it is light
+// enough to read there. The dark scheme's onSurface/onSurfaceVariant are; the
+// light scheme's are not (#1D1B20 on a 60% black scrim is invisible), so those
+// keep the on-scrim pair. The emphasis step is preserved either way, which is
+// what the state model is about.
+QColor onScrimInk(const QColor& role, const QColor& fallback)
+{
+    return relativeLuminance(role) >= 0.1 ? role : fallback;
+}
 
 QFont fontFor(const TextStyle& style, const Density& density, const QWidget* context)
 {
@@ -101,16 +171,456 @@ QString formatTime(qint64 milliseconds)
         .arg(seconds, 2, 10, QLatin1Char('0'));
 }
 
-qreal barPadding(const QRectF& bar, const Density& density)
+// Rounds a logical coordinate onto the device pixel grid, so a 24 dp icon at a
+// fractional density still lands on whole device pixels instead of a half-pixel
+// seam that antialiasing turns into a grey fringe.
+qreal snapToPixel(qreal value, qreal ratio)
 {
-    return std::min(density.dp(kBarPaddingDp), bar.height() / 6.0);
+    if (ratio <= 0.0)
+        return std::round(value);
+    return std::round(value * ratio) / ratio;
 }
 
-qreal buttonSide(const QRectF& bar, qreal preferredDp, const Density& density)
+// ---------------------------------------------------------------------------
+// The icon set
+// ---------------------------------------------------------------------------
+
+// The eleven shapes the surface can paint: the transport, the volume pair, the
+// settings/menu pair, full screen in both directions, the two seeks and the
+// check the settings panel marks a toggle with.
+enum class Glyph {
+    Play,
+    Pause,
+    Replay,
+    VolumeOn,
+    VolumeMuted,
+    Settings,
+    FullscreenEnter,
+    FullscreenExit,
+    SkipBack,
+    SkipForward,
+    Check,
+};
+
+// The set is uniformly filled. A media bar is read at a glance over moving
+// picture, and the filled 24 dp paths carry more weight per pixel than a
+// 2 dp outline does at this size; mixing the two was what made the old bar look
+// assembled rather than designed. Each entry below is the canonical reference
+// `filled` path, read once by a small SVG reader so the table stays reviewable
+// as the path data it is instead of a wall of cubic control points.
+
+struct SvgPathReader
 {
-    const qreal margin = density.dp(kButtonMarginDp);
-    return std::max(qreal(0.0),
-                    std::min(density.dp(preferredDp), bar.height() - margin * 2.0));
+    QString data;
+    int index = 0;
+
+    void skipSeparators()
+    {
+        while (index < data.size()
+               && (data.at(index).isSpace() || data.at(index) == QLatin1Char(',')))
+            ++index;
+    }
+
+    [[nodiscard]] bool atEnd()
+    {
+        skipSeparators();
+        return index >= data.size();
+    }
+
+    // Returns the next command character, or a null QChar when the next token
+    // continues the previous command (SVG's implicit repetition).
+    QChar takeCommand()
+    {
+        skipSeparators();
+        if (index >= data.size() || !data.at(index).isLetter())
+            return QChar();
+        return data.at(index++);
+    }
+
+    bool number(qreal& value)
+    {
+        skipSeparators();
+        const int start = index;
+        if (index < data.size()
+            && (data.at(index) == QLatin1Char('-') || data.at(index) == QLatin1Char('+')))
+            ++index;
+        while (index < data.size() && data.at(index).isDigit())
+            ++index;
+        if (index < data.size() && data.at(index) == QLatin1Char('.')) {
+            ++index;
+            while (index < data.size() && data.at(index).isDigit())
+                ++index;
+        }
+        if (index == start)
+            return false;
+        value = data.mid(start, index - start).toDouble();
+        return true;
+    }
+
+    bool point(QPointF& value)
+    {
+        qreal x = 0.0;
+        qreal y = 0.0;
+        if (!number(x) || !number(y))
+            return false;
+        value = QPointF(x, y);
+        return true;
+    }
+};
+
+QPainterPath pathFromSvg(const char* source)
+{
+    SvgPathReader reader{QString::fromLatin1(source)};
+    QPainterPath path;
+    // The path data is authored for the non-zero fill rule: the settings
+    // hole and the volume slash both depend on it.
+    path.setFillRule(Qt::WindingFill);
+
+    QPointF current;
+    QPointF subpath;
+    QPointF control;
+    QChar command;
+    bool hasControl = false;
+
+    while (!reader.atEnd()) {
+        const QChar next = reader.takeCommand();
+        if (!next.isNull())
+            command = next;
+        if (command.isNull())
+            break;
+
+        const bool relative = command.isLower();
+        switch (command.toLatin1()) {
+        case 'M':
+        case 'm': {
+            QPointF value;
+            if (!reader.point(value))
+                return path;
+            current = relative ? current + value : value;
+            subpath = current;
+            path.moveTo(current);
+            hasControl = false;
+            // A repeated moveto coordinate pair is an implicit lineto.
+            command = relative ? QLatin1Char('l') : QLatin1Char('L');
+            break;
+        }
+        case 'L':
+        case 'l': {
+            QPointF value;
+            if (!reader.point(value))
+                return path;
+            current = relative ? current + value : value;
+            path.lineTo(current);
+            hasControl = false;
+            break;
+        }
+        case 'H':
+        case 'h': {
+            qreal value = 0.0;
+            if (!reader.number(value))
+                return path;
+            current.setX(relative ? current.x() + value : value);
+            path.lineTo(current);
+            hasControl = false;
+            break;
+        }
+        case 'V':
+        case 'v': {
+            qreal value = 0.0;
+            if (!reader.number(value))
+                return path;
+            current.setY(relative ? current.y() + value : value);
+            path.lineTo(current);
+            hasControl = false;
+            break;
+        }
+        case 'C':
+        case 'c': {
+            QPointF first;
+            QPointF second;
+            QPointF end;
+            if (!reader.point(first) || !reader.point(second) || !reader.point(end))
+                return path;
+            if (relative) {
+                first += current;
+                second += current;
+                end += current;
+            }
+            path.cubicTo(first, second, end);
+            control = second;
+            current = end;
+            hasControl = true;
+            break;
+        }
+        case 'S':
+        case 's': {
+            QPointF second;
+            QPointF end;
+            if (!reader.point(second) || !reader.point(end))
+                return path;
+            if (relative) {
+                second += current;
+                end += current;
+            }
+            // The shorthand's first control point is the reflection of the
+            // previous one through the current point.
+            const QPointF first = hasControl ? current * 2.0 - control : current;
+            path.cubicTo(first, second, end);
+            control = second;
+            current = end;
+            hasControl = true;
+            break;
+        }
+        case 'Z':
+        case 'z':
+            path.closeSubpath();
+            current = subpath;
+            hasControl = false;
+            break;
+        default:
+            return path;
+        }
+    }
+
+    return path;
+}
+
+// The settings glyph fills almost the whole 24 dp box; at 88% around the grid
+// centre it sits a touch under the play triangle's optical weight instead of
+// dominating the bar.
+QPainterPath settingsPath()
+{
+    const QPainterPath gear = pathFromSvg(
+        "M19.43 12.98c.04-.32.07-.64.07-.98s-.03-.66-.07-.98l2.11-1.65c.19-.15.24-.42"
+        ".12-.64l-2-3.46c-.12-.22-.39-.3-.61-.22l-2.49 1c-.52-.4-1.08-.73-1.69-.98"
+        "l-.38-2.65C14.46 2.18 14.25 2 14 2h-4c-.25 0-.46.18-.49.42l-.38 2.65c-.61"
+        ".25-1.17.59-1.69.98l-2.49-1c-.23-.09-.49 0-.61.22l-2 3.46c-.13.22-.07.49"
+        ".12.64l2.11 1.65c-.04.32-.07.65-.07.98s.03.66.07.98l-2.11 1.65c-.19.15-.24"
+        ".42-.12.64l2 3.46c.12.22.39.3.61.22l2.49-1c.52.4 1.08.73 1.69.98l.38 2.65"
+        "c.03.24.24.42.49.42h4c.25 0 .46-.18.49-.42l.38-2.65c.61-.25 1.17-.59 1.69"
+        "-.98l2.49 1c.23.09.49 0 .61-.22l2-3.46c.12-.22.07-.49-.12-.64l-2.11-1.65z"
+        "M12 15.5c-1.93 0-3.5-1.57-3.5-3.5s1.57-3.5 3.5-3.5 3.5 1.57 3.5 3.5-1.57 "
+        "3.5-3.5 3.5z");
+
+    QTransform shrink;
+    shrink.translate(12.0, 12.0);
+    shrink.scale(0.88, 0.88);
+    shrink.translate(-12.0, -12.0);
+    return shrink.map(gear);
+}
+
+constexpr std::size_t kGlyphCount = 11;
+
+// Built once. The table is the whole icon set: an action either has a path here
+// or it cannot be painted.
+const std::array<QPainterPath, kGlyphCount>& videoIcons()
+{
+    static const std::array<QPainterPath, kGlyphCount> icons = [] {
+        std::array<QPainterPath, kGlyphCount> table;
+        const auto put = [&table](Glyph glyph, const char* data) {
+            table[static_cast<std::size_t>(glyph)] = pathFromSvg(data);
+        };
+
+        put(Glyph::Play, "M8 5v14l11-7z");
+        put(Glyph::Pause, "M6 5h4v14H6zM14 5h4v14h-4z");
+        put(Glyph::Replay,
+            "M12 5V1L7 6l5 5V7c3.31 0 6 2.69 6 6s-2.69 6-6 6-6-2.69-6-6H4c0 4.42 "
+            "3.58 8 8 8s8-3.58 8-8-3.58-8-8-8z");
+        put(Glyph::VolumeOn,
+            "M3 9v6h4l5 5V4L7 9H3zm13.5 3c0-1.77-1.02-3.29-2.5-4.03v8.05c1.48-.73 "
+            "2.5-2.25 2.5-4.02zM14 3.23v2.06c2.89.86 5 3.54 5 6.71s-2.11 5.85-5 6.71"
+            "v2.06c4.01-.91 7-4.49 7-8.77s-2.99-7.86-7-8.77z");
+        put(Glyph::VolumeMuted,
+            "M16.5 12c0-1.77-1.02-3.29-2.5-4.03v2.21l2.45 2.45c.03-.2.05-.41.05-.63z"
+            "m2.5 0c0 .94-.2 1.82-.54 2.64l1.51 1.51C20.63 14.91 21 13.5 21 12c0-4.28"
+            "-2.99-7.86-7-8.77v2.06c2.89.86 5 3.54 5 6.71zM4.27 3L3 4.27 7.73 9H3v6h4"
+            "l5 5v-6.73l4.25 4.25c-.67.52-1.42.93-2.25 1.18v2.06c1.38-.31 2.63-.95 "
+            "3.69-1.81L19.73 21 21 19.73l-9-9L4.27 3zM12 4L9.91 6.09 12 8.18V4z");
+        table[static_cast<std::size_t>(Glyph::Settings)] = settingsPath();
+        put(Glyph::FullscreenEnter,
+            "M7 14H5v5h5v-2H7v-3zm-2-4h2V7h3V5H5v5zm12 7h-3v2h5v-5h-2v3z"
+            "M14 5v2h3v3h2V5h-5z");
+        put(Glyph::FullscreenExit,
+            "M5 16h3v3h2v-5H5v2zm3-8H5v2h5V5H8v3zm6 11h2v-3h3v-2h-5v5z"
+            "m2-11V5h-2v5h5V8h-3z");
+        put(Glyph::SkipBack, "M11 18V6l-8.5 6 8.5 6zm.5-6l8.5 6V6l-8.5 6z");
+        put(Glyph::SkipForward, "M4 18l8.5-6L4 6v12zm9-12v12l8.5-6L13 6z");
+        put(Glyph::Check, "M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z");
+        return table;
+    }();
+    return icons;
+}
+
+const QPainterPath& iconFor(Glyph glyph)
+{
+    return videoIcons()[static_cast<std::size_t>(glyph)];
+}
+
+// Draws `glyph` centred in `target` at `iconDp`. The grid transform is the only
+// place that knows about the 24 dp design grid, so a caller never re-derives an
+// icon size from the target rectangle.
+void paintGlyph(QPainter& painter, Glyph glyph, const QRectF& target, const QColor& ink,
+                const Density& density, qreal iconDp = kIconDp)
+{
+    if (target.isEmpty() || ink.alpha() == 0)
+        return;
+
+    const qreal side = density.dp(iconDp);
+    if (side <= 0.0)
+        return;
+
+    const QPainterPath& path = iconFor(glyph);
+    if (path.isEmpty())
+        return;
+
+    const qreal ratio = painter.device() != nullptr ? painter.device()->devicePixelRatioF() : 1.0;
+    const QPointF topLeft(snapToPixel(target.center().x() - side / 2.0, ratio),
+                          snapToPixel(target.center().y() - side / 2.0, ratio));
+
+    painter.save();
+    painter.setRenderHint(QPainter::Antialiasing, true);
+    painter.translate(topLeft);
+    painter.scale(side / kIconGridDp, side / kIconGridDp);
+    painter.setPen(Qt::NoPen);
+    painter.setBrush(ink);
+    painter.drawPath(path);
+    painter.restore();
+}
+
+// ---------------------------------------------------------------------------
+// Layout
+// ---------------------------------------------------------------------------
+
+struct BarLayout
+{
+    QRectF bar;
+    QRectF play;
+    QRectF time;
+    QRectF track;
+    QRectF volume;
+    QRectF settings;
+    QRectF fullscreen;
+    bool hasTime = false;
+    std::vector<std::pair<Video::Control, QRectF>> controls; // visual order
+};
+
+// The one layout rule the painting, the hit test and the public geometry all
+// share. The leading target is pinned to the leading inset; the trailing
+// cluster is pinned to the trailing inset and filled right to left; the track
+// gets whatever is left, and the time label is the first thing to give way.
+BarLayout layoutBar(const QRectF& bar, const Density& density, qreal timeNaturalWidth)
+{
+    BarLayout layout;
+    layout.bar = bar;
+    if (bar.isEmpty())
+        return layout;
+
+    const qreal inset = density.dp(kBarInsetDp);
+    const qreal side = density.dp(kTouchTargetDp);
+    const qreal gap = density.dp(kControlGapDp);
+    const qreal top = bar.center().y() - side / 2.0;
+
+    if (bar.width() < inset * 2.0 + side)
+        return layout;
+
+    layout.play = QRectF(bar.left() + inset, top, side, side);
+    const qreal minLeft = layout.play.right() + gap;
+
+    qreal trailingRight = bar.right() - inset;
+    const auto placeTrailing = [&](QRectF& target) {
+        const QRectF candidate(trailingRight - side, top, side, side);
+        if (candidate.left() < minLeft)
+            return false;
+        target = candidate;
+        trailingRight = candidate.left() - gap;
+        return true;
+    };
+
+    const bool haveFullscreen = placeTrailing(layout.fullscreen);
+    const bool haveSettings = haveFullscreen && placeTrailing(layout.settings);
+    const bool haveVolume = haveSettings && placeTrailing(layout.volume);
+
+    layout.controls.emplace_back(Video::Control::PlayPause, layout.play);
+    qreal leadingRight = layout.play.right();
+
+    // The free span ends at the leading edge of whichever trailing target was
+    // placed: volume is the innermost of the three.
+    const qreal trailingLeft = haveVolume       ? layout.volume.left()
+        : haveSettings                          ? layout.settings.left()
+        : haveFullscreen                        ? layout.fullscreen.left()
+                                                : bar.right() - inset;
+
+    // The secondary transport only appears when the whole set fits. It is never
+    // squeezed: at this point the settings panel carries it instead.
+    const bool wide = bar.width() >= density.dp(kFullBarMinDp);
+    if (wide && haveVolume) {
+        const qreal reserve = density.dp(kTimeMinWidthDp) + density.dp(kTimeToTrackGapDp)
+            + density.dp(kMinTrackDp) + gap;
+        qreal x = layout.play.right() + gap;
+        for (Video::Control control : {Video::Control::Replay, Video::Control::SkipBack,
+                                       Video::Control::SkipForward}) {
+            if (x + side + reserve > trailingLeft - gap)
+                break;
+            layout.controls.emplace_back(control, QRectF(x, top, side, side));
+            x += side + gap;
+            leadingRight = x - gap;
+        }
+    }
+
+    if (haveVolume)
+        layout.controls.emplace_back(Video::Control::Volume, layout.volume);
+    if (haveSettings)
+        layout.controls.emplace_back(Video::Control::Settings, layout.settings);
+    if (haveFullscreen)
+        layout.controls.emplace_back(Video::Control::Fullscreen, layout.fullscreen);
+
+    const qreal regionLeft = leadingRight + gap;
+    const qreal regionRight = trailingLeft - density.dp(kTimeToTrackGapDp);
+    const qreal available = std::max(qreal(0.0), regionRight - regionLeft);
+
+    // The label is measured, not assumed: the widest string it can hold is two
+    // duration halves, so a real font gets the space it needs and a narrow bar
+    // hands the rest to the track instead of reserving a fixed 104 dp.
+    const qreal timeGap = density.dp(kTimeToTrackGapDp);
+    const qreal minTime = density.dp(kTimeMinWidthDp);
+    const qreal wanted = std::clamp(timeNaturalWidth, minTime, density.dp(kTimeWidthDp));
+    const qreal width = std::min(wanted, available - timeGap - density.dp(kMinTrackDp));
+    if (width >= minTime) {
+        layout.time = QRectF(regionLeft, bar.top(), width, bar.height());
+        layout.hasTime = true;
+    }
+
+    const qreal trackLeft = layout.hasTime ? layout.time.right() + timeGap : regionLeft;
+    const qreal trackHeight =
+        std::min(density.dp(kTrackHeightDp), std::max(qreal(0.0), bar.height() / 3.0));
+    layout.track = QRectF(trackLeft, bar.center().y() - trackHeight / 2.0,
+                          std::max(qreal(0.0), regionRight - trackLeft), trackHeight);
+
+    return layout;
+}
+
+// Which glyph an action paints right now.
+Glyph glyphFor(const Video& video, Video::Control control)
+{
+    switch (control) {
+    case Video::Control::PlayPause:
+        return video.state() == Video::PlaybackState::Playing ? Glyph::Pause : Glyph::Play;
+    case Video::Control::Replay:
+        return Glyph::Replay;
+    case Video::Control::SkipBack:
+        return Glyph::SkipBack;
+    case Video::Control::SkipForward:
+        return Glyph::SkipForward;
+    case Video::Control::Volume:
+        return video.isMuted() || video.volume() <= 0.0 ? Glyph::VolumeMuted : Glyph::VolumeOn;
+    case Video::Control::Settings:
+        return Glyph::Settings;
+    case Video::Control::Fullscreen:
+        return video.isFullscreen() ? Glyph::FullscreenExit : Glyph::FullscreenEnter;
+    case Video::Control::None:
+        break;
+    }
+    return Glyph::Play;
 }
 
 } // namespace
@@ -121,6 +631,9 @@ Video::Video(QWidget* parent)
     setFocusPolicy(Qt::StrongFocus);
     setMouseTracking(true);
     setBackgroundColour(QColor(Qt::transparent));
+    setAccessibleName(tr("Video"));
+    setAccessibleDescription(
+        tr("Video player: play or pause, replay, seek, mute, settings and full screen"));
 
     ticker_ = new QTimer(this);
     ticker_->setObjectName(QStringLiteral("md.components.Video.ticker"));
@@ -306,6 +819,20 @@ bool Video::loop() const noexcept
     return loop_;
 }
 
+void Video::setFullscreen(bool fullscreen)
+{
+    if (fullscreen_ == fullscreen)
+        return;
+
+    fullscreen_ = fullscreen;
+    requestUpdate();
+}
+
+bool Video::isFullscreen() const noexcept
+{
+    return fullscreen_;
+}
+
 bool Video::controlsVisible() const noexcept
 {
     return controlsOpacity_ > 0.01;
@@ -314,6 +841,11 @@ bool Video::controlsVisible() const noexcept
 bool Video::isScrubbing() const noexcept
 {
     return scrubbing_;
+}
+
+Video::Control Video::hoveredControl() const noexcept
+{
+    return hoveredControl_;
 }
 
 // ---------------------------------------------------------------------------
@@ -333,58 +865,29 @@ QRectF Video::controlBarRect() const
 
 QRectF Video::playButtonRect() const
 {
-    const QRectF bar = controlBarRect();
-    if (bar.isEmpty())
-        return QRectF();
-
-    const Density& density = Theme::forWidget(this).density();
-    const qreal padding = barPadding(bar, density);
-    const qreal side = buttonSide(bar, kPlayButtonDp, density);
-
-    return QRectF(bar.left() + padding, bar.center().y() - side / 2.0, side, side);
-}
-
-QRectF Video::fullscreenButtonRect() const
-{
-    const QRectF bar = controlBarRect();
-    if (bar.isEmpty())
-        return QRectF();
-
-    const Density& density = Theme::forWidget(this).density();
-    const qreal padding = barPadding(bar, density);
-    const qreal side = buttonSide(bar, kSmallButtonDp, density);
-
-    return QRectF(bar.right() - padding - side, bar.center().y() - side / 2.0, side, side);
+    return controlRect(Control::PlayPause);
 }
 
 QRectF Video::volumeButtonRect() const
 {
-    const QRectF bar = controlBarRect();
-    const QRectF fullscreen = fullscreenButtonRect();
-    if (bar.isEmpty() || fullscreen.isEmpty())
-        return QRectF();
-
-    const qreal gap = Theme::forWidget(this).density().dp(kButtonGapDp);
-
-    return QRectF(fullscreen.left() - gap - fullscreen.width(), fullscreen.top(),
-                  fullscreen.width(), fullscreen.height());
+    return controlRect(Control::Volume);
 }
 
-QRectF Video::timeLabelRectFor(const QRectF& bar, const QRectF& play,
-                               const QRectF& volume) const
+QRectF Video::fullscreenButtonRect() const
 {
-    const Density& density = Theme::forWidget(this).density();
-    const qreal gap = density.dp(kButtonGapDp);
-    const qreal left = play.right() + gap;
-    const qreal available = std::max(qreal(0.0), volume.left() - gap - left);
+    return controlRect(Control::Fullscreen);
+}
 
-    // The label may shrink on a narrow surface, but it never eats the track:
-    // 48 dp plus the gap stay reserved for the progress bar.
-    const qreal maximum =
-        std::max(qreal(0.0), available - density.dp(kTimeToTrackGapDp) - density.dp(48.0));
-    const qreal width = std::min(density.dp(kTimeWidthDp), maximum);
-
-    return QRectF(left, bar.top(), width, bar.height());
+// The natural width of the time label, measured with the same tabular font the
+// paint uses. The layout never guesses from a character count.
+qreal Video::timeLabelWidth() const
+{
+    const Theme& theme = Theme::forWidget(this);
+    const QFont font = tabularFont(theme.type().labelSmall, theme.density(), this);
+    const QFontMetricsF metrics(font);
+    const QString sample =
+        formatTime(duration_) + QStringLiteral(" / ") + formatTime(duration_);
+    return metrics.horizontalAdvance(sample);
 }
 
 QRectF Video::timeLabelRect() const
@@ -393,7 +896,8 @@ QRectF Video::timeLabelRect() const
     if (bar.isEmpty())
         return QRectF();
 
-    return timeLabelRectFor(bar, playButtonRect(), volumeButtonRect());
+    const BarLayout layout = layoutBar(bar, Theme::forWidget(this).density(), timeLabelWidth());
+    return layout.hasTime ? layout.time : QRectF();
 }
 
 QRectF Video::progressRect() const
@@ -402,16 +906,63 @@ QRectF Video::progressRect() const
     if (bar.isEmpty())
         return QRectF();
 
-    const Density& density = Theme::forWidget(this).density();
-    const QRectF time = timeLabelRectFor(bar, playButtonRect(), volumeButtonRect());
-    const qreal gap = density.dp(kTimeToTrackGapDp);
-    const qreal left = time.right() + gap;
-    const qreal right = volumeButtonRect().left() - gap;
-    const qreal trackHeight =
-        std::min(density.dp(kTrackHeightDp), std::max(qreal(0.0), bar.height() / 3.0));
+    return layoutBar(bar, Theme::forWidget(this).density(), timeLabelWidth()).track;
+}
 
-    return QRectF(left, bar.center().y() - trackHeight / 2.0,
-                  std::max(qreal(0.0), right - left), trackHeight);
+int Video::controlCount() const
+{
+    const QRectF bar = controlBarRect();
+    if (bar.isEmpty())
+        return 0;
+
+    const BarLayout layout = layoutBar(bar, Theme::forWidget(this).density(), timeLabelWidth());
+    return static_cast<int>(layout.controls.size());
+}
+
+QRectF Video::controlRect(int index) const
+{
+    const QRectF bar = controlBarRect();
+    if (bar.isEmpty())
+        return QRectF();
+
+    const BarLayout layout = layoutBar(bar, Theme::forWidget(this).density(), timeLabelWidth());
+    if (index < 0 || index >= static_cast<int>(layout.controls.size()))
+        return QRectF();
+
+    return layout.controls[static_cast<std::size_t>(index)].second;
+}
+
+QRectF Video::controlRect(Control control) const
+{
+    if (control == Control::None)
+        return QRectF();
+
+    const QRectF bar = controlBarRect();
+    if (bar.isEmpty())
+        return QRectF();
+
+    const BarLayout layout = layoutBar(bar, Theme::forWidget(this).density(), timeLabelWidth());
+    for (const auto& entry : layout.controls) {
+        if (entry.first == control)
+            return entry.second;
+    }
+
+    return QRectF();
+}
+
+Video::Control Video::controlAt(const QPointF& point) const
+{
+    const QRectF bar = controlBarRect();
+    if (bar.isEmpty())
+        return Control::None;
+
+    const BarLayout layout = layoutBar(bar, Theme::forWidget(this).density(), timeLabelWidth());
+    for (const auto& entry : layout.controls) {
+        if (entry.second.contains(point))
+            return entry.first;
+    }
+
+    return Control::None;
 }
 
 QRectF Video::scrimRect() const
@@ -475,6 +1026,7 @@ void Video::paintContent(QPainter& painter, const QRectF& content)
 
     paintScrim(painter);
     paintControls(painter, content);
+    paintOverflow(painter);
     painter.restore();
 }
 
@@ -514,23 +1066,18 @@ void Video::paintPlaceholder(QPainter& painter, const QRectF& content)
     if (radius <= 0.0)
         return;
 
-    const QPointF center = content.center();
-    const qreal side = radius * 0.85;
+    const QPointF centre = content.center();
 
     painter.save();
     painter.setRenderHint(QPainter::Antialiasing, true);
     painter.setPen(Qt::NoPen);
     painter.setBrush(QColor(255, 255, 255, 36));
-    painter.drawEllipse(center, radius, radius);
+    painter.drawEllipse(centre, radius, radius);
 
-    QPainterPath triangle;
-    triangle.moveTo(center.x() - side * 0.35, center.y() - side * 0.55);
-    triangle.lineTo(center.x() - side * 0.35, center.y() + side * 0.55);
-    triangle.lineTo(center.x() + side * 0.6, center.y());
-    triangle.closeSubpath();
-
-    painter.setBrush(QColor(255, 255, 255, 235));
-    painter.drawPath(triangle);
+    // The placeholder is the same play glyph as the transport, only larger: the
+    // surface and the bar cannot disagree about what "play" looks like.
+    const qreal glyphDp = std::min(kPlaceholderIconDp, density.pxToDp(radius * 1.6));
+    paintGlyph(painter, Glyph::Play, content, kScrimInkActive, density, glyphDp);
     painter.restore();
 }
 
@@ -546,184 +1093,376 @@ void Video::paintControls(QPainter& painter, const QRectF& content)
 
     const Theme& theme = Theme::forWidget(this);
     const Density& density = theme.density();
-    const QRectF play = playButtonRect();
-    const QRectF volume = volumeButtonRect();
-    const QRectF fullscreen = fullscreenButtonRect();
-    const QRectF time = timeLabelRectFor(bar, play, volume);
-    const QRectF progress = progressRect();
+    const BarLayout layout = layoutBar(bar, density, timeLabelWidth());
+
+    const QColor restInk = onScrimInk(theme.colours().onSurfaceVariant, kScrimInk);
+    const QColor activeInk = onScrimInk(theme.colours().onSurface, kScrimInkActive);
+    const bool enabled = isEnabled();
 
     painter.save();
     painter.setOpacity(controlsOpacity_);
     painter.setRenderHint(QPainter::Antialiasing, true);
 
-    // Left: the large transport button.
-    paintPlayPause(painter, play);
+    // Every control paints its own state layer and glyph from the same
+    // rectangle the hit test uses, so the painted button and the clickable
+    // button can never drift apart.
+    for (const auto& entry : layout.controls) {
+        const Control control = entry.first;
+        const QRectF& rect = entry.second;
+        const bool hovered = enabled && control == hoveredControl_;
+        const bool pressed = enabled && control == pressedControl_;
+
+        // Play/pause is the primary transport and keeps the onSurface emphasis
+        // at rest; the secondary actions rest at onSurfaceVariant.
+        const QColor emphasis = (control == Control::PlayPause || hovered || pressed)
+            ? activeInk
+            : restInk;
+        const QColor ink = enabled ? emphasis : withAlpha(emphasis, kDisabledAlpha);
+
+        if (hovered || pressed) {
+            const qreal layer = std::min(density.dp(kStateLayerDp), rect.width());
+            const QRectF stateRect(rect.center().x() - layer / 2.0,
+                                   rect.center().y() - layer / 2.0, layer, layer);
+            painter.setPen(Qt::NoPen);
+            painter.setBrush(withAlpha(activeInk,
+                                       pressed ? kPressedLayerAlpha : kHoverLayerAlpha));
+            painter.drawEllipse(stateRect);
+        }
+
+        paintGlyph(painter, glyphFor(*this, control), rect, ink, density);
+    }
 
     // Time label: elapsed and total, tabular figures, before the track.
-    if (time.width() > 0.0) {
+    if (layout.hasTime) {
         const QFont font = tabularFont(theme.type().labelSmall, density, this);
         const QFontMetricsF metrics(font);
         const QString text =
             formatTime(position_) + QStringLiteral(" / ") + formatTime(duration_);
-        const QString elided = metrics.elidedText(text, Qt::ElideRight, time.width());
+        const QString elided = metrics.elidedText(text, Qt::ElideRight, layout.time.width());
         painter.setFont(font);
         painter.setPen(kControlTextColour);
-        painter.drawText(time, static_cast<int>(Qt::AlignLeft | Qt::AlignVCenter), elided);
+        painter.drawText(layout.time, static_cast<int>(Qt::AlignLeft | Qt::AlignVCenter),
+                         elided);
     }
 
     // The track: unplayed, buffered, played, thumb.
-    if (!progress.isEmpty() && progress.width() > 0.0) {
+    if (!layout.track.isEmpty() && layout.track.width() > 0.0) {
         const qreal fraction = progressFraction();
         const qreal bufferedFraction = duration_ > 0
             ? std::clamp(static_cast<qreal>(buffered_) / static_cast<qreal>(duration_),
                          qreal(0.0), qreal(1.0))
             : 0.0;
-        const qreal radius = progress.height() / 2.0;
+        const qreal radius = layout.track.height() / 2.0;
 
         painter.setPen(Qt::NoPen);
         painter.setBrush(kTrackColour);
-        painter.drawRoundedRect(progress, radius, radius);
+        painter.drawRoundedRect(layout.track, radius, radius);
 
         if (bufferedFraction > fraction) {
             painter.setBrush(kBufferedColour);
             painter.drawRoundedRect(
-                QRectF(progress.left(), progress.top(), progress.width() * bufferedFraction,
-                       progress.height()),
+                QRectF(layout.track.left(), layout.track.top(),
+                       layout.track.width() * bufferedFraction, layout.track.height()),
                 radius, radius);
         }
 
-        const qreal played = progress.width() * fraction;
+        const qreal played = layout.track.width() * fraction;
         if (played > 0.0) {
             painter.setBrush(theme.colours().primary);
             painter.drawRoundedRect(
-                QRectF(progress.left(), progress.top(), played, progress.height()), radius,
-                radius);
+                QRectF(layout.track.left(), layout.track.top(), played, layout.track.height()),
+                radius, radius);
         }
 
         const qreal thumbRadius = std::min(
             density.dp(kThumbRadiusDp), std::max(qreal(0.0), bar.height() / 4.0));
         painter.setBrush(kThumbColour);
-        painter.drawEllipse(QPointF(progress.left() + played, progress.center().y()),
+        painter.drawEllipse(QPointF(layout.track.left() + played, layout.track.center().y()),
                             thumbRadius, thumbRadius);
     }
 
-    // Right: volume and full-screen.
-    paintVolume(painter, volume);
-    paintFullscreen(painter, fullscreen);
-
     painter.restore();
 }
 
-void Video::paintPlayPause(QPainter& painter, const QRectF& rect)
+// ---------------------------------------------------------------------------
+// The settings panel
+// ---------------------------------------------------------------------------
+
+int Video::overflowItemCount() const
 {
-    if (rect.isEmpty())
-        return;
-
-    painter.save();
-    painter.setRenderHint(QPainter::Antialiasing, true);
-    painter.setPen(Qt::NoPen);
-    painter.setBrush(kControlTextColour);
-
-    if (state_ == PlaybackState::Playing) {
-        const qreal barWidth = std::max(qreal(1.0), rect.width() * 0.15);
-        const qreal gap = rect.width() * 0.11;
-        const qreal height = rect.height() * 0.42;
-        const qreal top = rect.center().y() - height / 2.0;
-        painter.drawRoundedRect(QRectF(rect.center().x() - gap - barWidth, top, barWidth,
-                                       height),
-                                barWidth / 3.0, barWidth / 3.0);
-        painter.drawRoundedRect(QRectF(rect.center().x() + gap, top, barWidth, height),
-                                barWidth / 3.0, barWidth / 3.0);
-    } else {
-        QPainterPath triangle;
-        const qreal side = rect.height() * 0.42;
-        triangle.moveTo(rect.center().x() - side * 0.4, rect.center().y() - side * 0.7);
-        triangle.lineTo(rect.center().x() - side * 0.4, rect.center().y() + side * 0.7);
-        triangle.lineTo(rect.center().x() + side * 0.8, rect.center().y());
-        triangle.closeSubpath();
-        painter.drawPath(triangle);
-    }
-
-    painter.restore();
+    return kPanelRowCount;
 }
 
-void Video::paintVolume(QPainter& painter, const QRectF& rect)
+QRectF Video::overflowPanelRect() const
 {
-    if (rect.isEmpty())
-        return;
+    const QRectF bar = controlBarRect();
+    const QRectF settings = controlRect(Control::Settings);
+    const QRectF content = contentRect();
+    if (bar.isEmpty() || settings.isEmpty() || content.isEmpty())
+        return QRectF();
 
     const Density& density = Theme::forWidget(this).density();
-    const QPointF center = rect.center();
-    const qreal size = std::min(rect.width(), rect.height()) * 0.5;
-    const qreal stroke = std::max(qreal(1.0), density.dp(1.5));
+    const qreal inset = density.dp(kBarInsetDp);
+    const qreal width = std::min(density.dp(kPanelWidthDp),
+                                 std::max(qreal(0.0), content.width() - 2.0 * inset));
+    const qreal height = 2.0 * density.dp(kPanelPaddingDp)
+        + 3.0 * density.dp(kPanelRowHeightDp) + density.dp(kPanelSeparatorHeightDp)
+        + density.dp(kPanelRowHeightDp);
+    if (width <= 0.0 || height <= 0.0)
+        return QRectF();
+
+    const qreal right = std::min(settings.right(), content.right() - inset);
+    const qreal left = std::max(content.left() + inset, right - width);
+    const qreal bottom = bar.top() - density.dp(kPanelOffsetDp);
+    const qreal top = std::max(content.top() + inset, bottom - height);
+
+    return QRectF(left, top, right - left, bottom - top);
+}
+
+QRectF Video::overflowItemRectAt(int index) const
+{
+    const QRectF panel = overflowPanelRect();
+    if (panel.isEmpty() || index < 0 || index >= overflowItemCount())
+        return QRectF();
+
+    const Density& density = Theme::forWidget(this).density();
+    const qreal pad = density.dp(kPanelPaddingDp);
+    const qreal rowHeight = density.dp(kPanelRowHeightDp);
+
+    qreal y = panel.top() + pad;
+    for (int i = 0; i < index; ++i) {
+        y += rowHeight;
+        if (i == 2)
+            y += density.dp(kPanelSeparatorHeightDp);
+    }
+
+    return QRectF(panel.left() + pad, y, panel.width() - 2.0 * pad, rowHeight);
+}
+
+QRectF Video::overflowItemRect(int index) const
+{
+    if (!overflowOpen_)
+        return QRectF();
+    return overflowItemRectAt(index);
+}
+
+int Video::overflowItemAt(const QPointF& point) const
+{
+    if (!overflowOpen_)
+        return -1;
+
+    for (int i = 0; i < overflowItemCount(); ++i) {
+        if (overflowItemRectAt(i).contains(point))
+            return i;
+    }
+    return -1;
+}
+
+QString Video::overflowItemText(int index) const
+{
+    switch (index) {
+    case 0:
+        return tr("Replay");
+    case 1:
+        return tr("Back 5 seconds");
+    case 2:
+        return tr("Forward 5 seconds");
+    case 3:
+        return tr("Loop");
+    default:
+        return QString();
+    }
+}
+
+bool Video::overflowOpen() const noexcept
+{
+    return overflowOpen_;
+}
+
+void Video::toggleOverflow()
+{
+    if (!overflowOpen_ && overflowPanelRect().isEmpty())
+        return;
+
+    overflowOpen_ = !overflowOpen_;
+    // Opening with the pointer leaves no row highlighted: the highlight is the
+    // keyboard cursor and appears on the first arrow key, not on a click.
+    overflowHoveredItem_ = -1;
+    requestUpdate();
+}
+
+void Video::closeOverflow()
+{
+    if (!overflowOpen_)
+        return;
+
+    overflowOpen_ = false;
+    overflowHoveredItem_ = -1;
+    requestUpdate();
+}
+
+void Video::activateOverflowItem(int index)
+{
+    switch (index) {
+    case 0:
+        triggerControl(Control::Replay);
+        break;
+    case 1:
+        triggerControl(Control::SkipBack);
+        break;
+    case 2:
+        triggerControl(Control::SkipForward);
+        break;
+    case 3:
+        setLoop(!loop_);
+        break;
+    default:
+        return;
+    }
+
+    closeOverflow();
+}
+
+void Video::paintOverflow(QPainter& painter)
+{
+    if (!overflowOpen_)
+        return;
+
+    const QRectF panel = overflowPanelRect();
+    if (panel.isEmpty())
+        return;
+
+    const Theme& theme = Theme::forWidget(this);
+    const Density& density = theme.density();
+    const ColorScheme& colours = theme.colours();
+    const qreal radius = density.dp(kPanelRadiusDp);
 
     painter.save();
     painter.setRenderHint(QPainter::Antialiasing, true);
+    painter.setPen(QPen(colours.outlineVariant, density.dp(1.0)));
+    painter.setBrush(colours.surfaceContainer);
+    painter.drawRoundedRect(panel, radius, radius);
 
-    QPolygonF speaker;
-    speaker << QPointF(center.x() - size * 0.7, center.y() - size * 0.25)
-            << QPointF(center.x() - size * 0.4, center.y() - size * 0.25)
-            << QPointF(center.x() - size * 0.05, center.y() - size * 0.6)
-            << QPointF(center.x() - size * 0.05, center.y() + size * 0.6)
-            << QPointF(center.x() - size * 0.4, center.y() + size * 0.25)
-            << QPointF(center.x() - size * 0.7, center.y() + size * 0.25);
-    painter.setPen(Qt::NoPen);
-    painter.setBrush(kControlTextColour);
-    painter.drawPolygon(speaker);
+    const QFont font = Font::resolve(this, theme.type().labelMedium, density);
+    painter.setFont(font);
+    const qreal textInset = density.dp(12.0);
 
-    QPen pen(kControlTextColour, stroke, Qt::SolidLine, Qt::RoundCap);
-    painter.setPen(pen);
-    painter.setBrush(Qt::NoBrush);
+    for (int i = 0; i < overflowItemCount(); ++i) {
+        const QRectF row = overflowItemRectAt(i);
+        if (row.isEmpty())
+            continue;
 
-    if (muted_) {
-        const qreal cross = size * 0.35;
-        painter.drawLine(QPointF(center.x() + size * 0.2, center.y() - cross),
-                         QPointF(center.x() + size * 0.2 + cross * 2.0,
-                                 center.y() + cross));
-        painter.drawLine(QPointF(center.x() + size * 0.2, center.y() + cross),
-                         QPointF(center.x() + size * 0.2 + cross * 2.0,
-                                 center.y() - cross));
-    } else if (volume_ > 0.0) {
-        const qreal arcSize = size * (0.55 + volume_ * 0.45);
-        const QRectF arc(center.x() - arcSize / 2.0, center.y() - arcSize,
-                         arcSize * 2.0, arcSize * 2.0);
-        painter.drawArc(arc, -45 * 16, 90 * 16);
-        if (volume_ > 0.5) {
-            const QRectF outer(center.x() - arcSize * 0.75, center.y() - arcSize * 1.35,
-                               arcSize * 2.8, arcSize * 2.8);
-            painter.drawArc(outer, -45 * 16, 90 * 16);
+        if (i == overflowHoveredItem_) {
+            painter.setPen(Qt::NoPen);
+            painter.setBrush(withAlpha(colours.onSurface, kHoverLayerAlpha));
+            painter.drawRoundedRect(row.adjusted(density.dp(2.0), density.dp(1.0),
+                                                 -density.dp(2.0), -density.dp(1.0)),
+                                    density.dp(8.0), density.dp(8.0));
+        }
+
+        painter.setPen(colours.onSurface);
+        painter.drawText(row.adjusted(textInset, 0.0, -density.dp(40.0), 0.0),
+                         static_cast<int>(Qt::AlignLeft | Qt::AlignVCenter),
+                         overflowItemText(i));
+
+        if (i == overflowItemCount() - 1 && loop_) {
+            const qreal check = density.dp(kIconDp);
+            const QRectF checkRect(row.right() - textInset - check,
+                                   row.center().y() - check / 2.0, check, check);
+            paintGlyph(painter, Glyph::Check, checkRect, colours.onSurface, density);
         }
     }
 
+    // The separator above the settings row.
+    const QRectF beforeLast = overflowItemRectAt(2);
+    if (!beforeLast.isEmpty()) {
+        const qreal y = beforeLast.bottom() + density.dp(kPanelSeparatorHeightDp) / 2.0;
+        painter.setPen(QPen(colours.outlineVariant, density.dp(1.0)));
+        painter.drawLine(QPointF(panel.left() + density.dp(kPanelPaddingDp), y),
+                         QPointF(panel.right() - density.dp(kPanelPaddingDp), y));
+    }
+
     painter.restore();
 }
 
-void Video::paintFullscreen(QPainter& painter, const QRectF& rect)
+// ---------------------------------------------------------------------------
+// Control dispatch and naming
+// ---------------------------------------------------------------------------
+
+void Video::triggerControl(Control control)
 {
-    if (rect.isEmpty())
-        return;
+    switch (control) {
+    case Control::PlayPause:
+        togglePlayback();
+        break;
+    case Control::Replay:
+        setPosition(0);
+        play();
+        break;
+    case Control::SkipBack:
+        setPosition(position_ - kSeekStepMs);
+        break;
+    case Control::SkipForward:
+        setPosition(position_ + kSeekStepMs);
+        break;
+    case Control::Volume:
+        setMuted(!muted_);
+        break;
+    case Control::Settings:
+        toggleOverflow();
+        break;
+    case Control::Fullscreen:
+        emit fullscreenRequested();
+        break;
+    case Control::None:
+        break;
+    }
+}
 
-    const Density& density = Theme::forWidget(this).density();
-    const qreal stroke = std::max(qreal(1.0), density.dp(1.8));
-    const qreal arm = std::min(rect.width(), rect.height()) * 0.28;
-    const QRectF frame = rect.adjusted(rect.width() * 0.22, rect.height() * 0.22,
-                                       -rect.width() * 0.22, -rect.height() * 0.22);
+QString Video::controlToolTip(Control control) const
+{
+    switch (control) {
+    case Control::PlayPause:
+        return state_ == PlaybackState::Playing ? tr("Pause (Space)") : tr("Play (Space)");
+    case Control::Replay:
+        return tr("Replay from the start (Home)");
+    case Control::SkipBack:
+        return tr("Back 5 seconds (Left)");
+    case Control::SkipForward:
+        return tr("Forward 5 seconds (Right)");
+    case Control::Volume:
+        return muted_ ? tr("Unmute (M)") : tr("Mute (M)");
+    case Control::Settings:
+        return tr("Playback settings");
+    case Control::Fullscreen:
+        return fullscreen_ ? tr("Exit full screen (F)") : tr("Full screen (F)");
+    case Control::None:
+        break;
+    }
+    return QString();
+}
 
-    painter.save();
-    painter.setRenderHint(QPainter::Antialiasing, true);
-    painter.setPen(QPen(kControlTextColour, stroke, Qt::SolidLine, Qt::SquareCap));
-    painter.setBrush(Qt::NoBrush);
-
-    painter.drawLine(frame.topLeft(), frame.topLeft() + QPointF(arm, 0.0));
-    painter.drawLine(frame.topLeft(), frame.topLeft() + QPointF(0.0, arm));
-    painter.drawLine(frame.topRight(), frame.topRight() - QPointF(arm, 0.0));
-    painter.drawLine(frame.topRight(), frame.topRight() + QPointF(0.0, arm));
-    painter.drawLine(frame.bottomLeft(), frame.bottomLeft() + QPointF(arm, 0.0));
-    painter.drawLine(frame.bottomLeft(), frame.bottomLeft() - QPointF(0.0, arm));
-    painter.drawLine(frame.bottomRight(), frame.bottomRight() - QPointF(arm, 0.0));
-    painter.drawLine(frame.bottomRight(), frame.bottomRight() - QPointF(0.0, arm));
-
-    painter.restore();
+QString Video::controlAccessibleName(Control control) const
+{
+    switch (control) {
+    case Control::PlayPause:
+        return state_ == PlaybackState::Playing ? tr("Pause") : tr("Play");
+    case Control::Replay:
+        return tr("Replay from the start");
+    case Control::SkipBack:
+        return tr("Back 5 seconds");
+    case Control::SkipForward:
+        return tr("Forward 5 seconds");
+    case Control::Volume:
+        return muted_ ? tr("Unmute") : tr("Mute");
+    case Control::Settings:
+        return tr("Playback settings");
+    case Control::Fullscreen:
+        return fullscreen_ ? tr("Exit full screen") : tr("Full screen");
+    case Control::None:
+        break;
+    }
+    return QString();
 }
 
 // ---------------------------------------------------------------------------
@@ -820,6 +1559,16 @@ void Video::stepControlsFade()
     requestUpdate();
 }
 
+void Video::updateHoveredControl(const QPointF& point)
+{
+    const Control next = isEnabled() ? controlAt(point) : Control::None;
+    if (next == hoveredControl_)
+        return;
+
+    hoveredControl_ = next;
+    requestUpdate();
+}
+
 void Video::enterEvent(QEnterEvent* event)
 {
     hovered_ = true;
@@ -830,8 +1579,30 @@ void Video::enterEvent(QEnterEvent* event)
 void Video::leaveEvent(QEvent* event)
 {
     hovered_ = false;
+    hoveredControl_ = Control::None;
+    overflowHoveredItem_ = -1;
     updateControlsTarget();
     View::leaveEvent(event);
+    requestUpdate();
+}
+
+bool Video::event(QEvent* event)
+{
+    // The bar owns several buttons but is one widget, so the per-action tooltip
+    // is resolved here rather than by QWidget's single toolTip() property.
+    if (event->type() == QEvent::ToolTip) {
+        auto* help = static_cast<QHelpEvent*>(event);
+        const Control control = controlAt(QPointF(help->pos()));
+        if (control != Control::None) {
+            QToolTip::showText(help->globalPos(), controlToolTip(control), this);
+            return true;
+        }
+
+        QToolTip::hideText();
+        return true;
+    }
+
+    return View::event(event);
 }
 
 // ---------------------------------------------------------------------------
@@ -967,7 +1738,7 @@ void Video::mousePressEvent(QMouseEvent* event)
 {
     View::mousePressEvent(event);
 
-    if (event->button() != Qt::LeftButton)
+    if (event->button() != Qt::LeftButton || !isEnabled())
         return;
 
     setFocus(Qt::MouseFocusReason);
@@ -976,20 +1747,26 @@ void Video::mousePressEvent(QMouseEvent* event)
 
     const QPointF position = event->position();
 
-    if (playButtonRect().contains(position)) {
-        togglePlayback();
+    // The settings panel is modal for one click: a press inside it activates a
+    // row, and the press that dismisses it is not also an action on the bar.
+    if (overflowOpen_) {
+        const int item = overflowItemAt(position);
+        if (item >= 0) {
+            activateOverflowItem(item);
+            event->accept();
+            return;
+        }
+
+        closeOverflow();
         event->accept();
         return;
     }
 
-    if (volumeButtonRect().contains(position)) {
-        setMuted(!muted_);
-        event->accept();
-        return;
-    }
-
-    if (fullscreenButtonRect().contains(position)) {
-        emit fullscreenRequested();
+    const Control control = controlAt(position);
+    if (control != Control::None) {
+        pressedControl_ = control;
+        triggerControl(control);
+        requestUpdate();
         event->accept();
         return;
     }
@@ -1019,11 +1796,22 @@ void Video::mouseMoveEvent(QMouseEvent* event)
 {
     View::mouseMoveEvent(event);
 
+    const QPointF position = event->position();
+    updateHoveredControl(position);
+
+    if (overflowOpen_) {
+        const int item = overflowItemAt(position);
+        if (item != overflowHoveredItem_) {
+            overflowHoveredItem_ = item;
+            requestUpdate();
+        }
+    }
+
     if (!scrubbing_)
         return;
 
     hovered_ = true;
-    setPosition(positionForX(event->position().x()));
+    setPosition(positionForX(position.x()));
     event->accept();
 }
 
@@ -1033,6 +1821,11 @@ void Video::mouseReleaseEvent(QMouseEvent* event)
 
     if (event->button() != Qt::LeftButton)
         return;
+
+    if (pressedControl_ != Control::None) {
+        pressedControl_ = Control::None;
+        requestUpdate();
+    }
 
     if (scrubbing_) {
         setPosition(positionForX(event->position().x()));
@@ -1048,6 +1841,37 @@ void Video::mouseReleaseEvent(QMouseEvent* event)
 
 void Video::keyPressEvent(QKeyEvent* event)
 {
+    if (overflowOpen_) {
+        switch (event->key()) {
+        case Qt::Key_Escape:
+            closeOverflow();
+            event->accept();
+            return;
+        case Qt::Key_Down:
+        case Qt::Key_Up: {
+            const int step = event->key() == Qt::Key_Down ? 1 : -1;
+            const int count = overflowItemCount();
+            if (count > 0) {
+                if (overflowHoveredItem_ < 0)
+                    overflowHoveredItem_ = step > 0 ? 0 : count - 1;
+                else
+                    overflowHoveredItem_ = (overflowHoveredItem_ + step + count) % count;
+                requestUpdate();
+            }
+            event->accept();
+            return;
+        }
+        case Qt::Key_Return:
+        case Qt::Key_Enter:
+            if (overflowHoveredItem_ >= 0)
+                activateOverflowItem(overflowHoveredItem_);
+            event->accept();
+            return;
+        default:
+            break;
+        }
+    }
+
     bool handled = true;
 
     switch (event->key()) {

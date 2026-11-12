@@ -6,7 +6,7 @@
 // except the rule, so placing one between two rows cannot change the hit
 // testing or the keyboard order of its neighbours.
 //
-// Measurement follows the M3 axis contract:
+// Measurement follows the design baseline axis contract:
 //
 //   * horizontal — the natural height is the line thickness, and the width has
 //     no intrinsic value: the divider adopts the bound its parent offers (an
@@ -21,7 +21,7 @@
 // because a rule has no preferred width of its own. QSizePolicy is Expanding
 // on the fill axis so a plain Qt layout stretches it the same way.
 //
-// setInset() is the M3 "inset divider": it shortens the painted line at the
+// setInset() is the design baseline "inset divider": it shortens the painted line at the
 // leading and trailing ends without changing the measured rectangle, so the
 // space the divider reserves stays stable while the rule itself is indented.
 // The insets are logical: on a horizontal divider the leading end is the right
@@ -61,7 +61,7 @@ public:
     void setOrientation(Orientation orientation);
     [[nodiscard]] Orientation orientation() const noexcept;
 
-    // Leading/trailing inset along the line, in dp (M3 "inset divider").
+    // Leading/trailing inset along the line, in dp (design baseline "inset divider").
     void setInset(qreal startDp, qreal endDp);
     [[nodiscard]] qreal insetStart() const noexcept;
     [[nodiscard]] qreal insetEnd() const noexcept;

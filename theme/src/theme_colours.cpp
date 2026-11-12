@@ -1,11 +1,11 @@
-// Periodicity — the Android-style attribute layer on Theme.
+// Periodicity — the declarative-style attribute layer on Theme.
 //
-// Android's view system names its palette with `colorPrimary`, `colorPrimaryDark`,
+// The attribute layer names its palette `colorPrimary`, `colorPrimaryDark`,
 // `colorSecondary` and `colorAccent`. A host application usually thinks in those
 // names, so Theme answers them directly instead of forcing a second palette type:
 //
 //   * `colourPrimary()` / `colourSecondary()` / `colourAccent()` read the token
-//     scheme back through the Android names;
+//     scheme back through those attribute names;
 //   * `colour("colorPrimary")` resolves an attribute name, accepting both the
 //     American and British spellings and the short `Second`/`Acent` forms;
 //   * `fromColours()` builds a whole Theme from three seed colours.
@@ -90,9 +90,9 @@ Theme Theme::fromColours(QColor primary, QColor secondary, QColor accent, bool d
     scheme.onTertiaryFixed = onColour(scheme.tertiaryFixed);
     scheme.onTertiaryFixedVariant = blend(accentColour, QColor(Qt::black), 0.36);
 
-    // Android keeps the window background neutral and lets the app bars carry
-    // the brand colour; a light seed tint keeps the M3 surfaces from looking
-    // flat next to those bars.
+    // The baseline keeps the window background neutral and lets the app bars
+    // carry the brand colour; a light seed tint keeps the baseline surfaces from
+    // looking flat next to those bars.
     const QColor raised = dark ? QColor(Qt::black) : QColor(Qt::white);
     const QColor lifted = dark ? QColor(Qt::white) : QColor(Qt::black);
 
@@ -123,9 +123,9 @@ QColor Theme::colourPrimary() const
 
 QColor Theme::colourPrimaryDark() const
 {
-    // Android uses this attribute for the status bar: a genuinely darker shade
-    // of the primary, not the Material 3 container tone (which is a light tint
-    // in a light theme).
+    // The attribute layer uses this for the status bar: a genuinely darker
+    // shade of the primary, not the reference design system's container tone
+    // (which is a light tint in a light theme).
     const bool dark = colours_.surface.lightness() < 128;
     return blend(colours_.primary, QColor(Qt::black), dark ? 0.35 : 0.28);
 }

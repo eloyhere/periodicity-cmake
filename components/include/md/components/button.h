@@ -2,7 +2,7 @@
 //
 // One class, five variants (framework.md §5.9): Filled, FilledTonal, Elevated,
 // Outlined and Text. The widget occupies a 48 dp touch target while the
-// painted container is the 40 dp visual height M3 specifies, centred inside
+// painted container is the 40 dp visual height the design baseline specifies, centred inside
 // it, so the extra area is transparent padding rather than layout size
 // (framework.md §8).
 //
@@ -55,7 +55,7 @@ public:
     void setIcon(const QIcon& icon);
     [[nodiscard]] QIcon icon() const;
 
-    // The icon box, in dp. M3's standard button icon is 20 dp.
+    // The icon box, in dp. The design baseline's standard button icon is 20 dp.
     void setIconSize(qreal dp);
     [[nodiscard]] qreal iconSize() const noexcept;
 

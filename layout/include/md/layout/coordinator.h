@@ -6,8 +6,8 @@
 // registration order, and leaves the layout itself to the stacking rule the
 // other containers use.
 //
-// The protocol is deliberately the Android one, minus the arguments Periodicity
-// does not have yet:
+// The protocol deliberately follows the declarative view system, minus the
+// arguments Periodicity does not have yet:
 //
 //   startNestedScroll(axis)     -> any behaviour accepts?  (once per gesture)
 //   dispatchNestedPreScroll()   -> behaviours consume before the content moves

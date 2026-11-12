@@ -20,6 +20,7 @@
 #include <md/event/qt_bridge.h>
 #include <md/layer/surface_context.h>
 #include <md/schedule/task_queue.h>
+#include <md/schedule/frame_scheduler.h>
 #include <md/store/store.h>
 #include <md/theme/theme.h>
 #include <md/theme/theme_scope.h>
@@ -92,10 +93,11 @@ View::View(QWidget* parent)
     // The state overlay is context-driven and stateless, so it can be built
     // once. The focus ring stays out of the stack: it paints last, above the
     // ripple, and only on the paint path that checks both focusable() and
-    // hasFocus(). The contour is not part of the default pipeline: Material
-    // outlines only the surfaces that ask for one (an Outlined button, a card),
-    // and a 1 dp ring around every label is noise. Components draw their own
-    // contour; OutlineLayer stays available for a surface that wants it.
+    // hasFocus(). The contour is not part of the default pipeline: the reference
+    // design system outlines only the surfaces that ask for one (an Outlined
+    // button, a card), and a 1 dp ring around every label is noise. Components
+    // draw their own contour; OutlineLayer stays available for a surface that
+    // wants it.
     foreground_.add(std::make_unique<layer::StateOverlayLayer>());
 
     syncRippleAppearance();
@@ -429,6 +431,8 @@ void View::paintEvent(QPaintEvent*)
     // been painted by stage 2 when that happens, the remaining stages are
     // skipped, and the next update paints a complete frame again; guard()
     // reports the failure once per entry point.
+    const auto paintStarted = schedule::UiThread::Clock::now();
+
     static_cast<void>(view::guard(
         "View::paintEvent", kPaintSite, guardReport_, [this] {
             // Keep the ripple's clip in step with the widget even if the
@@ -479,11 +483,16 @@ void View::paintEvent(QPaintEvent*)
             //    Inside placement): Qt clips a widget's painter to the widget
             //    rectangle, so a ring stroked outside the bounds would show up
             //    only as fragments of its corner arcs. It is a keyboard
-            //    indicator (M3): a focus gained by a mouse press uses the state
+            //    indicator: a focus gained by a mouse press uses the state
             //    layer alone, so clicking a component never draws an outline.
             if (hasFocus() && focusable() && keyboardFocus_)
                 focusRing_.paint(painter, content, context);
         }));
+
+    if (auto* uiThread = schedule::UiThread::instance()) {
+        uiThread->recordPaint(std::chrono::duration_cast<schedule::UiThread::Duration>(
+            schedule::UiThread::Clock::now() - paintStarted));
+    }
 }
 
 void View::resizeEvent(QResizeEvent* event)
@@ -595,9 +604,9 @@ void View::focusInEvent(QFocusEvent* event)
 {
     QWidget::focusInEvent(event);
 
-    // M3: the focus ring is a keyboard indicator. A focus that arrived from a
-    // mouse press or a popup keeps the state layer as its only feedback, so a
-    // click never draws an outline around the component.
+    // The focus ring is a keyboard indicator in the design baseline. A focus
+    // that arrived from a mouse press or a popup keeps the state layer as its
+    // only feedback, so a click never draws an outline around the component.
     keyboardFocus_ = event->reason() != Qt::MouseFocusReason
         && event->reason() != Qt::PopupFocusReason;
 
@@ -743,9 +752,26 @@ void View::setMeasuredSize(QSizeF size)
 
 void View::requestUpdate()
 {
+    // With a UI runtime installed, invalidation is frame work: request the
+    // next frame and queue the actual QWidget::update() in its Build phase.
+    // requestFrame() coalesces any number of requests in one turn into one
+    // frame. Without a runtime the historical behaviour is preserved exactly:
+    // update() directly, so headless tests and embedders are unaffected.
+    if (auto* uiThread = schedule::UiThread::instance()) {
+        const QPointer<View> guard(this);
+        uiThread->requestFrame(schedule::FrameRequest::Update);
+        uiThread->postTask(schedule::Priority::UiUpdate, [guard] {
+            if (guard)
+                guard->update();
+        });
+        return;
+    }
+
     // The guard makes a destroyed view a no-op instead of a dangling update.
-    // The coalescing key is per instance, so a burst of property changes
-    // leaves exactly one pending task.
+    // The direct update() is the fallback contract; the coalesced queue task
+    // keeps the historical deferred path (and its pending-count accounting)
+    // for embedders that pump the queue explicitly.
+    update();
     const QPointer<View> guard(this);
     schedule::TaskQueue::main().postCoalesced(schedule::Priority::UiUpdate, updateKey_,
                                               [guard] {

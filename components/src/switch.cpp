@@ -36,7 +36,7 @@ constexpr qreal kTrackWidthDp = 52.0;
 constexpr qreal kTrackHeightDp = 32.0;
 constexpr qreal kThumbDiameterDp = 24.0;
 constexpr qreal kThumbInsetDp = 4.0;
-// WCAG 2.5.5 and M3: the target is 48 dp tall even though the track is 32 dp.
+// WCAG 2.5.5 and the design baseline: the target is 48 dp tall even though the track is 32 dp.
 constexpr qreal kTouchHeightDp = 48.0;
 
 QColor withAlpha(const QColor& colour, qreal alpha)
@@ -158,7 +158,7 @@ void Switch::paintContent(QPainter& painter, const QRectF& content)
     QColor thumbColour = blend(colours.outline, colours.onPrimary, fraction);
 
     if (!enabled) {
-        // The disabled switch keeps M3's container/content split: the track is
+        // The disabled switch keeps the design baseline's container/content split: the track is
         // the onSurface container tone and the thumb the content tone, so the
         // control reads as inactive without disappearing.
         trackColour = withAlpha(colours.onSurface, kDisabledContainerOpacity);

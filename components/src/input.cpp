@@ -8,7 +8,7 @@
 //   ColourPicker;
 //   PickerBase and its two clients, NumberPicker and RingPicker.
 //
-// Two rules hold everywhere: the Material surface is painted by the component
+// Two rules hold everywhere: the design baseline surface is painted by the component
 // (a stock QComboBox or QSpinBox is never the final appearance), and data is
 // read through md::Adapter so that a control never owns the application's
 // model. A QLineEdit appears only as the transparent text-editing proxy of the
@@ -47,9 +47,9 @@ namespace md {
 
 namespace {
 
-// M3 measurements, in dp. The components convert them through Density::dp().
+// Design baseline measurements, in dp. The components convert them through Density::dp().
 constexpr qreal kFieldHeightDp = 56.0;
-// Supporting text: M3 puts a bodySmall line (16 dp at the baseline scale) 4 dp
+// Supporting text: the design baseline puts a bodySmall line (16 dp at the baseline scale) 4 dp
 // below the field, so the supporting band stays 20 dp high.
 constexpr qreal kSupportingLineDp = 16.0;
 constexpr qreal kSupportingGapDp = 4.0;
@@ -94,7 +94,7 @@ qreal fieldHeightFor(const Theme& theme)
 }
 
 // The supporting line's own line box, never smaller than the 16 dp bodySmall
-// line M3 specifies: at a larger font scale the band grows with the text
+// line the design baseline specifies: at a larger font scale the band grows with the text
 // instead of clipping it.
 qreal supportingHeightFor(const Theme& theme)
 {

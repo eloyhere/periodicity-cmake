@@ -6,7 +6,7 @@
 // cache key, the colour, the device pixel ratio, the direction and the target
 // size, exactly as framework.md §7.6 requires.
 //
-// Mirroring is opt-in per icon because most Material Symbols are
+// Mirroring is opt-in per icon because most icons in the icon set are
 // direction-agnostic while arrows and chevrons are not. setMirrored(true) only
 // takes effect when the painter's layout direction is right-to-left, so a
 // caller can set the flag once and let the layout decide.
@@ -35,7 +35,7 @@ namespace md::drawable {
 class IconDrawable : public Drawable
 {
 public:
-    // The default requested size is Material's 24 dp icon box.
+    // The default requested size is the design baseline's 24 dp icon box.
     IconDrawable() = default;
 
     explicit IconDrawable(QIcon icon);

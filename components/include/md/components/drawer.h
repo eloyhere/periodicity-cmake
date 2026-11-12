@@ -1,4 +1,4 @@
-// Periodicity — Drawer, the Material 3 navigation drawer.
+// Periodicity — Drawer, the design baseline navigation drawer.
 //
 // A Drawer is an in-window overlay, exactly like Dialog and Menu: it creates no
 // platform window, it reparents itself to window() while it is modal and paints

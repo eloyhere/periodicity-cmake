@@ -1,4 +1,4 @@
-// Periodicity — the Material shadow as a cached blurred mask
+// Periodicity — the elevation shadow as a cached blurred mask
 // (framework.md §3.4, §7.3).
 //
 // ShadowDrawable renders the silhouette of a Shape in a single colour, blurs

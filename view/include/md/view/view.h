@@ -16,7 +16,7 @@
 //   5. the foreground stack — the state overlay;
 //   6. the ripple;
 //   7. the focus ring, when the view is focusable, actually focused, and the
-//      focus was established by the keyboard (M3).
+//      focus was established by the keyboard in the design baseline.
 //
 // Input arrives twice. Qt's event handlers convert a Qt event with
 // md/event/qt_bridge.h and dispatch it through the EventDispatcher; onEvent()

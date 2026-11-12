@@ -9,8 +9,8 @@
 // Colour is the link's state: an unvisited link is primary, a visited one is
 // tertiary, and hovering or pressing deepens the resolved colour with the
 // theme's interaction overlay (a state layer of onSurface, which darkens in a
-// light scheme and lightens in a dark one — the same rule every other Material
-// control follows). The colour is resolved per paint, so a theme change needs
+// light scheme and lightens in a dark one — the same rule every other component in
+// the design baseline follows). The colour is resolved per paint, so a theme change needs
 // no cached state.
 //
 // Long text never widens the widget past its allocated rectangle: the paint

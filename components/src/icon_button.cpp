@@ -4,7 +4,7 @@
 // the disabled opacities (framework.md §3.6) and the checked bit, when the
 // button is checkable, switches to the selected roles. The container is drawn
 // here rather than by View's background layer because the visual surface is the
-// 40 dp M3 circle centred inside the 48 dp touch target, while the background
+// 40 dp circle of the design baseline centred inside the 48 dp touch target, while the background
 // layer always fills the whole widget rectangle. The shape still comes from
 // View's shape token, so the ripple, the state overlay and the focus ring all
 // agree with the painted circle.
@@ -258,7 +258,7 @@ void IconButton::paintContent(QPainter& painter, const QRectF& content)
     const bool selected = isSelected();
 
     // The 40 dp visual surface, centred in the 48 dp touch target. It never
-    // grows beyond 40 dp, because the container is a fixed M3 size rather than
+    // grows beyond 40 dp, because the container is a fixed design baseline size rather than
     // a fill.
     const qreal side =
         std::min({density.dp(kContainerSizeDp), content.width(), content.height()});

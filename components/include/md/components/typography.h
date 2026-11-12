@@ -1,8 +1,8 @@
-// Periodicity — Typography, the full M3 type-scale display component.
+// Periodicity — Typography, the full design baseline type-scale display component.
 //
 // Text exposes four named roles (Caption, Label, Body, Title) because that is
 // what a form or a button needs. Typography is the presentation counterpart: it
-// exposes all fifteen styles of the Material 3 type scale, so a gallery or a
+// exposes all fifteen styles of the design baseline type scale, so a gallery or a
 // documentation page can show the scale itself rather than a re-labelled
 // subset.
 //
@@ -36,7 +36,7 @@ class Typography : public View
     Q_OBJECT
 
 public:
-    // The fifteen M3 type styles, in the order the specification lists them:
+    // The fifteen design baseline type styles, in the order the specification lists them:
     // display, headline, title, body and label, each large / medium / small.
     enum class TypeRole {
         DisplayLarge,

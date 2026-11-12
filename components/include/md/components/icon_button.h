@@ -1,8 +1,8 @@
 // Periodicity — the IconButton component (framework.md §5.9).
 //
 // A single-icon action: a 24 dp icon centred in the 40 dp circular container
-// M3 specifies, itself centred in a 48 dp touch target so the extra area is
-// transparent padding rather than layout size (framework.md §8), exactly as
+// the design baseline specifies, itself centred in a 48 dp touch target so the extra
+// area is transparent padding rather than layout size (framework.md §8), exactly as
 // Button does.
 //
 // Four variants: Standard (transparent container, onSurfaceVariant icon),
@@ -59,7 +59,7 @@ public:
     void setIcon(const QIcon& icon);
     [[nodiscard]] QIcon icon() const;
 
-    // The icon box, in dp. M3's icon button uses a 24 dp icon.
+    // The icon box, in dp. The design baseline's icon button uses a 24 dp icon.
     void setIconSize(qreal dp);
     [[nodiscard]] qreal iconSize() const noexcept;
 

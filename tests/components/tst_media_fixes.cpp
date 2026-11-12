@@ -260,6 +260,17 @@ private slots:
     void videoProgressClickSeeks();
     void videoScrubPausesTheTicker();
     void videoControlsHoverAndLayout();
+
+    // The icon-set rewrite: geometry, ink, states and the compact overflow.
+    void videoControlGeometryKeepsTouchTargets();
+    void videoEveryControlPaintsItsIcon();
+    void videoPlayIconIsOpticallyCentred();
+    void videoHoverPaintsAStateLayer();
+    void videoDisabledControlsPaintFaintInk();
+    void videoHiddenControlsPaintNoInk();
+    void videoCompactBarOverflowsSecondaryControls();
+    void videoFullscreenIconFollowsState();
+    void videoControlNamesAndTooltips();
 };
 
 void TestMediaFixes::initTestCase()
@@ -828,6 +839,430 @@ void TestMediaFixes::videoControlsHoverAndLayout()
     QVERIFY(video.controlsVisible());
 
     video.stop();
+}
+
+// ---------------------------------------------------------------------------
+// Video: the icon set
+// ---------------------------------------------------------------------------
+//
+// The bar paints the light on-scrim ink over the black letterbox in the
+// baseline light theme, so "ink" is a brightness test and not a colour
+// comparison. Each case below reads the rendered pixels back, because the
+// complaint this batch answers was visual: the geometry can be right while the
+// glyphs are not.
+
+namespace {
+
+int inkPixelsInRect(const QImage& image, const QRectF& rect, int minimumTone = 400)
+{
+    const qreal ratio = image.devicePixelRatio();
+    const int left =
+        qBound(0, static_cast<int>(std::floor(rect.left() * ratio)), image.width() - 1);
+    const int right =
+        qBound(left, static_cast<int>(std::ceil(rect.right() * ratio)), image.width());
+    const int top =
+        qBound(0, static_cast<int>(std::floor(rect.top() * ratio)), image.height() - 1);
+    const int bottom =
+        qBound(top, static_cast<int>(std::ceil(rect.bottom() * ratio)), image.height());
+
+    int count = 0;
+    for (int y = top; y < bottom; ++y) {
+        for (int x = left; x < right; ++x) {
+            const QColor colour = image.pixelColor(x, y);
+            if (colour.alpha() > 0 && tone(colour) >= minimumTone)
+                ++count;
+        }
+    }
+    return count;
+}
+
+qreal inkCentroidX(const QImage& image, const QRectF& rect, int minimumTone = 400)
+{
+    const qreal ratio = image.devicePixelRatio();
+    const int left =
+        qBound(0, static_cast<int>(std::floor(rect.left() * ratio)), image.width() - 1);
+    const int right =
+        qBound(left, static_cast<int>(std::ceil(rect.right() * ratio)), image.width());
+    const int top =
+        qBound(0, static_cast<int>(std::floor(rect.top() * ratio)), image.height() - 1);
+    const int bottom =
+        qBound(top, static_cast<int>(std::ceil(rect.bottom() * ratio)), image.height());
+
+    qreal sum = 0.0;
+    int count = 0;
+    for (int y = top; y < bottom; ++y) {
+        for (int x = left; x < right; ++x) {
+            const QColor colour = image.pixelColor(x, y);
+            if (colour.alpha() == 0 || tone(colour) < minimumTone)
+                continue;
+            sum += (static_cast<qreal>(x) + 0.5) / ratio;
+            ++count;
+        }
+    }
+    return count > 0 ? sum / static_cast<qreal>(count) : -1.0;
+}
+
+int peakToneInRect(const QImage& image, const QRectF& rect)
+{
+    const qreal ratio = image.devicePixelRatio();
+    const int left =
+        qBound(0, static_cast<int>(std::floor(rect.left() * ratio)), image.width() - 1);
+    const int right =
+        qBound(left, static_cast<int>(std::ceil(rect.right() * ratio)), image.width());
+    const int top =
+        qBound(0, static_cast<int>(std::floor(rect.top() * ratio)), image.height() - 1);
+    const int bottom =
+        qBound(top, static_cast<int>(std::ceil(rect.bottom() * ratio)), image.height());
+
+    int peak = 0;
+    for (int y = top; y < bottom; ++y) {
+        for (int x = left; x < right; ++x) {
+            const QColor colour = image.pixelColor(x, y);
+            if (colour.alpha() > 0)
+                peak = std::max(peak, tone(colour));
+        }
+    }
+    return peak;
+}
+
+int differingPixelsInRect(const QImage& lhs, const QImage& rhs, const QRectF& rect,
+                          int tolerance = 60)
+{
+    const qreal ratio = lhs.devicePixelRatio();
+    const int left =
+        qBound(0, static_cast<int>(std::floor(rect.left() * ratio)), lhs.width() - 1);
+    const int right =
+        qBound(left, static_cast<int>(std::ceil(rect.right() * ratio)), lhs.width());
+    const int top =
+        qBound(0, static_cast<int>(std::floor(rect.top() * ratio)), lhs.height() - 1);
+    const int bottom =
+        qBound(top, static_cast<int>(std::ceil(rect.bottom() * ratio)), lhs.height());
+
+    int count = 0;
+    for (int y = top; y < bottom; ++y) {
+        for (int x = left; x < right; ++x) {
+            const int difference =
+                std::abs(tone(lhs.pixelColor(x, y)) - tone(rhs.pixelColor(x, y)));
+            if (difference > tolerance)
+                ++count;
+        }
+    }
+    return count;
+}
+
+} // namespace
+
+void TestMediaFixes::videoControlGeometryKeepsTouchTargets()
+{
+    md::Video video;
+    video.resize(800, 450);
+    video.setDuration(60'000);
+
+    // The wide bar carries the full transport, left to right.
+    const md::Video::Control order[] = {
+        md::Video::Control::PlayPause,   md::Video::Control::Replay,
+        md::Video::Control::SkipBack,    md::Video::Control::SkipForward,
+        md::Video::Control::Volume,      md::Video::Control::Settings,
+        md::Video::Control::Fullscreen,
+    };
+    const int expected = static_cast<int>(sizeof(order) / sizeof(order[0]));
+    QCOMPARE(video.controlCount(), expected);
+
+    const QRectF bar = video.controlBarRect();
+    QCOMPARE(bar.height(), 56.0);
+
+    for (int i = 0; i < expected; ++i) {
+        const QRectF rect = video.controlRect(i);
+        QVERIFY2(!rect.isEmpty(), qPrintable(QStringLiteral("control %1").arg(i)));
+        QCOMPARE(rect.width(), 48.0);
+        QCOMPARE(rect.height(), 48.0);
+        QVERIFY(bar.contains(rect));
+        QCOMPARE(video.controlRect(order[i]), rect);
+        QCOMPARE(video.controlAt(rect.center()), order[i]);
+    }
+
+    // The three accessors the older tests use are the new geometry, not a copy.
+    QCOMPARE(video.controlRect(md::Video::Control::PlayPause), video.playButtonRect());
+    QCOMPARE(video.controlRect(md::Video::Control::Volume), video.volumeButtonRect());
+    QCOMPARE(video.controlRect(md::Video::Control::Fullscreen), video.fullscreenButtonRect());
+
+    // 12 dp to either edge and 8 dp between neighbours.
+    QCOMPARE(video.playButtonRect().left(), bar.left() + 12.0);
+    QCOMPARE(video.fullscreenButtonRect().right(), bar.right() - 12.0);
+    QCOMPARE(video.controlRect(md::Video::Control::Replay).left(),
+             video.playButtonRect().right() + 8.0);
+    QCOMPARE(video.controlRect(md::Video::Control::SkipBack).left(),
+             video.controlRect(md::Video::Control::Replay).right() + 8.0);
+    QCOMPARE(video.controlRect(md::Video::Control::SkipForward).left(),
+             video.controlRect(md::Video::Control::SkipBack).right() + 8.0);
+    QCOMPARE(video.controlRect(md::Video::Control::Settings).left(),
+             video.controlRect(md::Video::Control::Volume).right() + 8.0);
+    QCOMPARE(video.controlRect(md::Video::Control::Fullscreen).left(),
+             video.controlRect(md::Video::Control::Settings).right() + 8.0);
+
+    // The track lives between the time label and the volume target.
+    QVERIFY(!video.progressRect().isEmpty());
+    QVERIFY(video.progressRect().left() >= video.timeLabelRect().right());
+    QVERIFY(video.progressRect().right() <= video.volumeButtonRect().left());
+}
+
+void TestMediaFixes::videoEveryControlPaintsItsIcon()
+{
+    md::Video video;
+    video.resize(800, 450);
+    video.setDuration(10'000);
+
+    const QImage image = renderWidget(video);
+    const md::Video::Control controls[] = {
+        md::Video::Control::PlayPause,   md::Video::Control::Replay,
+        md::Video::Control::SkipBack,    md::Video::Control::SkipForward,
+        md::Video::Control::Volume,      md::Video::Control::Settings,
+        md::Video::Control::Fullscreen,
+    };
+
+    for (md::Video::Control control : controls) {
+        const QRectF rect = video.controlRect(control);
+        QVERIFY(!rect.isEmpty());
+        QVERIFY2(inkPixelsInRect(image, rect) > 30,
+                 qPrintable(QStringLiteral("control %1 has no ink")
+                                .arg(static_cast<int>(control))));
+
+        // 24 dp glyph inside a 48 dp target: the outer 12 dp ring stays empty.
+        QCOMPARE(inkPixelsInRect(image,
+                                 QRectF(rect.left(), rect.top(), rect.width(), 10.0)),
+                 0);
+        QCOMPARE(inkPixelsInRect(image,
+                                 QRectF(rect.left(), rect.bottom() - 10.0, rect.width(),
+                                        10.0)),
+                 0);
+    }
+}
+
+void TestMediaFixes::videoPlayIconIsOpticallyCentred()
+{
+    md::Video video;
+    video.resize(800, 450);
+    video.setDuration(10'000);
+
+    const QRectF play = video.playButtonRect();
+    QVERIFY(!play.isEmpty());
+
+    // A filled triangle reads as centred when its ink centre of mass sits on the
+    // target centre, not when its bounding box does.
+    const qreal triangle = inkCentroidX(renderWidget(video), play);
+    QVERIFY(triangle > 0.0);
+    QVERIFY2(std::abs(triangle - play.center().x()) <= 1.6,
+             qPrintable(QStringLiteral("play centroid %1, centre %2")
+                            .arg(triangle)
+                            .arg(play.center().x())));
+
+    // The pause bars are symmetric, so they are centred exactly.
+    video.play();
+    const qreal bars = inkCentroidX(renderWidget(video), play);
+    QVERIFY(bars > 0.0);
+    QVERIFY2(std::abs(bars - play.center().x()) <= 0.75,
+             qPrintable(QStringLiteral("pause centroid %1, centre %2")
+                            .arg(bars)
+                            .arg(play.center().x())));
+    video.pause();
+}
+
+void TestMediaFixes::videoHoverPaintsAStateLayer()
+{
+    md::Video video;
+    video.resize(800, 450);
+    video.setDuration(60'000);
+
+    const QRectF play = video.playButtonRect();
+    // Inside the 40 dp state layer, outside the 24 dp glyph.
+    const QPointF probe = play.center() + QPointF(12.0, 12.0);
+
+    const QColor resting = pixelAt(renderWidget(video), probe);
+    QCOMPARE(resting.alpha(), 255);
+    QVERIFY(tone(resting) < 120);
+
+    sendMouse(video, QEvent::MouseMove, probe, Qt::NoButton, Qt::NoButton);
+    QCOMPARE(video.hoveredControl(), md::Video::Control::PlayPause);
+
+    const QColor hovered = pixelAt(renderWidget(video), probe);
+    QVERIFY2(tone(hovered) > tone(resting) + 60,
+             qPrintable(QStringLiteral("resting %1, hovered %2")
+                            .arg(tone(resting))
+                            .arg(tone(hovered))));
+
+    // Leaving the surface drops both the layer and the hovered action.
+    sendLeave(video);
+    QCOMPARE(video.hoveredControl(), md::Video::Control::None);
+    QCOMPARE(pixelAt(renderWidget(video), probe), resting);
+}
+
+void TestMediaFixes::videoDisabledControlsPaintFaintInk()
+{
+    md::Video video;
+    video.resize(800, 450);
+    video.setDuration(10'000);
+
+    const QRectF play = video.playButtonRect();
+    const QImage enabled = renderWidget(video);
+    QVERIFY(inkPixelsInRect(enabled, play) > 30);
+    const int enabledPeak = peakToneInRect(enabled, play);
+    QVERIFY(enabledPeak > 600);
+
+    video.setEnabled(false);
+    const QImage disabled = renderWidget(video);
+
+    // The glyph stays, at the 38% disabled emphasis ...
+    QVERIFY2(inkPixelsInRect(disabled, play, 120) > 0,
+             "a disabled action still paints its glyph");
+    const int disabledPeak = peakToneInRect(disabled, play);
+    QVERIFY(disabledPeak > 0);
+    QVERIFY2(disabledPeak <= enabledPeak * 45 / 100,
+             qPrintable(QStringLiteral("disabled peak %1 vs enabled %2")
+                            .arg(disabledPeak)
+                            .arg(enabledPeak)));
+
+    // ... and the hover state layer is suppressed: a disabled control never
+    // paints the interactive ink.
+    sendMouse(video, QEvent::MouseMove, play.center(), Qt::NoButton, Qt::NoButton);
+    QCOMPARE(video.hoveredControl(), md::Video::Control::None);
+    QCOMPARE(renderWidget(video), disabled);
+}
+
+void TestMediaFixes::videoHiddenControlsPaintNoInk()
+{
+    md::Video video;
+    video.resize(480, 320);
+    video.setDuration(60'000);
+    video.play();
+
+    // Playing with the pointer elsewhere fades the whole bar out; a hidden
+    // control must paint nothing, not its ink at zero opacity.
+    QTRY_VERIFY_WITH_TIMEOUT(!video.controlsVisible(), 1500);
+    QVERIFY(!video.controlsVisible());
+
+    const QImage image = renderWidget(video);
+    QCOMPARE(inkPixelsInRect(image, video.playButtonRect()), 0);
+    QCOMPARE(inkPixelsInRect(image, video.controlRect(md::Video::Control::Volume)), 0);
+    QCOMPARE(inkPixelsInRect(image, video.controlRect(md::Video::Control::Fullscreen)), 0);
+}
+
+void TestMediaFixes::videoCompactBarOverflowsSecondaryControls()
+{
+    md::Video video;
+    video.resize(400, 300);
+    video.setDuration(60'000);
+    video.setPosition(30'000);
+
+    // The bar keeps the primary transport and drops replay and the seeks into
+    // the settings panel; the targets that remain are still a full 48 dp.
+    QCOMPARE(video.controlCount(), 4);
+    QVERIFY(video.controlRect(md::Video::Control::Replay).isEmpty());
+    QVERIFY(video.controlRect(md::Video::Control::SkipBack).isEmpty());
+    QVERIFY(video.controlRect(md::Video::Control::SkipForward).isEmpty());
+
+    for (int i = 0; i < video.controlCount(); ++i) {
+        const QRectF rect = video.controlRect(i);
+        QCOMPARE(rect.width(), 48.0);
+        QCOMPARE(rect.height(), 48.0);
+        QVERIFY(video.controlBarRect().contains(rect));
+    }
+
+    const QRectF settings = video.controlRect(md::Video::Control::Settings);
+    QVERIFY(!settings.isEmpty());
+    clickAt(video, settings.center());
+    QVERIFY(video.overflowOpen());
+    QCOMPARE(video.overflowItemCount(), 4);
+
+    for (int i = 0; i < video.overflowItemCount(); ++i) {
+        const QRectF item = video.overflowItemRect(i);
+        QVERIFY(!item.isEmpty());
+        QVERIFY(item.top() >= 0.0);
+        QVERIFY(item.bottom() <= video.height());
+        QVERIFY(item.left() >= 0.0);
+        QVERIFY(item.right() <= video.width());
+    }
+
+    // The replay row restarts the clip.
+    clickAt(video, video.overflowItemRect(0).center());
+    QVERIFY(!video.overflowOpen());
+    QVERIFY2(video.position() < 100, qPrintable(QStringLiteral("position %1")
+                                                    .arg(video.position())));
+    QVERIFY(video.state() == md::Video::PlaybackState::Playing);
+    video.pause();
+
+    // The last row toggles loop.
+    clickAt(video, settings.center());
+    QVERIFY(video.overflowOpen());
+    clickAt(video, video.overflowItemRect(3).center());
+    QVERIFY(!video.overflowOpen());
+    QVERIFY(video.loop());
+
+    // A click that dismisses the panel is not also an action on the bar.
+    clickAt(video, settings.center());
+    QVERIFY(video.overflowOpen());
+    const qint64 held = video.position();
+    clickAt(video, QPointF(10.0, 10.0));
+    QVERIFY(!video.overflowOpen());
+    QCOMPARE(video.position(), held);
+}
+
+void TestMediaFixes::videoFullscreenIconFollowsState()
+{
+    md::Video video;
+    video.resize(800, 450);
+    const QRectF fullscreen = video.controlRect(md::Video::Control::Fullscreen);
+    QVERIFY(!fullscreen.isEmpty());
+
+    const QImage enter = renderWidget(video);
+    QVERIFY(inkPixelsInRect(enter, fullscreen) > 20);
+
+    video.setFullscreen(true);
+    QVERIFY(video.isFullscreen());
+    const QImage exit = renderWidget(video);
+    QVERIFY(inkPixelsInRect(exit, fullscreen) > 20);
+
+    // Enter and exit are different glyphs, not the same one recoloured.
+    QVERIFY2(differingPixelsInRect(enter, exit, fullscreen) > 30,
+             "the full-screen icon did not change with the state");
+    QVERIFY(video.controlAccessibleName(md::Video::Control::Fullscreen)
+                .contains(QStringLiteral("Exit")));
+}
+
+void TestMediaFixes::videoControlNamesAndTooltips()
+{
+    md::Video video;
+
+    const md::Video::Control controls[] = {
+        md::Video::Control::PlayPause,   md::Video::Control::Replay,
+        md::Video::Control::SkipBack,    md::Video::Control::SkipForward,
+        md::Video::Control::Volume,      md::Video::Control::Settings,
+        md::Video::Control::Fullscreen,
+    };
+
+    for (md::Video::Control control : controls) {
+        QVERIFY2(!video.controlToolTip(control).isEmpty(),
+                 qPrintable(QStringLiteral("tooltip %1").arg(static_cast<int>(control))));
+        QVERIFY2(!video.controlAccessibleName(control).isEmpty(),
+                 qPrintable(QStringLiteral("name %1").arg(static_cast<int>(control))));
+    }
+
+    QVERIFY(video.controlToolTip(md::Video::Control::None).isEmpty());
+    QVERIFY(!video.accessibleName().isEmpty());
+    QVERIFY(!video.accessibleDescription().isEmpty());
+
+    QVERIFY(video.controlToolTip(md::Video::Control::PlayPause)
+                .startsWith(QStringLiteral("Play")));
+    video.play();
+    QVERIFY(video.controlToolTip(md::Video::Control::PlayPause)
+                .startsWith(QStringLiteral("Pause")));
+    video.pause();
+
+    video.setMuted(true);
+    QVERIFY(video.controlToolTip(md::Video::Control::Volume)
+                .startsWith(QStringLiteral("Unmute")));
+    video.setMuted(false);
+    QVERIFY(video.controlToolTip(md::Video::Control::Volume)
+                .startsWith(QStringLiteral("Mute")));
 }
 
 QTEST_MAIN(TestMediaFixes)

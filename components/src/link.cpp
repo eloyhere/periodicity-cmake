@@ -37,7 +37,7 @@ QColor withAlpha(const QColor& colour, qreal alpha)
 
 // Composes `overlay` onto `base` as an opaque colour. The overlay is the
 // theme's onSurface, so the result darkens on a light scheme and lightens on a
-// dark one — the same direction Material's state layer takes.
+// dark one — the same direction the design baseline's state layer takes.
 QColor mix(const QColor& base, const QColor& overlay, qreal amount)
 {
     const qreal t = std::clamp(amount, qreal(0.0), qreal(1.0));

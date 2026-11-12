@@ -1,7 +1,7 @@
 // Periodicity — the input and selection components.
 //
 // Every control here is a real md::View: it implements the measure and paint
-// contracts, paints its own Material 3 surface and content, and never uses a
+// contracts, paints its own design baseline surface and content, and never uses a
 // stock QComboBox / QSpinBox as its final appearance. A QLineEdit is embedded
 // only as the text-editing focus proxy for the text-derived controls; the
 // container, the floating label, the underline, the helper/error line, the
@@ -52,7 +52,7 @@ class QWheelEvent;
 namespace md {
 
 // ---------------------------------------------------------------------------
-// TextInput — the Material 3 filled text field.
+// TextInput — the design baseline filled text field.
 //
 // The container is the 56 dp filled surface with rounded top corners, a
 // floating label, a 1 dp/2 dp underline and an optional supporting line below.
@@ -263,7 +263,7 @@ private:
 };
 
 // ---------------------------------------------------------------------------
-// DropDown — a Material 3 exposed menu.
+// DropDown — a design baseline exposed menu.
 //
 // The closed control is a filled field that shows the current item. Opening it
 // shows a top-level popup menu painted by this module: up/down move the

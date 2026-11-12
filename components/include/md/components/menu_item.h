@@ -6,7 +6,7 @@
 // the base class of SubMenu; both use the same row geometry, so a leaf and a
 // parent row line up pixel for pixel.
 //
-// States follow Material 3: hover draws a state layer inside the row pill,
+// States follow the design baseline: hover draws a state layer inside the row pill,
 // press deepens it, and selected fills the pill with secondaryContainer and
 // paints the label in onSecondaryContainer. Indentation is part of the row,
 // not of the container: setIndentLevel() shifts the leading edge by 16 dp per
@@ -84,7 +84,7 @@ public:
     void setArrowRotation(qreal degrees);
     [[nodiscard]] qreal arrowRotation() const noexcept { return arrowRotation_; }
 
-    // The row height in dp. The M3 menu row is 48 dp; a dense navigation
+    // The row height in dp. The design baseline menu row is 48 dp; a dense navigation
     // drawer can ask for less.
     void setRowHeight(qreal dp);
     [[nodiscard]] qreal rowHeight() const noexcept { return rowHeightDp_; }

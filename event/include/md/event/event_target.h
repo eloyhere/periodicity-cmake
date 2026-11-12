@@ -78,8 +78,8 @@ public:
                                                const QPointF& point) const = 0;
 
     // Gives an ancestor the chance to claim a gesture before its descendants
-    // see it, mirroring Android's onInterceptTouchEvent. Returning true makes
-    // this target the delivery target. The default does not intercept.
+    // see it, mirroring the declarative view system's intercept hook. Returning
+    // true makes this target the delivery target. The default does not intercept.
     virtual bool onInterceptEvent(Event& /*event*/) { return false; }
 
     // Handles the event in the current phase. The return value is advisory;

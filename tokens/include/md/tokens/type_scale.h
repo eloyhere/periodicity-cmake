@@ -3,7 +3,7 @@
 // Fifteen typographic styles, each a plain value. Sizes are in sp, so the
 // user's font scale applies independently of density. The line height is
 // explicit and never derived from QFontMetrics, because font designers'
-// metrics do not match the M3 ratios.
+// metrics do not match the ratios of the reference design system.
 
 #pragma once
 
@@ -12,9 +12,9 @@
 
 namespace md {
 
-// One typographic style. Tracking is Material's letter spacing in sp; it is
-// a positive value for wide text (labels) and negative for display sizes,
-// which is why it is signed.
+// One typographic style. Tracking is the design baseline's letter spacing in
+// sp; it is a positive value for wide text (labels) and negative for display
+// sizes, which is why it is signed.
 struct TextStyle
 {
     QString family;
@@ -26,8 +26,9 @@ struct TextStyle
     [[nodiscard]] friend bool operator==(const TextStyle& lhs, const TextStyle& rhs) = default;
 };
 
-// The fifteen M3 type styles. The names follow the specification:
-// display / headline / title / body / label, each in large / medium / small.
+// The fifteen type styles of the design baseline. The names follow the
+// specification: display / headline / title / body / label, each in large /
+// medium / small.
 struct TypeScale
 {
     TextStyle displayLarge;

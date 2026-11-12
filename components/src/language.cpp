@@ -2,16 +2,16 @@
 
 #include <md/components/language.h>
 
-#include <md/components/menu.h>
-#include <md/store/store.h>
 #include <md/components/font.h>
+#include <md/components/modal.h>
+#include <md/core/i18n.h>
+#include <md/store/store.h>
 #include <md/theme/theme.h>
 
 #include <QApplication>
 #include <QEvent>
+#include <QFocusEvent>
 #include <QFont>
-#include <QVariant>
-#include <QWidget>
 #include <QFontMetricsF>
 #include <QKeyEvent>
 #include <QMouseEvent>
@@ -21,9 +21,11 @@
 #include <QPointF>
 #include <QRectF>
 #include <QSizeF>
+#include <QVariant>
 #include <QWidget>
 
 #include <algorithm>
+#include <functional>
 
 namespace md {
 
@@ -35,14 +37,54 @@ constexpr qreal kIconSizeDp = 18.0;
 constexpr qreal kGapDp = 8.0;
 constexpr qreal kArrowSizeDp = 18.0;
 
+// LanguagePanel's compact two-column card. Ten locales fit in five 48 dp rows.
+constexpr qreal kPanelWidthDp = 360.0;
+constexpr qreal kPanelPaddingDp = 16.0;
+constexpr qreal kPanelHeaderHeightDp = 48.0;
+constexpr qreal kPanelRowHeightDp = 48.0;
+constexpr qreal kPanelColumnGapDp = 8.0;
+constexpr qreal kPanelRowGapDp = 4.0;
+constexpr qreal kPanelRowRadiusDp = 12.0;
+
 QFont fontFor(const TextStyle& style, const Density& density, const QWidget* context)
 {
     return Font::resolve(context, style, density);
 }
 
-Language::LanguageEntry makeEntry(const QString& code, const QString& nativeName)
+// Native names are not themselves translated: a language selector should be
+// readable to someone who speaks that language. "中文" wins over the more
+// precise "简体中文" because it is the label the design brief asks for.
+QString nativeNameFor(const QString& code)
 {
-    return Language::LanguageEntry{code, nativeName, QLocale(code)};
+    if (code == QLatin1String("en"))
+        return QStringLiteral("English");
+    if (code == QLatin1String("zh_CN"))
+        return QStringLiteral("中文");
+    if (code == QLatin1String("zh_TW"))
+        return QStringLiteral("繁體中文");
+    if (code == QLatin1String("ja"))
+        return QStringLiteral("日本語");
+    if (code == QLatin1String("ko"))
+        return QStringLiteral("한국어");
+    if (code == QLatin1String("fr"))
+        return QStringLiteral("Français");
+    if (code == QLatin1String("de"))
+        return QStringLiteral("Deutsch");
+    if (code == QLatin1String("es"))
+        return QStringLiteral("Español");
+    if (code == QLatin1String("ru"))
+        return QStringLiteral("Русский");
+    if (code == QLatin1String("pt_BR"))
+        return QStringLiteral("Português (Brasil)");
+
+    const QLocale locale(code);
+    const QString native = locale.nativeLanguageName();
+    return native.isEmpty() ? code : native;
+}
+
+Language::LanguageEntry makeEntry(const QString& code)
+{
+    return Language::LanguageEntry{code, nativeNameFor(code), QLocale(code)};
 }
 
 void drawGlobe(QPainter& painter, const QRectF& box, const QColor& colour,
@@ -62,16 +104,370 @@ void drawGlobe(QPainter& painter, const QRectF& box, const QColor& colour,
                      QPointF(box.right(), box.center().y()));
 }
 
+// The modal's card. It is View-painted (no child widgets), so its rows are
+// revealed by the paint clip and can never cover a sibling. The two-column
+// layout keeps all ten locales within five 48 dp rows.
+class LanguagePanel final : public View
+{
+public:
+    explicit LanguagePanel(QWidget* parent)
+        : View(parent)
+    {
+        setFocusPolicy(Qt::StrongFocus);
+        setMouseTracking(true);
+        syncAppearance();
+        setAccessibleName(QCoreApplication::translate("Language", "Language"));
+    }
+
+    void setEntries(const QList<Language::LanguageEntry>& entries, const QString& current)
+    {
+        entries_ = entries;
+        current_ = current;
+
+        focused_ = 0;
+        for (int index = 0; index < static_cast<int>(entries_.size()); ++index) {
+            if (entries_.at(index).code == current_) {
+                focused_ = index;
+                break;
+            }
+        }
+
+        hover_ = -1;
+        pressed_ = -1;
+        syncAccessibleDescription();
+        requestUpdate();
+    }
+
+    std::function<void(const QString&)> activated;
+    std::function<void()> dismissed;
+
+protected:
+    void measureOverride(MeasureSpec width, MeasureSpec height) override
+    {
+        const Density& density = Theme::forWidget(this).density();
+        const int rows = rowCount();
+        const qreal heightDp =
+            kPanelPaddingDp * 2.0 + kPanelHeaderHeightDp
+            + rows * kPanelRowHeightDp + std::max(0, rows - 1) * kPanelRowGapDp;
+        setMeasuredSize(QSizeF(width.resolve(density.dp(kPanelWidthDp)),
+                               height.resolve(density.dp(heightDp))));
+    }
+
+    void paintContent(QPainter& painter, const QRectF& content) override
+    {
+        if (content.isEmpty())
+            return;
+
+        const Theme& theme = Theme::forWidget(this);
+        const ColorScheme& colours = theme.colours();
+        const Density& density = theme.density();
+
+        painter.save();
+        painter.setRenderHint(QPainter::Antialiasing, true);
+        painter.setRenderHint(QPainter::TextAntialiasing, true);
+        painter.setClipPath(shape().path(content));
+
+        painter.setFont(fontFor(theme.type().titleLarge, density, this));
+        painter.setPen(colours.onSurface);
+        painter.drawText(headerRect(), static_cast<int>(Qt::AlignLeft | Qt::AlignVCenter),
+                         QCoreApplication::translate("Language", "Language"));
+
+        for (int index = 0; index < static_cast<int>(entries_.size()); ++index) {
+            const QRectF row = rowRect(index);
+            if (row.isEmpty())
+                continue;
+
+            const bool selected = entries_.at(index).code == current_;
+            const qreal radius = density.dp(kPanelRowRadiusDp);
+
+            if (selected) {
+                painter.setPen(Qt::NoPen);
+                painter.setBrush(colours.secondaryContainer);
+                painter.drawRoundedRect(row, radius, radius);
+            } else if (index == hover_ || (hasFocus() && index == focused_)) {
+                painter.setPen(Qt::NoPen);
+                QColor stateLayer = colours.onSurface;
+                stateLayer.setAlphaF(0.08f);
+                painter.setBrush(stateLayer);
+                painter.drawRoundedRect(row, radius, radius);
+            }
+
+            const QFont labelFont = fontFor(theme.type().bodyLarge, density, this);
+            const QFontMetricsF metrics(labelFont);
+            const qreal trailing = selected ? density.dp(32.0) : density.dp(12.0);
+            const QRectF textRect = row.adjusted(density.dp(16.0), 0.0,
+                                                 -trailing, 0.0);
+
+            painter.setFont(labelFont);
+            painter.setPen(selected ? colours.onSecondaryContainer : colours.onSurface);
+            painter.drawText(textRect, static_cast<int>(Qt::AlignLeft | Qt::AlignVCenter),
+                             metrics.elidedText(entries_.at(index).nativeName,
+                                                Qt::ElideRight, textRect.width()));
+
+            if (selected) {
+                const QPointF centre(row.right() - density.dp(18.0), row.center().y());
+                QPainterPath check;
+                check.moveTo(centre.x() - density.dp(5.0), centre.y());
+                check.lineTo(centre.x() - density.dp(1.5), centre.y() + density.dp(3.5));
+                check.lineTo(centre.x() + density.dp(5.0), centre.y() - density.dp(4.0));
+                painter.setPen(QPen(colours.primary, density.dp(2.0), Qt::SolidLine,
+                                    Qt::RoundCap, Qt::RoundJoin));
+                painter.setBrush(Qt::NoBrush);
+                painter.drawPath(check);
+            }
+
+            if (hasFocus() && index == focused_) {
+                QColor ring = colours.primary;
+                ring.setAlphaF(0.9f);
+                painter.setPen(QPen(ring, density.dp(1.5)));
+                painter.setBrush(Qt::NoBrush);
+                painter.drawRoundedRect(row.adjusted(density.dp(0.75), density.dp(0.75),
+                                                     -density.dp(0.75), -density.dp(0.75)),
+                                        radius, radius);
+            }
+        }
+
+        painter.restore();
+    }
+
+    void mouseMoveEvent(QMouseEvent* event) override
+    {
+        const int index = indexAt(event->position());
+        if (index != hover_) {
+            hover_ = index;
+            requestUpdate();
+        }
+        View::mouseMoveEvent(event);
+    }
+
+    void mousePressEvent(QMouseEvent* event) override
+    {
+        if (event->button() == Qt::LeftButton) {
+            pressed_ = indexAt(event->position());
+            if (pressed_ >= 0) {
+                focused_ = pressed_;
+                requestUpdate();
+            }
+        }
+        View::mousePressEvent(event);
+    }
+
+    void mouseReleaseEvent(QMouseEvent* event) override
+    {
+        const int pressed = pressed_;
+        pressed_ = -1;
+
+        if (event->button() == Qt::LeftButton && pressed >= 0
+            && indexAt(event->position()) == pressed) {
+            activateIndex(pressed);
+            event->accept();
+            return;
+        }
+
+        View::mouseReleaseEvent(event);
+    }
+
+    void keyPressEvent(QKeyEvent* event) override
+    {
+        if (entries_.isEmpty()) {
+            View::keyPressEvent(event);
+            return;
+        }
+
+        const int columns = columnCount();
+        const int last = static_cast<int>(entries_.size()) - 1;
+
+        switch (event->key()) {
+        case Qt::Key_Up:
+            focused_ = std::max(0, focused_ - columns);
+            break;
+        case Qt::Key_Down:
+            focused_ = std::min(last, focused_ + columns);
+            break;
+        case Qt::Key_Left:
+            focused_ = std::max(0, focused_ - 1);
+            break;
+        case Qt::Key_Right:
+            focused_ = std::min(last, focused_ + 1);
+            break;
+        case Qt::Key_Home:
+            focused_ = 0;
+            break;
+        case Qt::Key_End:
+            focused_ = last;
+            break;
+        case Qt::Key_Return:
+        case Qt::Key_Enter:
+        case Qt::Key_Space:
+            activateIndex(focused_);
+            event->accept();
+            return;
+        case Qt::Key_Tab:
+        case Qt::Key_Backtab:
+            // The panel is the only focusable surface inside the modal, so Tab
+            // stays here until the modal closes and hands focus back to the chip.
+            event->accept();
+            return;
+        case Qt::Key_Escape:
+            if (dismissed)
+                dismissed();
+            event->accept();
+            return;
+        default:
+            View::keyPressEvent(event);
+            return;
+        }
+
+        requestUpdate();
+        event->accept();
+    }
+
+    void focusInEvent(QFocusEvent* event) override
+    {
+        View::focusInEvent(event);
+        requestUpdate();
+    }
+
+    void focusOutEvent(QFocusEvent* event) override
+    {
+        View::focusOutEvent(event);
+        requestUpdate();
+    }
+
+    void changeEvent(QEvent* event) override
+    {
+        View::changeEvent(event);
+        if (event != nullptr && event->type() == QEvent::LanguageChange) {
+            syncAccessibleDescription();
+            requestUpdate();
+        }
+    }
+
+    void onThemeChanged() override
+    {
+        syncAppearance();
+        requestUpdate();
+    }
+
+private:
+    void syncAppearance()
+    {
+        const Theme& theme = Theme::forWidget(this);
+        setShape(theme.shapes().extraLarge);
+        setElevation(Elevation::Level2);
+        setBackgroundColour(theme.colours().surfaceContainerHigh);
+        requestUpdate();
+    }
+
+    void syncAccessibleDescription()
+    {
+        QString name;
+        for (const Language::LanguageEntry& entry : entries_) {
+            if (entry.code == current_) {
+                name = entry.nativeName;
+                break;
+            }
+        }
+        if (name.isEmpty())
+            name = current_;
+
+        setAccessibleName(QCoreApplication::translate("Language", "Language"));
+        setAccessibleDescription(
+            QCoreApplication::translate("Language", "Language: %1").arg(name));
+    }
+
+    [[nodiscard]] int columnCount() const
+    {
+        return entries_.size() > 1 ? 2 : 1;
+    }
+
+    [[nodiscard]] int rowCount() const
+    {
+        const int columns = columnCount();
+        return (static_cast<int>(entries_.size()) + columns - 1) / columns;
+    }
+
+    [[nodiscard]] QRectF headerRect() const
+    {
+        const QRectF content = contentRect();
+        const Density& density = Theme::forWidget(this).density();
+        const qreal padding = density.dp(kPanelPaddingDp);
+        return QRectF(content.left() + padding, content.top() + padding,
+                      std::max<qreal>(0.0, content.width() - padding * 2.0),
+                      density.dp(kPanelHeaderHeightDp));
+    }
+
+    [[nodiscard]] QRectF rowRect(int index) const
+    {
+        if (index < 0 || index >= static_cast<int>(entries_.size()))
+            return QRectF();
+
+        const QRectF content = contentRect();
+        const Density& density = Theme::forWidget(this).density();
+        const qreal padding = density.dp(kPanelPaddingDp);
+        const qreal gap = density.dp(kPanelColumnGapDp);
+        const qreal rowHeight = density.dp(kPanelRowHeightDp);
+        const qreal rowGap = density.dp(kPanelRowGapDp);
+        const int columns = columnCount();
+        const int row = index / columns;
+        const int column = index % columns;
+        const qreal cellWidth = std::max<qreal>(
+            0.0, (content.width() - padding * 2.0 - gap * (columns - 1)) / columns);
+
+        return QRectF(content.left() + padding + column * (cellWidth + gap),
+                      content.top() + padding + density.dp(kPanelHeaderHeightDp)
+                          + row * (rowHeight + rowGap),
+                      cellWidth, rowHeight);
+    }
+
+    [[nodiscard]] int indexAt(const QPointF& point) const
+    {
+        for (int index = 0; index < static_cast<int>(entries_.size()); ++index) {
+            if (rowRect(index).contains(point))
+                return index;
+        }
+        return -1;
+    }
+
+    void activateIndex(int index)
+    {
+        if (index < 0 || index >= static_cast<int>(entries_.size()))
+            return;
+
+        const QString code = entries_.at(index).code;
+        if (activated)
+            activated(code);
+    }
+
+    QList<Language::LanguageEntry> entries_;
+    QString current_;
+    int focused_ = 0;
+    int hover_ = -1;
+    int pressed_ = -1;
+};
+
 } // namespace
 
 Language::Language(QWidget* parent)
     : View(parent)
 {
     languages_ = defaultLanguages();
-    current_ = languages_.isEmpty() ? QString() : languages_.first().code;
+    current_ = i18n::locale();
+
+    bool found = false;
+    for (const LanguageEntry& entry : languages_) {
+        if (entry.code == current_) {
+            found = true;
+            break;
+        }
+    }
+    if (!found)
+        current_ = languages_.isEmpty() ? QString() : languages_.first().code;
 
     setFocusPolicy(Qt::StrongFocus);
     setCursor(Qt::PointingHandCursor);
+    setAccessibleName(tr("Language"));
+    syncAccessibleDescription();
     syncAppearance();
 }
 
@@ -81,24 +477,25 @@ Language::~Language()
         && scopeHost_->property("md.languageScope").value<QObject*>() == this) {
         scopeHost_->setProperty("md.languageScope", QVariant());
     }
-    if (menu_ != nullptr)
-        delete menu_.data();
+    if (modal_ != nullptr)
+        delete modal_.data();
 }
 
 QList<Language::LanguageEntry> Language::defaultLanguages()
 {
-    return {
-        makeEntry(QStringLiteral("en"), QStringLiteral("English")),
-        makeEntry(QStringLiteral("zh_CN"), QStringLiteral("简体中文")),
-        makeEntry(QStringLiteral("zh_TW"), QStringLiteral("繁體中文")),
-        makeEntry(QStringLiteral("ja"), QStringLiteral("日本語")),
-        makeEntry(QStringLiteral("ko"), QStringLiteral("한국어")),
-        makeEntry(QStringLiteral("fr"), QStringLiteral("Français")),
-        makeEntry(QStringLiteral("de"), QStringLiteral("Deutsch")),
-        makeEntry(QStringLiteral("es"), QStringLiteral("Español")),
-        makeEntry(QStringLiteral("ru"), QStringLiteral("Русский")),
-        makeEntry(QStringLiteral("pt_BR"), QStringLiteral("Português (Brasil)")),
-    };
+    QList<LanguageEntry> entries;
+    const QStringList codes = i18n::availableLocales();
+    entries.reserve(codes.size());
+    for (const QString& code : codes)
+        entries.append(makeEntry(code));
+    return entries;
+}
+
+void Language::syncAccessibleDescription()
+{
+    setAccessibleName(tr("Language"));
+    const QString name = currentEntry().nativeName;
+    setAccessibleDescription(tr("Language: %1").arg(name));
 }
 
 void Language::syncAppearance()
@@ -135,9 +532,12 @@ void Language::setLanguages(const QList<LanguageEntry>& languages)
 
     if (menuOpen_)
         closeMenu();
-    else if (menu_ != nullptr)
-        menu_->close();
 
+    if (panel_ != nullptr) {
+        static_cast<LanguagePanel*>(panel_.data())->setEntries(languages_, current_);
+    }
+
+    syncAccessibleDescription();
     syncAppearance();
 }
 
@@ -165,23 +565,36 @@ bool Language::setCurrentLanguage(const QString& code)
     current_ = code;
     const LanguageEntry entry = languages_.at(index);
 
-    if (menuOpen_) {
-        rebuildMenu();
-        if (menu_ != nullptr)
-            menu_->close();
-    }
-
-    syncAppearance();
-    emit languageChanged(entry.code, entry.locale);
-
+    // A host-installed callback owns translation loading. Otherwise the
+    // component uses md::i18n, whose install() is tolerant: a locale whose .qm
+    // has not been embedded returns false and leaves the globally installed
+    // language alone. The selector can still present the requested locale, so
+    // a host can ship translations incrementally.
     if (installer_)
         installer_(entry.code);
+    else
+        i18n::install(entry.code);
 
+    if (panel_ != nullptr) {
+        static_cast<LanguagePanel*>(panel_.data())->setEntries(languages_, current_);
+    }
+    if (menuOpen_)
+        closeMenu();
+
+    syncAccessibleDescription();
+    syncAppearance();
+    emit localeChanged(entry.code);
+    emit languageChanged(entry.code, entry.locale);
     notifyScope();
     return true;
 }
 
 QString Language::currentLanguage() const
+{
+    return current_;
+}
+
+QString Language::currentLocale() const
 {
     return current_;
 }
@@ -212,20 +625,53 @@ QIcon Language::icon() const
     return icon_;
 }
 
-void Language::rebuildMenu()
+void Language::showSelector()
 {
-    if (menu_ == nullptr)
+    QWidget* host = window() != nullptr ? window() : parentWidget();
+    if (host == nullptr)
         return;
 
-    menu_->clear();
+    auto* modal = static_cast<Modal*>(modal_.data());
+    if (modal == nullptr) {
+        modal = new Modal(host);
+        modal->setLevel(Modal::Level::Dialog);
+        // Modal remembers the chip as the focus return target and runs the
+        // scrim/card entrance and exit animations through ContainerTransform.
+        modal->setFocusReturn(this);
+        modal_ = modal;
 
-    for (const LanguageEntry& entry : languages_) {
-        Menu::MenuItem item;
-        item.text = entry.nativeName;
-        item.checkable = true;
-        item.checked = entry.code == current_;
-        menu_->addItem(item);
+        auto* panel = new LanguagePanel(nullptr);
+        panel->activated = [this](const QString& code) { handleSelection(code); };
+        panel->dismissed = [this] { closeMenu(); };
+        modal->setCard(panel);
+        panel_ = panel;
+
+        QObject::connect(modal, &Modal::closed, this, [this] {
+            // Modal keeps the card alive through the exit animation and hides
+            // it itself; do not hide it here or the transform disappears.
+            menuOpen_ = false;
+            syncAppearance();
+            requestUpdate();
+        });
     }
+
+    if (modal->parentWidget() != host)
+        modal->setParent(host);
+
+    auto* panel = static_cast<LanguagePanel*>(panel_.data());
+    panel->setEntries(languages_, current_);
+
+    modal->open();
+
+    menuOpen_ = true;
+    syncAppearance();
+    requestUpdate();
+}
+
+void Language::handleSelection(const QString& code)
+{
+    setCurrentLanguage(code);
+    closeMenu();
 }
 
 void Language::openMenu()
@@ -235,41 +681,19 @@ void Language::openMenu()
         return;
     }
 
-    QWidget* host = window() != nullptr ? window() : parentWidget();
-    if (host == nullptr)
-        return;
-
-    if (menu_ == nullptr) {
-        menu_ = new Menu(host);
-        QObject::connect(menu_, &Menu::itemTriggered, this,
-                         [this](int index, const QString& text) {
-                             Q_UNUSED(text);
-                             handleMenuTrigger(index);
-                         });
-        QObject::connect(menu_, &Menu::closed, this, [this] {
-            menuOpen_ = false;
-            syncAppearance();
-            requestUpdate();
-        });
-    } else if (menu_->parentWidget() != host) {
-        menu_->setParent(host);
-    }
-
-    rebuildMenu();
-    menu_->setAnchor(this);
-    menu_->open();
-
-    if (menu_->isOpen()) {
-        menuOpen_ = true;
-        syncAppearance();
-        requestUpdate();
-    }
+    showSelector();
 }
 
 void Language::closeMenu()
 {
-    if (menu_ != nullptr && menu_->isOpen())
-        menu_->close();
+    auto* modal = static_cast<Modal*>(modal_.data());
+    if (modal == nullptr)
+        return;
+
+    // close() emits closed() synchronously and then runs the card/scrim exit;
+    // focus is restored by Modal::restoreFocus().
+    if (modal->isOpen())
+        modal->close();
 
     if (!menuOpen_)
         return;
@@ -281,25 +705,13 @@ void Language::closeMenu()
 
 bool Language::isMenuOpen() const
 {
-    return menuOpen_ && menu_ != nullptr && menu_->isOpen();
+    const auto* modal = static_cast<const Modal*>(modal_.data());
+    return menuOpen_ && modal != nullptr && modal->isOpen();
 }
 
-Menu* Language::menu() const
+QWidget* Language::selectorPanel() const
 {
-    return menu_.data();
-}
-
-void Language::handleMenuTrigger(int index)
-{
-    if (index < 0 || index >= static_cast<int>(languages_.size()))
-        return;
-
-    const QString code = languages_.at(index).code;
-
-    if (menu_ != nullptr)
-        menu_->close();
-
-    setCurrentLanguage(code);
+    return panel_.data();
 }
 
 void Language::measureOverride(MeasureSpec width, MeasureSpec height)
@@ -445,6 +857,16 @@ void Language::keyPressEvent(QKeyEvent* event)
     }
 
     View::keyPressEvent(event);
+}
+
+void Language::changeEvent(QEvent* event)
+{
+    View::changeEvent(event);
+
+    if (event != nullptr && event->type() == QEvent::LanguageChange) {
+        syncAccessibleDescription();
+        requestUpdate();
+    }
 }
 
 void Language::onThemeChanged()

@@ -36,11 +36,11 @@ namespace md {
 
 namespace {
 
-// M3 data table metrics: the cell carries 16 dp of leading/trailing padding,
+// Design baseline data table metrics: the cell carries 16 dp of leading/trailing padding,
 // which is what puts a header title and its column's cells on the same text
 // grid (the header used 12 dp, so every column had a four pixel step).
 //
-// The M3 data row is 52 dp and the M3 header is 56 dp; both heights stay on the
+// The design baseline data row is 52 dp and the design baseline header is 56 dp; both heights stay on the
 // existing 48 dp contract because Table::cellRect() height and headerRect()
 // height are asserted at 48 in the component suites. Raising them is a
 // behaviour change that has to update those expectations in the same commit,

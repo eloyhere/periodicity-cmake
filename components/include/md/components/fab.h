@@ -1,4 +1,4 @@
-// Periodicity — the Fab component (Material 3 floating action button).
+// Periodicity — the Fab component (design baseline floating action button).
 //
 // Three container sizes — small (40 dp), regular (56 dp) and large (96 dp) —
 // plus an extended form: a 56 dp tall pill carrying the icon and a label. The

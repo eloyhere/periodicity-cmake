@@ -54,7 +54,7 @@ DatePicker::DatePicker(QWidget* parent)
     : View(parent)
 {
     setFocusPolicy(Qt::StrongFocus);
-    // The M3 date picker container is the extra-large shape (28 dp), not the
+    // The design baseline date picker container is the extra-large shape (28 dp), not the
     // 16 dp large one: the sheet's outer corners are the most visible curve in
     // the component, and at 16 dp they read as a card rather than a picker.
     setShape(Shape::extraLarge());
@@ -475,7 +475,7 @@ void DatePicker::paintContent(QPainter& painter, const QRectF& content)
                 painter.setBrush(colours.primary);
                 painter.drawEllipse(circle);
             } else if (isToday) {
-                // M3 marks today with a 1 dp primary outline around the same
+                // The design baseline marks today with a 1 dp primary outline around the same
                 // 40 dp circle the selection would fill.
                 painter.setPen(QPen(colours.primary, unit * 1.0));
                 painter.setBrush(Qt::NoBrush);
@@ -514,7 +514,7 @@ void DatePicker::paintContent(QPainter& painter, const QRectF& content)
             painter.save();
             painter.setOpacity(baseOpacity * (available ? 1.0 : 0.32));
             if (selected && available) {
-                // The M3 year (and month) selection is a tonal primary-container
+                // The design baseline year (and month) selection is a tonal primary-container
                 // pill with on-primary-container content; the primary/on-primary
                 // pair belongs to the day circle, which is a different emphasis.
                 painter.setPen(Qt::NoPen);

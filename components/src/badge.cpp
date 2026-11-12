@@ -240,7 +240,7 @@ void Badge::measureOverride(MeasureSpec width, MeasureSpec height)
     const QFont font = labelFont(theme);
     const QFontMetricsF metrics(font);
 
-    // M3 measurements are dp, not raw pixels: the badge used to keep its 16 px
+    // Design baseline measurements are dp, not raw pixels: the badge used to keep its 16 px
     // minimum and its 4 px text insets at every density, so it drifted off the
     // 4 dp grid as soon as the application zoomed.
     const qreal minimum = density.dp(16.0);

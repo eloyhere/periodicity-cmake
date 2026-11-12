@@ -27,7 +27,7 @@ namespace md {
 
 namespace {
 
-// M3 expressive vertical menu: a 48 dp row carries a 32 dp selection pill that
+// Design baseline expressive vertical menu: a 48 dp row carries a 32 dp selection pill that
 // is inset 12 dp from the menu edge and 8 dp from the row's top and bottom.
 constexpr qreal kPillInsetHorizontalDp = 12.0;
 constexpr qreal kPillInsetVerticalDp = 8.0;

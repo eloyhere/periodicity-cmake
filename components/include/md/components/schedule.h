@@ -34,6 +34,7 @@
 #include <md/view/view.h>
 
 #include <QColor>
+#include <QCoreApplication>
 #include <QDate>
 #include <QDateTime>
 #include <QMetaType>
@@ -43,6 +44,7 @@
 #include <QTime>
 #include <QVector>
 
+class QEvent;
 class QKeyEvent;
 class QMouseEvent;
 class QPainter;
@@ -71,9 +73,9 @@ class Schedule : public View
     Q_OBJECT
 
 public:
-    // Day shows the column of date(); Week shows date() and the six days after
-    // it. date() is therefore always the first visible day, not merely a date
-    // inside the visible week.
+    // Day shows the column of date(); Week shows the seven days of the week
+    // that contains date(), starting on the locale's firstDayOfWeek(). date()
+    // remains the anchor the caller set; the visible week start may precede it.
     enum class Mode {
         Day,
         Week,
@@ -85,11 +87,24 @@ public:
     void setMode(Mode mode);
     [[nodiscard]] Mode mode() const noexcept { return mode_; }
 
-    // Selects the first visible day. An invalid date is ignored. In Week mode
-    // the week is date() .. date().addDays(6), so the caller decides which day
-    // opens the week.
+    // Selects the anchor date. An invalid date is ignored. In Week mode the
+    // visible week is weekStart() .. weekStart().addDays(6); weekStart() is the
+    // first day of date()'s week in i18n::currentLocale(). In Day mode the
+    // single column is date().
     void setDate(const QDate& date);
     [[nodiscard]] QDate date() const { return date_; }
+
+    // The first visible day of Week mode. In Day mode this is date(). It is
+    // derived from QLocale::firstDayOfWeek(), so a locale that starts on Sunday
+    // puts Sunday in column 0. The untranslated "en" source keeps QLocale::c()'s
+    // Monday start so the framework's original ISO-week behaviour is preserved;
+    // every installed translation uses its own first day.
+    [[nodiscard]] QDate weekStart() const;
+
+    // The localised weekday + day label painted in a header cell (Week mode) or
+    // the full localised date (Day mode). Public so accessibility and visual
+    // tests can assert the QLocale names without OCR.
+    [[nodiscard]] QString columnHeaderText(int column) const;
 
     // Replaces the model. Events whose id no longer exists can no longer stay
     // selected, so a removed selection is cleared.
@@ -165,6 +180,7 @@ protected:
     void keyPressEvent(QKeyEvent* event) override;
     void wheelEvent(QWheelEvent* event) override;
     void resizeEvent(QResizeEvent* event) override;
+    void changeEvent(QEvent* event) override;
 
 private:
     // One visible event resolved into its column and clipped minute interval.

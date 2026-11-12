@@ -31,7 +31,7 @@ namespace md {
 
 namespace {
 
-// The M3 data-table cell carries 16 dp of leading/trailing padding, so a
+// The design baseline data-table cell carries 16 dp of leading/trailing padding, so a
 // frozen column, a scrolling column and the header all start their text on the
 // same grid. The row stays on the 48 dp default that the header declares and
 // the component suites assert.

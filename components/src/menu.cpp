@@ -116,7 +116,7 @@ const Menu* Menu::rootMenu() const
 
 void Menu::syncAppearance()
 {
-    // M3 menu container shape is extra small (4 dp corner radius).
+    // Design baseline menu container shape is extra small (4 dp corner radius).
     setShape(Theme::forWidget(this).shapes().extraSmall);
     setBackgroundColour(QColor(Qt::transparent));
     requestUpdate();
@@ -1048,7 +1048,7 @@ void Menu::paintContent(QPainter& painter, const QRectF& content)
                            spread + density.dp(1.0))));
     }
 
-    // M3 menu: surface container at elevation level 2, with no outline. An
+    // Design baseline menu: surface container at elevation level 2, with no outline. An
     // outline plus the drop shadow read as a double border around the panel.
     painter.setPen(Qt::NoPen);
     painter.setBrush(colours.surfaceContainer);
@@ -1075,7 +1075,7 @@ void Menu::paintContent(QPainter& painter, const QRectF& content)
         }
 
         if (index == highlighted_ && item.enabled) {
-            // M3 baseline vertical menu: the highlight runs edge to edge inside
+            // Design baseline vertical menu: the highlight runs edge to edge inside
             // the container (the panel clip rounds the outer corners), instead
             // of an inset pill that leaves a 4 dp sliver on either side.
             painter.setPen(Qt::NoPen);

@@ -9,7 +9,9 @@
 #include <md/event/event_dispatcher.h>
 #include <md/event/event_target.h>
 #include <md/event/pointer_event.h>
+#include <md/schedule/event_thread.h>
 #include <md/schedule/task_queue.h>
+#include <md/schedule/frame_scheduler.h>
 #include <md/theme/theme.h>
 
 #include <QApplication>
@@ -18,6 +20,7 @@
 #include <QListWidget>
 #include <QMainWindow>
 #include <QPushButton>
+#include <QScopeGuard>
 #include <QStackedWidget>
 #include <QStringList>
 #include <QTimer>
@@ -114,7 +117,7 @@ Page* overviewPage(const Theme& theme)
     auto* page = new Page(theme);
     page->addTitle(QStringLiteral("Periodicity"));
     page->addLead(QStringLiteral(
-        "A Material Design 3 component library for Qt Widgets, painted entirely with QPainter. "
+        "A component library for Qt Widgets, painted entirely with QPainter. "
         "Every sample in this demo is produced by the library's own modules — nothing here is a "
         "mock-up."));
 
@@ -177,7 +180,7 @@ Page* colourPage(const Theme& theme)
     auto* page = new Page(theme);
     page->addTitle(QStringLiteral("Colour"));
     page->addLead(QStringLiteral(
-        "Material 3 colour roles for the current scheme. Each swatch is the role's actual value, "
+        "Design-baseline colour roles for the current scheme. Each swatch is the role's actual value, "
         "generated from the token layer."));
 
     const ColorScheme& colours = theme.colours();
@@ -216,7 +219,7 @@ Page* typographyPage(const Theme& theme)
     auto* page = new Page(theme);
     page->addTitle(QStringLiteral("Typography"));
     page->addLead(QStringLiteral(
-        "The fifteen Material 3 type styles, rendered at the token size, line height, tracking "
+        "The fifteen design-baseline type styles, rendered at the token size, line height, tracking "
         "and weight."));
     page->addCard(QStringLiteral("Type scale"), QString(), typographyColumn(theme));
     page->addStretch();
@@ -474,7 +477,7 @@ protected:
         brand->setFont(fontFor(m_theme.type().titleLarge, m_theme.density()));
         brand->setStyleSheet(QStringLiteral("color:%1;").arg(m_theme.colours().onSurface.name()));
 
-        auto* subtitle = new QLabel(QStringLiteral("Material Design 3 for Qt Widgets"));
+        auto* subtitle = new QLabel(QStringLiteral("Design baseline for Qt Widgets"));
         subtitle->setFont(fontFor(m_theme.type().labelMedium, m_theme.density()));
         subtitle->setStyleSheet(
             QStringLiteral("color:%1;").arg(m_theme.colours().onSurfaceVariant.name()));
@@ -524,7 +527,7 @@ protected:
 
         setCentralWidget(central);
         resize(1180, 820);
-        setWindowTitle(QStringLiteral("Periodicity — Material Design 3 Gallery"));
+        setWindowTitle(QStringLiteral("Periodicity — Gallery"));
     }
 
     void toggleTheme()
@@ -553,6 +556,15 @@ int main(int argc, char* argv[])
 {
     QApplication app(argc, argv);
     QApplication::setStyle(QStyleFactory::create(QStringLiteral("Fusion")));
+
+    // The UI and event runtimes are process-wide; the guard unwinds them in
+    // reverse order before QApplication is destroyed.
+    md::schedule::UiThread::install();
+    md::schedule::EventThread::install();
+    [[maybe_unused]] const auto threadingGuard = qScopeGuard([] {
+        md::schedule::EventThread::uninstall();
+        md::schedule::UiThread::uninstall();
+    });
 
     Theme theme = Theme::baselineLight();
 

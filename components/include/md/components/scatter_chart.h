@@ -48,7 +48,7 @@ class ScatterChart : public ChartBase
 
 public:
     // The marker silhouette. These names describe the drawn shape; they are
-    // unrelated to the Material ShapeScale that View::setShape()/shape()
+    // unrelated to the design baseline ShapeScale that View::setShape()/shape()
     // manage for the card itself, which is why the getter is pointShape().
     enum class PointShape {
         Circle,

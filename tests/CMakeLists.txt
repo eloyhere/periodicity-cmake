@@ -22,7 +22,7 @@ foreach(_src IN LISTS _test_sources)
   get_filename_component(_name "${_src}" NAME_WE)
 
   add_executable(${_name} "${_src}")
-  target_link_libraries(${_name} PRIVATE periodicity::components Qt6::Test)
+  target_link_libraries(${_name} PRIVATE periodicity::components periodicity::mathematic Qt6::Test)
   target_compile_features(${_name} PRIVATE cxx_std_20)
   set_target_properties(${_name} PROPERTIES AUTOMOC ON)
 

@@ -64,8 +64,8 @@ Calendar::Calendar(QWidget* parent)
     : View(parent)
 {
     setFocusPolicy(Qt::StrongFocus);
-    // The calendar is a picker surface, so it takes the extra-large M3 shape
-    // (28 dp) rather than the large one it shared with cards.
+    // The calendar is a picker surface, so it takes the extra-large shape of the
+    // design baseline (28 dp) rather than the large one it shared with cards.
     setShape(Shape::extraLarge());
     setAccessibleName(tr("Calendar"));
 }
@@ -555,7 +555,7 @@ void Calendar::paintContent(QPainter& painter, const QRectF& content)
         painter.setPen(Qt::NoPen);
         painter.setBrush(active ? colours.secondaryContainer : colours.surfaceContainerHigh);
         // The small shape token (8 dp); the header pill used a literal 10 dp,
-        // which is not one of the M3 shape steps.
+        // which is not one of the design baseline shape steps.
         painter.drawPath(theme.shapes().small.path(box));
         painter.setPen(active ? colours.onSecondaryContainer : colours.onSurface);
         painter.drawText(box, Qt::AlignCenter, text);
@@ -666,7 +666,7 @@ void Calendar::paintContent(QPainter& painter, const QRectF& content)
             painter.save();
             painter.setOpacity(baseOpacity * (available ? 1.0 : 0.32));
             if (selected && available) {
-                // The M3 coarse-page selection is a tonal primary-container
+                // The design baseline coarse-page selection is a tonal primary-container
                 // pill; primary/on-primary stays reserved for the day circle.
                 painter.setPen(Qt::NoPen);
                 painter.setBrush(colours.primaryContainer);

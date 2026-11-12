@@ -6,8 +6,8 @@
 // token resolution — a component decides which shape and which role colour to
 // hand it.
 //
-// The stroke width is expressed in dp, because that is the unit the Material
-// specification uses for outlines. A Density converts it to logical pixels;
+// The stroke width is expressed in dp, because that is the unit the reference
+// design system uses for outlines. A Density converts it to logical pixels;
 // the default density has scale 1.0, so a stroke of 2 dp is 2 logical pixels.
 // The density is only needed when an application applies an explicit zoom:
 // Qt already handles the operating system's display scaling.

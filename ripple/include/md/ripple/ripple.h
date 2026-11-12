@@ -67,7 +67,7 @@ struct RippleSpec
 
     // The maximum radius as a fraction of the distance from the ripple origin
     // to the farthest corner of the bounds. The default 1.0 covers the whole
-    // shape, which is the Material behaviour: the ripple ends up filling the
+    // shape, which is the baseline behaviour: the ripple ends up filling the
     // component rather than stopping as a small disc.
     qreal maxRadiusScale = 1.0;
 

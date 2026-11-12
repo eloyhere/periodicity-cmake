@@ -1,4 +1,4 @@
-// Periodicity — Typography, the full M3 type-scale display component.
+// Periodicity — Typography, the full design baseline type-scale display component.
 //
 // The layout is deliberately the same algorithm as Text: one QTextLayout pass
 // with the token line height, so measure and paint cannot disagree and

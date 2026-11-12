@@ -1,4 +1,4 @@
-# L6 — public Material components.
+# L6 — public components.
 #
 # Qt Network is linked for Avatar's url loader; every other component stays on
 # Widgets. Nothing else in the layer performs I/O. schedule is linked for the

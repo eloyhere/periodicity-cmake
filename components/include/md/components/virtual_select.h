@@ -1,6 +1,6 @@
 // Periodicity — VirtualSelect: a dropdown over a VirtualSource.
 //
-// The closed control is a Material filled field showing the current label and
+// The closed control is a design baseline filled field showing the current label and
 // a chevron. Opening it paints a menu that is a child of the same window — on
 // an md::Dropdown surface owned by this control, which places the panel under
 // the field and dismisses it on an outside press or Escape — and the menu reads

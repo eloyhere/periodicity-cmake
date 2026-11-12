@@ -1,6 +1,6 @@
 // Periodicity — the Ring component (framework.md §5.9).
 //
-// An Android-style ring progress: a stroked circle with an indicator arc in
+// A declarative-style ring progress: a stroked circle with an indicator arc in
 // the primary role. In determinate mode the arc starts at twelve o'clock and
 // sweeps value * 360 degrees. In indeterminate mode a trimmed arc rotates
 // continuously, driven by md::animation::Animator with the Level3 motion

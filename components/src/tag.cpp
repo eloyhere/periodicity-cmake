@@ -33,7 +33,7 @@ namespace md {
 namespace {
 
 constexpr qreal kHeightDp = 32.0;
-// M3 chip measurements: 16 dp on a text side, 8 dp on an icon side, 8 dp
+// Design baseline chip measurements: 16 dp on a text side, 8 dp on an icon side, 8 dp
 // between elements, 18 dp icons, 32 dp container with an 8 dp corner radius.
 constexpr qreal kStartPaddingDp = 16.0;
 constexpr qreal kEndPaddingDp = 16.0;
@@ -249,7 +249,7 @@ void Tag::paintContent(QPainter& painter, const QRectF& content)
     }
 
     if (variant_ == TagVariant::Outlined) {
-        // M3: a selected filter chip fills with the secondary container and
+        // Design baseline: a selected filter chip fills with the secondary container and
         // drops the outline; only the unselected form is stroked, with the
         // softened outlineVariant role (1 dp).
         if (!selected_) {
@@ -550,7 +550,7 @@ QColor Tag::contentColour() const
 void Tag::syncAppearance()
 {
     const Theme& theme = Theme::forWidget(this);
-    // M3 chips are 8 dp rounded rectangles, not pills.
+    // Design baseline chips are 8 dp rounded rectangles, not pills.
     setShape(theme.shapes().small);
     setContentColour(contentColour());
     requestUpdate();

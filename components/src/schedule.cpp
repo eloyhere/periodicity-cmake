@@ -31,8 +31,10 @@
 
 #include <md/components/schedule.h>
 
+#include <md/core/i18n.h>
 #include <md/theme/theme.h>
 
+#include <QEvent>
 #include <QFont>
 #include <QFontMetricsF>
 #include <QKeyEvent>
@@ -83,12 +85,13 @@ constexpr int kSnapMinutes = 15;
 }
 
 // "08:00" ... "24:00"; the gutter is a 24-hour scale even when the visible
-// range starts later.
-[[nodiscard]] QString hourText(int hour)
+// range starts later. A QTime cannot represent 24:00, so that one label is a
+// translatable string while the rest follow the locale's number/format rules.
+[[nodiscard]] QString hourText(int hour, const QString& endOfDay)
 {
     if (hour >= 24)
-        return QStringLiteral("24:00");
-    return QStringLiteral("%1:00").arg(hour, 2, 10, QLatin1Char('0'));
+        return endOfDay;
+    return md::i18n::currentLocale().toString(QTime(hour, 0), QStringLiteral("HH:mm"));
 }
 
 } // namespace
@@ -208,6 +211,51 @@ void Schedule::setSelectedEvent(const QString& id)
 }
 
 // ---------------------------------------------------------------------------
+// Locale
+// ---------------------------------------------------------------------------
+
+QDate Schedule::weekStart() const
+{
+    if (!date_.isValid())
+        return QDate();
+
+    QLocale locale = i18n::currentLocale();
+
+    // QLocale("en") resolves to en_US, whose Sunday-first week would move the
+    // source-language view off the ISO week the framework has always used.
+    // The untranslated source therefore keeps QLocale::c()'s Monday start;
+    // every installed translation follows its own QLocale::firstDayOfWeek().
+    if (i18n::locale() == QLatin1String("en"))
+        locale = QLocale::c();
+
+    const int first = static_cast<int>(locale.firstDayOfWeek());
+    const int day = static_cast<int>(date_.dayOfWeek());
+    const int offset = (day - first + 7) % 7;
+    return date_.addDays(-offset);
+}
+
+QString Schedule::columnHeaderText(int column) const
+{
+    if (column < 0 || column >= columnCount())
+        return QString();
+
+    const QDate day = columnDate(column);
+    if (!day.isValid())
+        return QString();
+
+    const QLocale locale = i18n::currentLocale();
+    if (mode_ == Mode::Day) {
+        return QStringLiteral("%1, %2")
+            .arg(locale.dayName(day.dayOfWeek(), QLocale::LongFormat),
+                 locale.toString(day, QStringLiteral("d MMMM")));
+    }
+
+    return QStringLiteral("%1 %2")
+        .arg(locale.dayName(day.dayOfWeek(), QLocale::ShortFormat),
+             locale.toString(day, QStringLiteral("d")));
+}
+
+// ---------------------------------------------------------------------------
 // Geometry
 // ---------------------------------------------------------------------------
 
@@ -221,7 +269,10 @@ QDate Schedule::columnDate(int column) const
     if (column < 0 || column >= columnCount())
         return QDate();
 
-    return date_.addDays(column);
+    if (mode_ == Mode::Day)
+        return date_;
+
+    return weekStart().addDays(column);
 }
 
 bool Schedule::isRightToLeft() const noexcept
@@ -358,7 +409,8 @@ int Schedule::columnForDate(const QDate& date) const
     if (!date_.isValid() || !date.isValid())
         return -1;
 
-    const qint64 offset = date_.daysTo(date);
+    const QDate firstVisible = mode_ == Mode::Week ? weekStart() : date_;
+    const qint64 offset = firstVisible.daysTo(date);
     if (offset < 0 || offset >= columnCount())
         return -1;
 
@@ -719,12 +771,14 @@ void Schedule::paintContent(QPainter& painter, const QRectF& content)
             const QRectF label = hourLabelRect(hour);
             if (label.isEmpty() || label.bottom() < body.top() || label.top() > body.bottom())
                 continue;
-            painter.drawText(label, hourAlignment | Qt::AlignTop, hourText(hour));
+            painter.drawText(label, hourAlignment | Qt::AlignTop,
+                             hourText(hour, QStringLiteral("24:00")));
         }
 
         // Weekday header: weekday and day number in Week mode, the full date in
-        // Day mode. Today is the only date tinted with the primary role.
-        const QLocale locale;
+        // Day mode. Today is the only date tinted with the primary role. Both
+        // labels are built from i18n::currentLocale() (dayName/shortDayName and
+        // QLocale::toString), so the header follows the installed language.
         const QDate today = QDate::currentDate();
         painter.setFont(headerFont);
         const QFontMetricsF headerMetrics(headerFont);
@@ -734,9 +788,7 @@ void Schedule::paintContent(QPainter& painter, const QRectF& content)
                 continue;
 
             const QDate day = columnDate(column);
-            const QString text = mode_ == Mode::Day
-                ? locale.toString(day, QStringLiteral("dddd, d MMMM"))
-                : locale.toString(day, QStringLiteral("ddd d"));
+            const QString text = columnHeaderText(column);
 
             painter.setPen(day == today ? colours.primary : colours.onSurface);
             const QRectF textRect = cell.adjusted(density.dp(kHeaderTextInsetDp), 0.0,
@@ -746,9 +798,21 @@ void Schedule::paintContent(QPainter& painter, const QRectF& content)
                                                       textRect.width()));
         }
 
+        const QVector<PlacedEvent> placed = layoutEvents();
+
+        // Empty state. The message is painted into the grid, below the weekday
+        // header; it is not an overlay widget, so it cannot cover an event.
+        if (placed.isEmpty() && !grid.isEmpty()) {
+            painter.save();
+            painter.setClipRect(grid.intersected(content));
+            painter.setFont(fontFor(theme, theme.type().bodyLarge));
+            painter.setPen(colours.onSurfaceVariant);
+            painter.drawText(grid, Qt::AlignCenter, tr("No events"));
+            painter.restore();
+        }
+
         // Events. The clip is the grid, so a block dragged past the range or
         // over the gutter cannot paint outside its columns.
-        const QVector<PlacedEvent> placed = layoutEvents();
         painter.save();
         painter.setClipRect(grid.intersected(content));
         const QFontMetricsF eventMetrics(eventFont);
@@ -1088,11 +1152,39 @@ int Schedule::snappedDeltaMinutes(qreal deltaPixels) const
 
 void Schedule::updateAccessibleDescription()
 {
-    const QString day = date_.toString(Qt::ISODate);
-    if (mode_ == Mode::Week)
-        setAccessibleDescription(tr("Week of %1").arg(day));
-    else
-        setAccessibleDescription(day);
+    const QLocale locale = i18n::currentLocale();
+    const bool sourceLanguage = i18n::locale() == QLatin1String("en");
+    const QDate today = QDate::currentDate();
+
+    if (mode_ == Mode::Week) {
+        const QDate start = weekStart();
+        // The English source keeps ISO dates for compatibility with existing
+        // assistive output; a translated locale uses its own date format.
+        const QString dateText = sourceLanguage
+            ? start.toString(Qt::ISODate)
+            : locale.toString(start, QLocale::ShortFormat);
+
+        QString description = tr("Week of %1").arg(dateText);
+        if (start.isValid() && today >= start && today <= start.addDays(6))
+            description += QStringLiteral(" · ") + tr("Today");
+        setAccessibleDescription(description);
+        return;
+    }
+
+    const QString dateText = sourceLanguage
+        ? date_.toString(Qt::ISODate)
+        : locale.toString(date_, QLocale::ShortFormat);
+    setAccessibleDescription(date_ == today ? tr("Today, %1").arg(dateText) : dateText);
+}
+
+void Schedule::changeEvent(QEvent* event)
+{
+    View::changeEvent(event);
+
+    if (event != nullptr && event->type() == QEvent::LanguageChange) {
+        updateAccessibleDescription();
+        requestUpdate();
+    }
 }
 
 } // namespace md

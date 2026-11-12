@@ -2,7 +2,7 @@
 
 [English](README.md) | 简体中文
 
-Periodicity 是一个跨平台的 C++ 桌面应用 UI 组件库，以 Material Design 3 为设计基准，构建在
+Periodicity 是一个跨平台的 C++ 桌面应用 UI 组件库，遵循一套声明式设计基线，构建在
 Qt Widgets 之上。库中的每一个视觉元素都由 `QPainter` 亲自绘制；它既不用 Qt Style Sheets 给控件
 换皮，也不回退到平台主题引擎。它向宿主系统索取的只有字体和原生窗口边框，因此一处布局在 Windows
 上看着对，在 macOS 和 Linux 上也一样对。开发仓库位于
@@ -27,7 +27,7 @@ Qt Widgets 之上。库中的每一个视觉元素都由 `QPainter` 亲自绘制
 | `animation/` | L3c — 由动效令牌驱动的补间 | `periodicity::animation` |
 | `view/` | L4 — 测量/排布/绘制内核与状态机 | `periodicity::view` |
 | `layout/` | L5 — 容器、间距、窗口尺寸分级 | `periodicity::layout` |
-| `components/` | L6 — 公开的 Material 控件 | `periodicity::components` |
+| `components/` | L6 — 公开组件 | `periodicity::components` |
 | `apps/gallery/` | 示例应用 | `periodicity::gallery` |
 | `apps/ipc_echo/` | Pool 页面与 IPC 测试启动的子进程 | `periodicity_ipc_echo` |
 | `tests/` | Qt Test 测试套件，每个模块一个目录 | — |
@@ -140,5 +140,5 @@ out\build\x64-debug\periodicity_gallery.exe --screenshot .tmp\shots --dark   # �
 
 Periodicity 仍在建设中。目前 `core` 到 `components` 的整条链路已经可以编译、测试并渲染：基础控件、
 输入与选择器、日期/级联/提及、布局容器、工具栏/徽章/状态页以及展示类组件都有真实实现与测试。
-`framework.md` §3 中记录的令牌值已对照 Google 的参考令牌来源核验过。动态配色与 Material 3
-Expressive 被有意推迟；安装与导出（`find_package(Periodicity)`）尚未实现，目前适合在源码树内集成。
+`framework.md` §3 中记录的令牌值已对照上游参考令牌来源核验过。动态配色与设计基线的表达性扩展
+被有意推迟；安装与导出（`find_package(Periodicity)`）尚未实现，目前适合在源码树内集成。

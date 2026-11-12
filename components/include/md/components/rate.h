@@ -7,7 +7,7 @@
 // pressing and releasing inside commits it. The left and right arrows (and up
 // and down) adjust by one step, Home and End jump to the ends.
 //
-// The row occupies a 48 dp touch target while the stars are the 24 dp M3 size,
+// The row occupies a 48 dp touch target while the stars are the 24 dp design baseline size,
 // vertically centred inside it.
 
 #pragma once

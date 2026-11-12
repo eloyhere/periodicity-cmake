@@ -1,6 +1,6 @@
 // Periodicity — the colour scheme (framework.md §3.1, §5.2).
 //
-// The baseline tables are the canonical M3 palette from the Material colour
+// The baseline tables are the canonical palette from the upstream reference
 // documentation, quoted as 8-bit sRGB and always opaque. Dynamic colour is out
 // of scope for the baseline, so these two tables are the whole colour system.
 

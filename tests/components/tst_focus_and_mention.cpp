@@ -8,7 +8,7 @@
 // a broken outline). The ring now lies inside the bounds; these tests pin the
 // two visible properties that distinguishes the fix from the bug: nothing is
 // painted outside the widget, the exact corners stay background, and a
-// continuous 2 dp secondary band hugs the inside of every edge. Following M3,
+// continuous 2 dp secondary band hugs the inside of every edge. Following the design baseline,
 // the ring is a keyboard indicator: a focus gained by a mouse press relies on
 // the state layer alone.
 //
@@ -330,7 +330,7 @@ void TestFocusAndMention::focusRingOnlyForKeyboardFocus()
     const QRect probeRect(origin, QSize(160, 100));
     const QColor secondary = md::Theme::baselineLight().colours().secondary;
 
-    // M3: a mouse press focuses the component but draws no outline; the state
+    // Design baseline: a mouse press focuses the component but draws no outline; the state
     // layer is the feedback. This is the "Button gets a black outline on
     // click" report. Move the focus away first: clicking an already-focused
     // widget does not deliver a new focusInEvent.

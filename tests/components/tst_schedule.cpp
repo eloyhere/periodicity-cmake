@@ -18,6 +18,7 @@
 #include <QEvent>
 #include <QImage>
 #include <QKeyEvent>
+#include <QLocale>
 #include <QMouseEvent>
 #include <QPainter>
 #include <QPointF>
@@ -30,6 +31,7 @@
 #include <QWheelEvent>
 
 #include <md/components/schedule.h>
+#include <md/core/i18n.h>
 
 #include <stdexcept>
 
@@ -146,6 +148,8 @@ class TestSchedule : public QObject
     Q_OBJECT
 
 private slots:
+    void cleanup();
+
     void dayAndWeekGeometry();
     void hourEventGeometry();
     void overlappingEventsUseLanes();
@@ -155,7 +159,13 @@ private slots:
     void emptyListPaints();
     void eventPaintingSmoke();
     void throwingOverrideDoesNotCrash();
+    void localeFormattingAndTranslations();
 };
+
+void TestSchedule::cleanup()
+{
+    md::i18n::uninstall();
+}
 
 void TestSchedule::dayAndWeekGeometry()
 {
@@ -539,6 +549,49 @@ void TestSchedule::throwingOverrideDoesNotCrash()
     const QImage image = renderWidget(schedule);
     QVERIFY(!image.isNull());
     QVERIFY(!schedule.lastError().isEmpty());
+}
+
+void TestSchedule::localeFormattingAndTranslations()
+{
+    QVERIFY(md::i18n::install(QStringLiteral("zh_CN")));
+    const QLocale chinese(QStringLiteral("zh_CN"));
+
+    md::Schedule schedule;
+    schedule.resize(700, 480);
+    schedule.setMode(md::Schedule::Mode::Week);
+    schedule.setDate(QDate(2026, 3, 11)); // Wednesday
+
+    // zh_CN starts its week on Monday, so the visible week starts two days
+    // before the anchor date.
+    QCOMPARE(schedule.weekStart(), QDate(2026, 3, 9));
+    QCOMPARE(schedule.columnDate(0), QDate(2026, 3, 9));
+    QCOMPARE(schedule.columnDate(6), QDate(2026, 3, 15));
+
+    // The weekday label is built from QLocale::dayName(ShortFormat)/toString()
+    // of the installed locale, not from an English weekday table.
+    const QString expectedMonday =
+        QStringLiteral("%1 %2")
+            .arg(chinese.dayName(Qt::Monday, QLocale::ShortFormat),
+                 chinese.toString(QDate(2026, 3, 9), QStringLiteral("d")));
+    QCOMPARE(schedule.columnHeaderText(0), expectedMonday);
+    QVERIFY(schedule.columnHeaderText(0).startsWith(
+        chinese.dayName(Qt::Monday, QLocale::ShortFormat)));
+
+    // With the translator installed, Schedule's own source strings resolve.
+    QCOMPARE(schedule.tr("No events"), QStringLiteral("无事件"));
+    QCOMPARE(schedule.tr("Week of %1").arg(QStringLiteral("x")),
+             QStringLiteral("x 所在周"));
+    QVERIFY(schedule.accessibleDescription().contains(QStringLiteral("所在周")));
+
+    schedule.setMode(md::Schedule::Mode::Day);
+    QCOMPARE(schedule.columnDate(0), QDate(2026, 3, 11));
+    QVERIFY(schedule.columnHeaderText(0).startsWith(
+        chinese.dayName(Qt::Wednesday, QLocale::LongFormat)));
+
+    // The empty state is painted, not layered over any child widget.
+    schedule.setEvents({});
+    QVERIFY(paintedPixels(renderWidget(schedule)) > 0);
+    QVERIFY(schedule.lastError().isEmpty());
 }
 
 QTEST_MAIN(TestSchedule)

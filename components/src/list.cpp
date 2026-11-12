@@ -459,7 +459,7 @@ void List::paintRow(QPainter& painter, int row, const QRectF& rect, bool selecte
     }
 
     // The divider is theme-derived and sits exactly on the row's bottom edge.
-    // M3 list dividers are full-width: the 16 dp inset that used to be applied
+    // Design baseline list dividers are full-width: the 16 dp inset that used to be applied
     // here made the rule look like a text underline instead of a separator.
     painter.setPen(QPen(colours.outlineVariant, density.dp(1.0)));
     painter.drawLine(QPointF(rect.left(), rect.bottom() - density.dp(0.5)),

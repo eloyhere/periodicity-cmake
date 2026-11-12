@@ -579,7 +579,7 @@ void Dialog::paintContent(QPainter& painter, const QRectF& content)
     }
 
     const QPainterPath surfacePath = theme.shapes().extraLarge.path(surface);
-    // M3 basic dialog: elevation level 3 (0 4px 8px 3px at 15%, plus a tight
+    // Design baseline basic dialog: elevation level 3 (0 4px 8px 3px at 15%, plus a tight
     // 0 1px 3px at 30%). The ramp below approximates those two layers with a
     // smooth stack instead of one hard-edged drop shadow.
     const qreal shadowSpread = density.dp(8.0);
@@ -594,7 +594,7 @@ void Dialog::paintContent(QPainter& painter, const QRectF& content)
                              spread + shadowOffset)));
     }
 
-    // A basic dialog has no outline: M3 separates it from the page with the
+    // A basic dialog has no outline: the design baseline separates it from the page with the
     // scrim and the level-3 shadow alone. Stroking the contour here drew a
     // second border on top of that shadow and made the surface read as an
     // outlined card.

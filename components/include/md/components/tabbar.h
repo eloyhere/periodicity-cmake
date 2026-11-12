@@ -1,4 +1,4 @@
-// Periodicity — TabBar, the M3 primary/secondary tab bar.
+// Periodicity — TabBar, the design baseline primary/secondary tab bar.
 //
 // The bar owns its tabs as values (see tab.h) and paints them itself. Two modes
 // are supported: Fixed gives every tab an equal share of the width, Scrollable

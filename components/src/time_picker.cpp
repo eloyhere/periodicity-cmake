@@ -53,7 +53,7 @@ TimePicker::TimePicker(QWidget* parent)
     : View(parent)
 {
     setFocusPolicy(Qt::StrongFocus);
-    // The M3 time picker container is the extra-large shape (28 dp).
+    // The design baseline time picker container is the extra-large shape (28 dp).
     setShape(Shape::extraLarge());
     setAccessibleName(tr("Choose time"));
 
@@ -548,7 +548,7 @@ void TimePicker::paintContent(QPainter& painter, const QRectF& content)
     painter.setBrush(colours.primaryContainer);
     painter.drawRoundedRect(band, density.dp(kBandRadiusDp), density.dp(kBandRadiusDp));
 
-    // Column separators, between the band and the text. M3 dividers are a 1 dp
+    // Column separators, between the band and the text. The design baseline's dividers are a 1 dp
     // outline-variant line at full opacity; this one used to be dimmed to 60%,
     // which read as a smudge behind the numbers.
     painter.setPen(QPen(colours.outlineVariant, unit));

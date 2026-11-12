@@ -1,7 +1,7 @@
 // Periodicity — the CheckBox component (framework.md §5.9).
 //
 // An 18 dp box with a 2 dp contour inside a 48 dp touch target. The visual
-// follows the M3 three-state contract: unchecked (outlineVariant contour),
+// follows the design baseline three-state contract: unchecked (outlineVariant contour),
 // checked (primary fill plus a stroked check mark) and indeterminate (primary
 // fill plus a dash). The check mark is a QPainterPath stroked with round joins,
 // not a font glyph, so it scales with density.

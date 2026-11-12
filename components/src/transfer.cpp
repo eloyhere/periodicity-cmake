@@ -727,7 +727,7 @@ void Transfer::paintPane(QPainter& painter, Pane pane, const QRectF& paneGeometr
     painter.setBrush(colours.surfaceContainerLow);
     painter.drawPath(outline);
 
-    // M3 outlined containers carry a 1 dp rest outline and a 2 dp focus outline
+    // Design baseline outlined containers carry a 1 dp rest outline and a 2 dp focus outline
     // in the primary role. The focus stroke used to be 1.6 dp, an off-scale
     // width that rendered as a fuzzy 2 px edge at fractional densities; the
     // path is inset by half the stroke so the whole stroke lands inside the

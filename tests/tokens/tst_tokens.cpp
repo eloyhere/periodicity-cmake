@@ -333,7 +333,7 @@ void TestTokens::typeScaleBaseline()
         QCOMPARE(style.weight, row.weight);
     }
 
-    // Line heights are explicit M3 values, never font metrics; spot-check the
+    // Line heights are explicit design-baseline values, never font metrics; spot-check the
     // two extremes so a table transposition cannot slip through.
     QCOMPARE(scale.displayLarge.lineHeightSp, 64.0);
     QCOMPARE(scale.labelSmall.sizeSp, 11.0);

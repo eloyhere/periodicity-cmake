@@ -14,14 +14,20 @@
 // time display, volume/mute and a full-screen request. The full-screen button
 // only emits fullscreenRequested(); the host decides what full screen means.
 //
-// The controls follow the Material 3 media contract: a bottom scrim that fades
+// The controls follow the baseline media contract: a bottom scrim that fades
 // from transparent to 60% black, a large play/pause on the left, the elapsed
 // and total time in tabular figures, a thin progress track that draws the
-// buffered and the played segment under a round thumb, and volume plus
+// buffered and the played segment under a round thumb, and volume, settings and
 // full-screen on the right. The bar is 56 dp high and hover-revealed: it fades
 // in on enter and out on leave unless playback is paused, so it never covers
 // the picture when the pointer is elsewhere. The ticker is suspended while the
 // thumb is being dragged, because a seek in flight must not fight playback.
+//
+// The icons are a self-contained path set, not text glyphs and not a font: every
+// action is the filled 24 dp path on the standard grid, centred in its own
+// 48 dp touch target. The bar carries the transport when the width allows it;
+// below that, replay and the two seeks move into the settings panel instead of
+// shrinking below the 48 dp target the pointer model guarantees.
 //
 // The ticker advances the position even without a provider; it pulls a frame
 // only when a provider is installed. There is no audio: setVolume()/setMuted()
@@ -33,6 +39,7 @@
 
 #include <QImage>
 #include <QMetaType>
+#include <QString>
 #include <Qt>
 
 #include <functional>
@@ -42,6 +49,7 @@ class QEvent;
 class QKeyEvent;
 class QMouseEvent;
 class QPainter;
+class QPointF;
 class QRectF;
 class QTimer;
 
@@ -58,6 +66,20 @@ public:
         Paused,
     };
     Q_ENUM(PlaybackState)
+
+    // One action in the control bar. `None` is what controlAt() answers when the
+    // pointer is not on a control; it is never painted.
+    enum class Control {
+        None,
+        PlayPause,
+        Replay,
+        SkipBack,
+        SkipForward,
+        Volume,
+        Settings,
+        Fullscreen,
+    };
+    Q_ENUM(Control)
 
     explicit Video(QWidget* parent = nullptr);
 
@@ -102,6 +124,13 @@ public:
     void setLoop(bool loop);
     [[nodiscard]] bool loop() const noexcept;
 
+    // Whether the surface is currently presented full screen. The component
+    // never changes this itself: it only chooses the enter or exit glyph, so
+    // the host must mirror its own full-screen state here. The default is the
+    // "enter full screen" glyph.
+    void setFullscreen(bool fullscreen);
+    [[nodiscard]] bool isFullscreen() const noexcept;
+
     // How far ahead of position() the host has buffered, in milliseconds. The
     // progress track draws that segment behind the played one. Zero means
     // "nothing buffered"; setting a duration without ever calling this fills
@@ -124,6 +153,31 @@ public:
     [[nodiscard]] QRectF fullscreenButtonRect() const;
     [[nodiscard]] QRectF timeLabelRect() const;
 
+    // Every control the current width lays out, in visual order, left to right.
+    // controlRect() answers an empty rectangle for a control that the bar had to
+    // drop (the secondary transport moves into the settings panel on a narrow
+    // surface, it is never shrunk below its 48 dp target). controlAt() runs the
+    // same hit test the pointer uses.
+    [[nodiscard]] int controlCount() const;
+    [[nodiscard]] QRectF controlRect(int index) const;
+    [[nodiscard]] QRectF controlRect(Control control) const;
+    [[nodiscard]] Control controlAt(const QPointF& point) const;
+    [[nodiscard]] Control hoveredControl() const noexcept;
+
+    // The per-action strings a button announces: the tooltip (with its
+    // keyboard shortcut) and the accessible name. Both are empty for
+    // Control::None.
+    [[nodiscard]] QString controlToolTip(Control control) const;
+    [[nodiscard]] QString controlAccessibleName(Control control) const;
+
+    // The settings panel that holds the secondary transport on a narrow bar. It
+    // is painted by the surface, not by a QMenu, so opening it never steals the
+    // focus the player needs for Space and the arrow keys.
+    [[nodiscard]] bool overflowOpen() const noexcept;
+    [[nodiscard]] int overflowItemCount() const;
+    [[nodiscard]] QRectF overflowItemRect(int index) const;
+    void closeOverflow();
+
 signals:
     void playbackStateChanged(PlaybackState state);
     void positionChanged(qint64 position);
@@ -143,6 +197,7 @@ protected:
     void keyPressEvent(QKeyEvent* event) override;
     void enterEvent(QEnterEvent* event) override;
     void leaveEvent(QEvent* event) override;
+    bool event(QEvent* event) override;
 
     void onShown() override;
     void onHidden() override;
@@ -160,8 +215,9 @@ private:
     [[nodiscard]] qreal progressFraction() const;
     [[nodiscard]] QRectF progressHitRect() const;
     [[nodiscard]] QRectF scrimRect() const;
-    [[nodiscard]] QRectF timeLabelRectFor(const QRectF& bar, const QRectF& play,
-                                          const QRectF& volume) const;
+    // Measured with the label's tabular font; the bar never reserves width from
+    // a character count.
+    [[nodiscard]] qreal timeLabelWidth() const;
 
     // The hover fade. updateControlsTarget() decides the destination,
     // stepControlsFade() advances one timer tick, and a reduced-motion theme
@@ -171,12 +227,23 @@ private:
     [[nodiscard]] bool fadeEnabled() const;
     [[nodiscard]] int fadeDurationMs() const;
 
+    // Control dispatch: one switch owns the behaviour of every button, so the
+    // mouse, the keyboard and the settings panel cannot drift apart.
+    void triggerControl(Control control);
+    void updateHoveredControl(const QPointF& point);
+
+    // The settings panel is part of the painted surface (see overflowOpen()).
+    [[nodiscard]] QRectF overflowPanelRect() const;
+    [[nodiscard]] QRectF overflowItemRectAt(int index) const;
+    [[nodiscard]] int overflowItemAt(const QPointF& point) const;
+    [[nodiscard]] QString overflowItemText(int index) const;
+    void toggleOverflow();
+    void activateOverflowItem(int index);
+    void paintOverflow(QPainter& painter);
+
     void paintScrim(QPainter& painter);
     void paintPlaceholder(QPainter& painter, const QRectF& content);
     void paintControls(QPainter& painter, const QRectF& content);
-    void paintPlayPause(QPainter& painter, const QRectF& rect);
-    void paintVolume(QPainter& painter, const QRectF& rect);
-    void paintFullscreen(QPainter& painter, const QRectF& rect);
 
     QImage frame_;
     std::function<QImage(qint64)> provider_;
@@ -188,9 +255,15 @@ private:
     qreal volume_ = 1.0;
     bool muted_ = false;
     bool loop_ = false;
+    bool fullscreen_ = false;
     bool scrubbing_ = false;
     bool scrubResume_ = false;
     bool hovered_ = false;
+    bool overflowOpen_ = false;
+
+    Control hoveredControl_ = Control::None;
+    Control pressedControl_ = Control::None;
+    int overflowHoveredItem_ = -1;
 
     qreal controlsOpacity_ = 1.0;
     qreal controlsTarget_ = 1.0;

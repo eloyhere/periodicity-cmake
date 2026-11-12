@@ -6,7 +6,7 @@
 // parent widget and unchecks every Radio that shares the group id, which is
 // the smallest mechanism that still behaves like a button group.
 //
-// M3 gives a selection control a 40 dp state-layer circle, not an overlay over
+// The design baseline gives a selection control a 40 dp state-layer circle, not an overlay over
 // the whole target, so the shared overlay is switched off and the circle is
 // painted under the ring. The pill shape keeps the focus ring circular.
 
@@ -31,7 +31,7 @@ constexpr qreal kDiameterDp = 20.0;
 constexpr qreal kDotDiameterDp = 10.0;
 constexpr qreal kBorderDp = 2.0;
 constexpr qreal kTouchSizeDp = 48.0;
-// M3 measurement: the radio interaction layer is a 40 dp circle.
+// Design baseline measurement: the radio interaction layer is a 40 dp circle.
 constexpr qreal kStateLayerDp = 40.0;
 
 QColor withAlpha(const QColor& colour, qreal alpha)
@@ -41,7 +41,7 @@ QColor withAlpha(const QColor& colour, qreal alpha)
     return result;
 }
 
-// The M3 interaction overlay: onSurface at the state-layer opacity for the
+// The design baseline interaction overlay: onSurface at the state-layer opacity for the
 // strongest active interaction bit. A disabled control has no layer.
 QColor stateLayerFor(const ColorScheme& colours, ViewStates state, bool enabled)
 {
@@ -69,10 +69,10 @@ Radio::Radio(QWidget* parent)
     setAttribute(Qt::WA_Hover, true);
     setFocusPolicy(Qt::StrongFocus);
     setBackgroundColour(QColor(Qt::transparent));
-    // A round state layer and a round focus indicator (M3).
+    // A round state layer and a round focus indicator (design baseline).
     setShape(Theme::forWidget(this).shapes().full);
     // The shared overlay would fill the whole 48 dp target; the 40 dp circle is
-    // painted in paintContent(). A radio has no ripple in M3.
+    // painted in paintContent(). A radio has no ripple in the design baseline.
     setInteractionFeedbackEnabled(false);
 }
 

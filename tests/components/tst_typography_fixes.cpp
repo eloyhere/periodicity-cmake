@@ -341,7 +341,7 @@ void TestTypographyFixes::listRowMetricsFollowTokens()
     md::List list;
     list.setModel(&model);
 
-    // The M3 one-, two- and three-line tokens.
+    // The design-baseline one-, two- and three-line tokens.
     QCOMPARE(md::List::rowHeightFor(md::List::RowLines::OneLine), 56.0);
     QCOMPARE(md::List::rowHeightFor(md::List::RowLines::TwoLine), 72.0);
     QCOMPARE(md::List::rowHeightFor(md::List::RowLines::ThreeLine), 88.0);
@@ -488,7 +488,7 @@ void TestTypographyFixes::buttonPaddingDependsOnIcon()
     withIcon.setIcon(QIcon(pixmap));
     QCOMPARE(withIcon.iconSize(), 20.0);
 
-    // M3: 16 dp on the icon side, 24 dp on the label side — not 24/24.
+    // Design baseline: 16 dp on the icon side, 24 dp on the label side — not 24/24.
     QCOMPARE(withIcon.sizeHint().width(), qCeil(16.0 + 20.0 + 8.0 + advance + 16.0));
 
     // An empty label still honours the 48 dp minimum width.

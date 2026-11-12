@@ -3,7 +3,7 @@
 // The track and thumb geometry is derived from a 48 dp touch target: the thumb
 // radius insets the usable track, the track sits low enough that the hover /
 // drag value label fits above it, and every dimension is a dp conversion of a
-// Material token. Dragging updates the value on every move while the pointer
+// design baseline token. Dragging updates the value on every move while the pointer
 // is down; a plain click jumps to the pressed position.
 
 #include <md/components/seekbar.h>
@@ -209,7 +209,7 @@ void SeekBar::paintContent(QPainter& painter, const QRectF& content)
     const qreal fraction = range > 0.0 ? (value_ - minimum_) / range : 0.0;
     const qreal thumbX = trackStart + fraction * (trackEnd - trackStart);
 
-    // M3 slider colour roles: active track and handle are primary, the inactive
+    // Design baseline slider colour roles: active track and handle are primary, the inactive
     // track is secondaryContainer (not a surface container), and the stop
     // markers are onSecondaryContainer.
     const QColor inactive = enabled

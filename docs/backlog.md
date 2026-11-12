@@ -61,7 +61,7 @@ The component catalogue (names, layer, and test file) lives in `docs/components.
 | `Radio` | Group semantics, keyboard traversal within a group |
 | `Rate` | Star rating, half steps optional, hover preview, keyboard adjustment |
 | `Progress` | Linear and circular, determinate/indeterminate, buffer |
-| `Ring` | Android-style ring animation: determinate arc plus indeterminate rotation/trim animation |
+| `Ring` | Declarative-style ring animation: determinate arc plus indeterminate rotation/trim animation |
 | `Seekbar` | Continuous/discrete slider with value label and optional ticks |
 | `Colour` | Saturation/value panel + hue strip + alpha, hex input, recent colours |
 
@@ -72,11 +72,11 @@ The component catalogue (names, layer, and test file) lives in `docs/components.
 
 | Widget | Notes |
 | --- | --- |
-| `TextInput` | Material filled and outlined text fields: floating label, helper/error text, leading/trailing icons, character counter |
+| `TextInput` | Design-baseline filled and outlined text fields: floating label, helper/error text, leading/trailing icons, character counter |
 | `NumberInput` | Numeric text field with increment/decrement affordances, min/max, step, formatting |
 | `Dropdown` | Anchored list of actions/options opened from a trigger widget |
 | `Select` | Single-choice field that opens a `Dropdown` and renders the current value |
-| `Spinner` | Android-style spinner: modal list selection, adapter-backed |
+| `Spinner` | Declarative-style spinner: modal list selection, adapter-backed |
 | `NumberPicker` | Wheel picker: adapter-driven items, cyclic scrolling, typed value with autocomplete, divider and fading edges |
 | `Complete` | Editable field with adapter-backed suggestion dropdown, filtering and inline completion |
 | `Date` | Calendar month grid, year/month navigation, min/max, ISO formatting |

@@ -1,4 +1,4 @@
-// Unit tests for the Fab component (Material 3 floating action button).
+// Unit tests for the Fab component (design-baseline floating action button).
 //
 // The suite runs offscreen like tests/components/tst_basic_widgets.cpp: the
 // application theme is pinned to the baseline light scheme, sizes are measured

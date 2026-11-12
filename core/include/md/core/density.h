@@ -1,7 +1,7 @@
 // Periodicity — density (framework.md §5.1).
 //
-// Density converts Material's density-independent units (dp) and scalable
-// points (sp) into the device-independent pixels that Qt geometry uses.
+// Density converts the design baseline's density-independent units (dp) and
+// scalable points (sp) into the device-independent pixels that Qt geometry uses.
 //
 // At scale 1.0 one dp is exactly one device-independent pixel. Qt already
 // applies the operating system's display scaling to widget geometry, so

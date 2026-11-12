@@ -51,6 +51,9 @@ QImage renderWidget(QWidget& widget)
 void prepare(QWidget& widget)
 {
     widget.resize(kChartWidth, kChartHeight);
+    // Pixel assertions need the settled frame: the reveal animation stays off here.
+    if (auto* chartBase = qobject_cast<md::ChartBase*>(&widget))
+        chartBase->setAnimated(false);
     widget.show();
     QCoreApplication::processEvents();
 }

@@ -5,8 +5,10 @@
 #include <md/theme/theme.h>
 
 #include <QApplication>
+#include <QGraphicsEffect>
 #include <QKeyEvent>
 #include <QMouseEvent>
+#include <QPushButton>
 #include <QSignalSpy>
 #include <QTest>
 #include <QWidget>
@@ -61,6 +63,11 @@ private slots:
     void modalClickDismisses();
     void modalKeepsItsLevel();
     void modalIsAboveADropdown();
+
+    void modalCardAnimatesInAndOut();
+    void modalReducedMotionSnaps();
+    void modalTrapsAndRestoresFocus();
+    void modalHideStopsAnimation();
 };
 
 namespace {
@@ -318,6 +325,121 @@ void TestDropdownModal::modalIsAboveADropdown()
     QCOMPARE(md::Modal::layerOf(&dropdown), static_cast<int>(md::Modal::Level::Dropdown));
     QCOMPARE(md::Modal::layerOf(&modal), static_cast<int>(md::Modal::Level::Dialog));
     QCOMPARE(md::Modal::topLayer(host), static_cast<QWidget*>(&modal));
+}
+
+void TestDropdownModal::modalCardAnimatesInAndOut()
+{
+    md::Modal modal(host);
+    auto* card = new QWidget;
+    card->setFixedSize(320, 200);
+    modal.setCard(card);
+
+    QSignalSpy openFinished(&modal, &md::Modal::openFinished);
+    QSignalSpy closeFinished(&modal, &md::Modal::closeFinished);
+
+    modal.open();
+    QVERIFY(modal.isOpen());
+    QVERIFY(modal.isAnimating());
+    QVERIFY(modal.cardRect().isValid());
+    QVERIFY(card->graphicsEffect() != nullptr);
+    QVERIFY(modal.scrimOpacity() < 1.0);
+
+    QTRY_COMPARE_WITH_TIMEOUT(openFinished.count(), 1, 2000);
+    QVERIFY(!modal.isAnimating());
+    QCOMPARE(modal.scrimOpacity(), 1.0);
+
+    modal.close();
+    QVERIFY(!modal.isOpen());
+    QCOMPARE(closeFinished.count(), 0);
+    QTRY_COMPARE_WITH_TIMEOUT(closeFinished.count(), 1, 2000);
+    QVERIFY(!modal.isVisible());
+    QCOMPARE(modal.scrimOpacity(), 0.0);
+}
+
+void TestDropdownModal::modalReducedMotionSnaps()
+{
+    md::MotionScheme motion;
+    motion.reducedMotion = true;
+    md::Theme::setApplicationTheme(md::Theme::baselineLight().withMotion(motion));
+
+    md::Modal modal(host);
+    auto* card = new QWidget;
+    card->setFixedSize(220, 140);
+    modal.setCard(card);
+
+    QSignalSpy openFinished(&modal, &md::Modal::openFinished);
+    QSignalSpy closeFinished(&modal, &md::Modal::closeFinished);
+
+    modal.open();
+    QVERIFY(!modal.isAnimating());
+    QCOMPARE(modal.scrimOpacity(), 1.0);
+    QCOMPARE(openFinished.count(), 1);
+
+    modal.close();
+    QVERIFY(!modal.isOpen());
+    QVERIFY(!modal.isVisible());
+    QCOMPARE(modal.scrimOpacity(), 0.0);
+    QCOMPARE(closeFinished.count(), 1);
+
+    md::Theme::setApplicationTheme(md::Theme::baselineLight());
+}
+
+void TestDropdownModal::modalTrapsAndRestoresFocus()
+{
+    auto* chip = new QPushButton(QStringLiteral("chip"), host);
+    chip->setGeometry(20, 20, 120, 40);
+    chip->show();
+    chip->setFocus(Qt::OtherFocusReason);
+    QCOMPARE(QApplication::focusWidget(), static_cast<QWidget*>(chip));
+
+    md::Modal modal(host);
+    auto* card = new QWidget;
+    card->setFixedSize(300, 200);
+
+    auto* first = new QPushButton(QStringLiteral("A"), card);
+    first->setGeometry(20, 20, 120, 40);
+    auto* second = new QPushButton(QStringLiteral("B"), card);
+    second->setGeometry(20, 90, 120, 40);
+
+    modal.setCard(card);
+    modal.setFocusReturn(chip);
+    modal.setAnimated(false);
+    modal.open();
+
+    QCOMPARE(QApplication::focusWidget(), static_cast<QWidget*>(first));
+
+    QTest::keyClick(first, Qt::Key_Tab);
+    QCOMPARE(QApplication::focusWidget(), static_cast<QWidget*>(second));
+
+    QTest::keyClick(second, Qt::Key_Tab);
+    QCOMPARE(QApplication::focusWidget(), static_cast<QWidget*>(first));
+
+    QTest::keyClick(first, Qt::Key_Backtab);
+    QCOMPARE(QApplication::focusWidget(), static_cast<QWidget*>(second));
+
+    modal.close();
+    QCOMPARE(QApplication::focusWidget(), static_cast<QWidget*>(chip));
+}
+
+void TestDropdownModal::modalHideStopsAnimation()
+{
+    md::Modal modal(host);
+    auto* card = new QWidget;
+    card->setFixedSize(220, 140);
+    modal.setCard(card);
+
+    modal.open();
+    QVERIFY(modal.isAnimating());
+
+    modal.hide();
+    QVERIFY(!modal.isOpen());
+    QVERIFY(!modal.isAnimating());
+    QCOMPARE(modal.scrimOpacity(), 0.0);
+
+    // No callback may still be writing to the hidden card after the abort.
+    QTest::qWait(700);
+    QVERIFY(!modal.isAnimating());
+    QCOMPARE(modal.scrimOpacity(), 0.0);
 }
 
 QTEST_MAIN(TestDropdownModal)

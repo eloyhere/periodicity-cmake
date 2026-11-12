@@ -1,8 +1,9 @@
 // Periodicity — AppBar (framework.md §6.3, docs/backlog.md batch 4).
 //
-// A Material 3 top app bar that collapses as its content scrolls. It carries a
-// title, an optional navigation button and a set of actions, and it owns the
-// two things that make a collapsing bar more than a styled row:
+// A top app bar in the reference design system that collapses as its content
+// scrolls. It carries a title, an optional navigation button and a set of
+// actions, and it owns the two things that make a collapsing bar more than a
+// styled row:
 //
 //   * a height that interpolates between `expandedHeight` and `collapsedHeight`
 //     as `scrollOffset` grows towards `scrollRange`, and

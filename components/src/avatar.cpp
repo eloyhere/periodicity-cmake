@@ -9,7 +9,7 @@
 //
 // The placeholder is not a grey rectangle: its fill is chosen by hashing the
 // initials against the theme's container roles, which keeps one identity one
-// colour across reloads while staying inside the M3 palette.
+// colour across reloads while staying inside the design baseline palette.
 
 #include <md/components/avatar.h>
 
@@ -34,7 +34,7 @@ namespace {
 
 constexpr int kPlaceholderRoleCount = 6;
 
-// A container colour and the on-colour that M3 pairs with it. The placeholder
+// A container colour and the on-colour that the design baseline pairs with it. The placeholder
 // used to paint on-surface over every container, which is a contrast guess: in
 // the light scheme primary-container wants on-primary-container, and the same
 // holds for the secondary, tertiary and error containers.

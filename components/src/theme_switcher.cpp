@@ -1,5 +1,7 @@
 #include <md/components/theme_switcher.h>
 
+#include <md/components/modal.h>
+
 #include <QApplication>
 #include <QEvent>
 #include <QFont>
@@ -7,6 +9,7 @@
 #include <QKeyEvent>
 #include <QMouseEvent>
 #include <QPainter>
+#include <QPointer>
 
 #include <algorithm>
 
@@ -37,6 +40,16 @@ ThemeSwitcher::ThemeSwitcher(QWidget* parent)
 {
     setFocusPolicy(Qt::StrongFocus);
     setBackgroundColour(Qt::transparent);
+}
+
+ThemeSwitcher::~ThemeSwitcher()
+{
+    if (selector_ != nullptr) {
+        selector_->disconnect(this);
+        selector_->close();
+        selector_->deleteLater();
+        selector_.clear();
+    }
 }
 
 void ThemeSwitcher::addPreset(QString name, QColor primary, QColor second, QColor accent)
@@ -242,6 +255,50 @@ void ThemeSwitcher::changeEvent(QEvent* event)
 bool ThemeSwitcher::focusable() const
 {
     return isEnabled();
+}
+
+void ThemeSwitcher::openSelector(QWidget* anchor)
+{
+    if (selector_ != nullptr) {
+        selector_->close();
+        return;
+    }
+
+    QWidget* host = window();
+    if (host == nullptr)
+        return;
+
+    auto* modal = new Modal(host);
+    auto* list = new ThemeSwitcher(modal);
+    list->presets_ = presets_;
+    list->current_ = current_;
+    list->setFixedSize(sizeHint());
+
+    QPointer<ThemeSwitcher> self(this);
+    QObject::connect(list, &ThemeSwitcher::presetActivated, this,
+                     [self, modal](int index) {
+                         if (self != nullptr)
+                             self->applyPreset(index);
+                         modal->close();
+                     });
+
+    modal->setCard(list);
+    modal->setAnchor(anchor != nullptr ? anchor : this);
+    modal->setFocusReturn(anchor != nullptr ? anchor : this);
+
+    selector_ = modal;
+    connect(modal, &Modal::closeFinished, modal, &QObject::deleteLater);
+    connect(modal, &QObject::destroyed, this, [this, modal] {
+        if (selector_ == modal)
+            selector_.clear();
+    });
+
+    modal->open();
+}
+
+bool ThemeSwitcher::isSelectorOpen() const noexcept
+{
+    return selector_ != nullptr && selector_->isOpen();
 }
 
 int ThemeSwitcher::rowAt(const QPointF& position) const

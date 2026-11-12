@@ -1,10 +1,10 @@
 // Periodicity — Card (media/content batch).
 //
-// An M3 surface that groups a title, an optional subtitle and body, an optional
+// A design baseline surface that groups a title, an optional subtitle and body, an optional
 // media Image and an optional action row. The card owns the background: the
 // fill, the shape (medium, 12 dp) and the elevation come from the theme and are
 // painted by View's own layers, so the tonal step and the shadow are the same
-// ones every other material surface uses. Outlined adds a one-dp contour.
+// ones every other design-baseline surface uses. Outlined adds a one-dp contour.
 //
 // The media Image and the actions are real child Views (the card is a
 // ViewGroup), arranged inside the theme's 16 dp content padding. Actions are

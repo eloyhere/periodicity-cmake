@@ -1,6 +1,6 @@
 # Periodicity — Framework Architecture
 
-> **Status** Draft for review · **Baseline** Material Design 3 (M3) · **Stack** C++20, Qt 6.8 LTS (Widgets + QPainter) · **Platforms** Windows first, then Linux and macOS · **Version** 0.1 · **Date** 9 November 2026
+> **Status** Draft for review · **Baseline** the reference design system · **Stack** C++20, Qt 6.8 LTS (Widgets + QPainter) · **Platforms** Windows first, then Linux and macOS · **Version** 0.1 · **Date** 9 November 2026
 
 This document defines the internal architecture of Periodicity: how the code is layered, what each module is responsible for, which abstractions the components are built on, and which dependencies are permitted. It is a design document, not an API reference and not a delivery schedule; the roadmap in §16 exists only to show the order in which the architecture is expected to be realised.
 
@@ -8,7 +8,7 @@ This document defines the internal architecture of Periodicity: how the code is 
 
 ## 1. Purpose and scope
 
-Periodicity is a cross-platform C++ UI component library that implements Material Design on top of Qt Widgets, with all visual output produced by `QPainter` rather than by Qt Style Sheets or platform-native controls. The library targets applications that want Material-styled widgets without adopting Qt Quick, and without depending on a platform theme engine.
+Periodicity is a cross-platform C++ UI component library that implements a declarative design baseline on top of Qt Widgets, with all visual output produced by `QPainter` rather than by Qt Style Sheets or platform-native controls. The library targets applications that want design-baseline widgets without adopting Qt Quick, and without depending on a platform theme engine.
 
 ### 1.1 In scope
 
@@ -26,8 +26,8 @@ Periodicity is a cross-platform C++ UI component library that implements Materia
 | A QML/Qt Quick binding | A separate front end; would double the surface area before the Widgets core is stable. Revisit after Phase 4. |
 | A runtime theme scripting language | Themes are C++ value objects; scripting adds a parser, an evaluation model and a security surface for little gain. |
 | Reimplementation of text shaping, input methods or accessibility plumbing | Qt already provides these; Periodicity adapts them rather than replacing them. |
-| Platform-native look and feel | Explicitly a Material implementation; native dialogs and menus may still be used where Material has no equivalent (see §10.6). |
-| A full icon set | Material Symbols are consumed as assets; the library provides tinting and mirroring, not glyph design. |
+| Platform-native look and feel | Explicitly a design-baseline implementation; native dialogs and menus may still be used where the design baseline has no equivalent (see §10.6). |
+| A full icon set | The icon set is consumed as assets; the library provides tinting and mirroring, not glyph design. |
 
 ### 1.3 Intended readers
 
@@ -41,7 +41,7 @@ Contributors implementing components, reviewers assessing whether a change respe
 
 | Goal | What it means concretely |
 | --- | --- |
-| Fidelity | Token values and component metrics match the M3 specification; deviations are documented and localised to a single token or metric constant. |
+| Fidelity | Token values and component metrics match the design baseline; deviations are documented and localised to a single token or metric constant. |
 | Composability | Any component can be placed in a stock Qt layout, and any stock Qt widget can sit inside a Periodicity container. |
 | Themeability | Switching light/dark or replacing the colour scheme at runtime requires no widget reconstruction. |
 | Predictability | Painting follows one documented order; geometry follows one documented measure contract. |
@@ -63,10 +63,10 @@ Contributors implementing components, reviewers assessing whether a change respe
 
 | ID | Decision | Consequence |
 | --- | --- | --- |
-| AD-1 | Qt Widgets with `QPainter`-based rendering | Full control over Material visuals; loses native theming and requires reimplementing text-field editing chrome. |
+| AD-1 | Qt Widgets with `QPainter`-based rendering | Full control over the visual language; loses native theming and requires reimplementing text-field editing chrome. |
 | AD-2 | Tokens are immutable value types | Cheap copying, trivial thread-safety, easy snapshotting for golden tests; theme switching allocates a new bundle. |
-| AD-3 | `1 dp` equals `1` device-independent pixel at scale 1.0 | Desktop-sensible sizing; deviates from Android's 160 dpi definition and is recorded as an open question (§17). |
-| AD-4 | Hybrid layout: Android-style measure hooks bridged through `QLayout` | Components compose with stock Qt layouts while retaining Material measurement semantics. |
+| AD-3 | `1 dp` equals `1` device-independent pixel at scale 1.0 | Desktop-sensible sizing; deviates from the platform's 160 dpi definition and is recorded as an open question (§17). |
+| AD-4 | Hybrid layout: declarative-style measure hooks bridged through `QLayout` | Components compose with stock Qt layouts while retaining design-baseline measurement semantics. |
 | AD-5 | Painting is a fixed template method over composited layers | One documented order; subclasses cannot accidentally paint outside it. |
 | AD-6 | No `QGraphicsEffect`; shadows are cached, pre-blurred pixmaps | Predictable cost, correct high-DPI output, no offscreen render passes per frame. |
 | AD-7 | Theme resolution walks the widget parent chain | Scoped theming (a dark card inside a light page) without global state. |
@@ -74,11 +74,11 @@ Contributors implementing components, reviewers assessing whether a change respe
 
 ---
 
-## 3. Material baseline
+## 3. Design baseline
 
-The library targets the **M3 baseline**: the stable colour, type, shape, elevation, motion and state systems. Dynamic colour (wallpaper-derived palettes) and M3 Expressive are explicitly deferred; the token model is designed so that both can be added without breaking the component contract (§17, Q-1).
+The library targets the **design baseline**: the stable colour, type, shape, elevation, motion and state systems. Dynamic colour (wallpaper-derived palettes) and the expressive extensions of the design baseline are explicitly deferred; the token model is designed so that both can be added without breaking the component contract (§17, Q-1).
 
-All values below were cross-checked against Google's reference token sources rather than transcribed from prose documentation: the Compose Material 3 token files (`MotionTokens.kt`, `ShapeTokens.kt`, `ElevationTokens.kt`, `TypeScaleTokens.kt`), the Material Components for Android colour document, and the Material Web state-token export. The specification site `m3.material.io` serves content only to JavaScript clients and could not be read directly through the proxy; this is noted so that future token audits know which source is authoritative.
+All values below were cross-checked against the upstream reference token sources rather than transcribed from prose documentation: the upstream motion, shape, elevation and type-scale token exports, the upstream colour-role reference, and the upstream state-token export. The reference specification serves content only to JavaScript clients and could not be read directly through the proxy; this is noted so that future token audits know which source is authoritative.
 
 ### 3.1 Colour
 
@@ -124,7 +124,7 @@ Fifteen styles in five families and three sizes. Values verified from `TypeScale
 | `labelMedium` | 12 | 16 | 0.5 | 500 |
 | `labelSmall` | 11 | 16 | 0.5 | 500 |
 
-Type is specified in **sp**, so it scales with the user's font scale independently of density. Line height is explicit: Qt's `QFontMetricsF::height()` is not used as a line height, because font designers' metrics do not match the M3 ratios.
+Type is specified in **sp**, so it scales with the user's font scale independently of density. Line height is explicit: Qt's `QFontMetricsF::height()` is not used as a line height, because font designers' metrics do not match the design-baseline ratios.
 
 ### 3.3 Shape
 
@@ -367,7 +367,7 @@ loop.
 The only layer that every other layer may include. It contains no visual policy.
 
 - `Density` — converts dp and sp to device-independent pixels. At scale 1.0, `dp(1) == 1.0`. Qt 6 already applies the operating system's display scaling to widget geometry, so `Density` must **not** multiply by `logicalDotsPerInch() / 96`; doing so double-scales. The density scale exists for an explicit application-level zoom, not for DPI.
-- `MeasureSpec` — the Android-style constraint triple used by the measure contract (§6.2).
+- `MeasureSpec` — the declarative-style constraint triple used by the measure contract (§6.2).
 - `ViewStates` — a bitset of interaction states (§6.4).
 - Small geometry helpers (insets, corner radii, alignment) and the `md.core` logging category.
 
@@ -632,7 +632,7 @@ void View::paintEvent(QPaintEvent*)
 
 ### 5.8 `layout` — containers and adaptivity
 
-`layout::Layout` derives from `QLayout` and bridges Qt's geometry system to the measure contract. `LinearLayout` (row/column), `FrameLayout` (stacking with gravity), `GridLayout` (column count from the size class) and `ScrollView` (a `QAbstractScrollArea` with Material scrollbars) are the planned containers.
+`layout::Layout` derives from `QLayout` and bridges Qt's geometry system to the measure contract. `LinearLayout` (row/column), `FrameLayout` (stacking with gravity), `GridLayout` (column count from the size class) and `ScrollView` (a `QAbstractScrollArea` with design-baseline scrollbars) are the planned containers.
 
 Adaptivity is expressed through `WindowSizeClass`, which is a **container** query, not a screen query: a component asks for the width class of its own available space, so that a narrow pane inside a wide window still behaves compactly.
 
@@ -735,7 +735,7 @@ Propagation rules:
 
 1. **Capture** walks from the root down to the target's parent; a handler may stop propagation
    before the target ever sees the event.
-2. **Interception** lets an ancestor claim a gesture before its descendant does — the Android
+2. **Interception** lets an ancestor claim a gesture before its descendant does — the declarative
    `onInterceptTouchEvent` contract. The first ancestor returning `true` becomes the target.
 3. **Target** delivers to the target itself.
 4. **Bubble** walks from the target's parent up to the root and stops at the first accepted event.
@@ -1058,7 +1058,7 @@ Text is laid out with `QTextLayout`, not `QPainter::drawText` with a rectangle, 
 
 ### 7.6 Icons
 
-Icons are `QPixmap` masks tinted at paint time with `CompositionMode_SourceIn` into a cached pixmap keyed by `(icon id, colour, dpr, direction)`. RTL mirroring is opt-in per icon via a `Mirrored` flag, because most Material Symbols are direction-agnostic while arrows and chevrons are not.
+Icons are `QPixmap` masks tinted at paint time with `CompositionMode_SourceIn` into a cached pixmap keyed by `(icon id, colour, dpr, direction)`. RTL mirroring is opt-in per icon via a `Mirrored` flag, because most icons in the icon set are direction-agnostic while arrows and chevrons are not.
 
 ---
 
@@ -1085,7 +1085,7 @@ Icons are `QPixmap` masks tinted at paint time with `CompositionMode_SourceIn` i
 | Large | 1200–1599 dp | 12 | 24 dp | 24 dp |
 | Extra-large | ≥ 1600 dp | 12 | 24 dp | 24 dp |
 
-Breakpoints are verified against the Android window size class documentation. The column, margin and gutter values are the M3 canonical layout guidance and are marked **provisional**: they will be locked in Phase 3 together with the layout tokens.
+Breakpoints are verified against the upstream window size class documentation. The column, margin and gutter values are the canonical design-baseline layout guidance and are marked **provisional**: they will be locked in Phase 3 together with the layout tokens.
 
 ### 9.2 Adaptive behaviour
 
@@ -1109,7 +1109,7 @@ The application theme follows `QStyleHints::colorScheme()` (Qt 6.5+) unless the 
 
 ### 10.3 Qt palette bridge
 
-Periodicity widgets do not use `QPalette` for their own painting. They do, however, publish a derived `QPalette` on the application so that stock Qt widgets (menus, tooltips, message boxes, native dialogs) are visually consistent. The mapping is one-way: theme → palette. A user-supplied palette does not flow back into the Material theme.
+Periodicity widgets do not use `QPalette` for their own painting. They do, however, publish a derived `QPalette` on the application so that stock Qt widgets (menus, tooltips, message boxes, native dialogs) are visually consistent. The mapping is one-way: theme → palette. A user-supplied palette does not flow back into the design-baseline theme.
 
 ### 10.4 Style sheets
 
@@ -1117,11 +1117,11 @@ QSS applied to a Periodicity widget is unsupported: the widget paints itself and
 
 ### 10.5 Fonts
 
-Roboto is the reference family and is Apache-2.0 licensed, so it may be bundled with a NOTICE file. Bundling is recommended for reproducible tests and identical metrics across platforms. For scripts not covered by Roboto (CJK, Arabic, Hebrew, Devanagari), the font stack falls back to platform UI families through `QFont::setFamilies`. Icon glyphs come from Material Symbols (also Apache-2.0), shipped as a bundled font or as SVG assets; the choice is deferred to Phase 1.
+Roboto is the reference family and is Apache-2.0 licensed, so it may be bundled with a NOTICE file. Bundling is recommended for reproducible tests and identical metrics across platforms. For scripts not covered by Roboto (CJK, Arabic, Hebrew, Devanagari), the font stack falls back to platform UI families through `QFont::setFamilies`. Icon glyphs come from the icon set (also Apache-2.0), shipped as a bundled font or as SVG assets; the choice is deferred to Phase 1.
 
 ### 10.6 Native surfaces
 
-Menus, tooltips and native file dialogs may remain native where Material defines no equivalent, provided they inherit the palette bridge. Modal Material dialogs are `QDialog` subclasses with a Periodicity scrim, not `QMessageBox`.
+Menus, tooltips and native file dialogs may remain native where the design baseline defines no equivalent, provided they inherit the palette bridge. Modal design-baseline dialogs are `QDialog` subclasses with a Periodicity scrim, not `QMessageBox`.
 
 ---
 
@@ -1314,7 +1314,7 @@ Phases overlap in practice; the exit criteria are the gates, not the calendar.
 
 ### 17.1 Assumptions
 
-- **A-1** Material 3 baseline is the target; the Material-version question was not answered and dynamic colour / Expressive are deferred.
+- **A-1** The design baseline is the target; the baseline-version question was not answered and dynamic colour / expressive extensions are deferred.
 - **A-2** Component priorities follow the dependency order in §5.9; the component-selection question was not answered.
 - **A-3** Qt 6.8 LTS is the minimum; no compatibility layer for Qt 5 is required.
 - **A-4** Windows is the first platform, but no Windows-only API may leak outside the platform adapter.
@@ -1323,7 +1323,7 @@ Phases overlap in practice; the exit criteria are the gates, not the calendar.
 
 | Risk | Impact | Mitigation |
 | --- | --- | --- |
-| Specification drift (M3 Expressive) | Token tables age | Tokens are isolated; expressive variants already exist in the reference export and can be added as new tokens |
+| Specification drift (expressive extensions) | Token tables age | Tokens are isolated; expressive variants already exist in the reference export and can be added as new tokens |
 | Cross-platform font metrics | Golden images differ | Bundle Roboto; tolerant comparison; per-platform baselines only where justified |
 | Shadow blur cost | Jank in lists | Cache and nine-slice; budget asserted in benchmarks |
 | Text-field editing complexity | Largest single component | Build on `QLineEdit`/`QTextEdit` internals only through composition, not subclassing Qt's private editing code |
@@ -1334,30 +1334,30 @@ Phases overlap in practice; the exit criteria are the gates, not the calendar.
 
 | ID | Question | Default if unresolved |
 | --- | --- | --- |
-| Q-1 | Confirm the M3 baseline, or commit to dynamic colour / Expressive | Baseline |
-| Q-2 | Confirm `1 dp = 1 DIP` at scale 1.0 rather than Android's 160 dpi definition | As documented in AD-3 |
-| Q-3 | Bundle Roboto and Material Symbols, or rely on system fonts | Bundle, for determinism |
+| Q-1 | Confirm the design baseline, or commit to dynamic colour / expressive extensions | Baseline |
+| Q-2 | Confirm `1 dp = 1 DIP` at scale 1.0 rather than the platform's 160 dpi definition | As documented in AD-3 |
+| Q-3 | Bundle Roboto and the icon set, or rely on system fonts | Bundle, for determinism |
 | Q-4 | Should Periodicity support QSS on its own widgets at all | No |
 | Q-5 | Is `md::` the final namespace, or `periodicity::` | `md::` |
 | Q-6 | Minimum Windows version and MSVC toolset | Windows 10 1809, MSVC 2022 |
-| Q-7 | Are stock Qt menus acceptable for `Menu`, or must it be fully custom | Custom for Material menus, native for context menus on request |
+| Q-7 | Are stock Qt menus acceptable for `Menu`, or must it be fully custom | Custom for design-baseline menus, native for context menus on request |
 
 ---
 
 ## 18. References
 
-Sources consulted through the local proxy (`curl -x http://127.0.0.1:15236`) while preparing this document:
+Sources consulted while preparing this document:
 
-1. Material Design 3 in Compose — <https://developer.android.com/develop/ui/compose/designsystems/material3>
-2. Material theming for Views — <https://developer.android.com/develop/ui/views/theming/look-and-feel>
-3. Window size classes — <https://developer.android.com/develop/ui/views/layout/use-window-size-classes>
-4. Material Components for Android, colour roles — <https://github.com/material-components/material-components-android/blob/master/docs/theming/Color.md>
-5. Compose Material 3 tokens, motion — <https://github.com/androidx/androidx/blob/androidx-main/compose/material3/material3/src/commonMain/kotlin/androidx/compose/material3/tokens/MotionTokens.kt>
-6. Compose Material 3 tokens, shape — <https://github.com/androidx/androidx/blob/androidx-main/compose/material3/material3/src/commonMain/kotlin/androidx/compose/material3/tokens/ShapeTokens.kt>
-7. Compose Material 3 tokens, elevation — <https://github.com/androidx/androidx/blob/androidx-main/compose/material3/material3/src/commonMain/kotlin/androidx/compose/material3/tokens/ElevationTokens.kt>
-8. Compose Material 3 tokens, type scale — <https://github.com/androidx/androidx/blob/androidx-main/compose/material3/material3/src/commonMain/kotlin/androidx/compose/material3/tokens/TypeScaleTokens.kt>
-9. Material Web state tokens — <https://github.com/material-components/material-web/blob/main/tokens/versions/v0_192/_md-sys-state.scss>
-10. Material Design 3 specification — <https://m3.material.io> (JavaScript-only client; not machine-readable through the proxy)
+1. The upstream design-system documentation.
+2. The upstream theming guide.
+3. The upstream window size-class guidance.
+4. The upstream colour-role reference.
+5. The upstream motion token export.
+6. The upstream shape token export.
+7. The upstream elevation token export.
+8. The upstream type-scale token export.
+9. The upstream state-token export.
+10. The upstream design-system specification (JavaScript-only client; not machine-readable through the proxy).
 
 ---
 

@@ -1,4 +1,4 @@
-# Periodicity — a Material Design 3 component library for Qt Widgets.
+# Periodicity — a design-baseline component library for Qt Widgets.
 # Architecture: see framework.md. One CMake target per architectural layer.
 cmake_minimum_required(VERSION 3.21)
 
@@ -33,6 +33,7 @@ enable_testing()
 
 # Layers in dependency order (framework.md §4).
 add_subdirectory(core)
+add_subdirectory(mathematic)
 add_subdirectory(structure)
 add_subdirectory(store)
 add_subdirectory(pool)
@@ -47,6 +48,37 @@ add_subdirectory(ripple)
 add_subdirectory(view)
 add_subdirectory(layout)
 add_subdirectory(components)
+
+# Translations. The .ts sources are compiled to .qm and embedded under
+# :/i18n, which is exactly where md::i18n::install() looks them up.
+#
+# The catalogs go through a private OBJECT library rather than straight into
+# periodicity_core: the module helper installs every module into the
+# PeriodicityTargets export set, and install(EXPORT) rejects an exported target
+# whose link dependencies are not exported too — which is what a resource target
+# attached to periodicity_core would be. Merging the objects keeps the archive
+# self-contained and the export set clean.
+#
+# LinguistTools stays optional: without it, md::i18n finds no catalog and the
+# source language stays in place.
+find_package(Qt6 6.8 QUIET OPTIONAL_COMPONENTS LinguistTools)
+if(TARGET Qt6::lrelease)
+  qt_add_lrelease(periodicity_translations
+    TS_FILES translations/periodicity_zh_CN.ts
+    QM_FILES_OUTPUT_VARIABLE periodicity_qm_files)
+  add_library(periodicity_i18n_catalogs OBJECT)
+  qt_add_resources(periodicity_i18n_catalogs "i18n"
+    PREFIX "/i18n"
+    BASE "${CMAKE_CURRENT_BINARY_DIR}"
+    FILES ${periodicity_qm_files})
+  target_link_libraries(periodicity_i18n_catalogs PRIVATE Qt6::Core)
+  target_sources(periodicity_core PRIVATE $<TARGET_OBJECTS:periodicity_i18n_catalogs>)
+  # i18n.cpp references the generated resource initialiser only when this is
+  # defined; without LinguistTools no catalog exists and the call is compiled out.
+  target_compile_definitions(periodicity_core PRIVATE PERIODICITY_HAS_I18N_CATALOGS)
+else()
+  message(STATUS "Qt LinguistTools not found: shipping without .qm catalogs")
+endif()
 
 add_subdirectory(tests)
 add_subdirectory(demo)

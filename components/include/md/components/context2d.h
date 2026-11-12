@@ -18,7 +18,7 @@
 // The context is intentionally defensive: an empty host is allowed, every
 // drawing/state entry point catches exceptions and reports them with qWarning,
 // and replay clips each command to the Canvas content rectangle. The default
-// pen and brush come from the current Material theme, scaled by its Density.
+// pen and brush come from the current design baseline theme, scaled by its Density.
 
 #pragma once
 

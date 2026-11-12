@@ -291,7 +291,7 @@ void NavigationBar::paintDestination(QPainter& painter, int index, const QRectF&
         : (selected ? colours.onSurface : colours.onSurfaceVariant);
 
     // 3. The icon, tinted with the destination's ink. The active icon is a
-    //    filled variant in M3 and falls back to the normal one.
+    //    filled variant in the design baseline and falls back to the normal one.
     const QIcon& icon = selected && !destination.activeIcon.isNull() ? destination.activeIcon
                                                                     : destination.icon;
     if (!icon.isNull()) {

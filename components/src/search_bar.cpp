@@ -37,7 +37,7 @@ namespace md {
 
 namespace {
 
-// M3 measurements, in dp. Every value is converted through Density::dp().
+// Design baseline measurements, in dp. Every value is converted through Density::dp().
 constexpr qreal kBarHeightDp = 56.0;
 constexpr qreal kBarWidthDp = 360.0;
 constexpr qreal kHorizontalPaddingDp = 16.0;
@@ -403,7 +403,7 @@ void SearchBar::paintContent(QPainter& painter, const QRectF& content)
         const QRectF target = clearButtonRect();
         const QPointF centre = target.center();
         // The 48 dp target surrounds a 24 dp icon slot; the glyph uses the
-        // same 14 dp span as Material's close icon.
+        // same 14 dp span as the design baseline's close icon.
         const qreal arm = density.dp(7.0);
         painter.setPen(QPen(iconColour, density.dp(2.0), Qt::SolidLine, Qt::RoundCap));
         painter.drawLine(centre + QPointF(-arm, -arm), centre + QPointF(arm, arm));

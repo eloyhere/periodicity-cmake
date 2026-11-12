@@ -43,7 +43,8 @@ namespace {
 
 // The blur model. A Gaussian with this sigma is what the three box passes
 // approximate; tying sigma to the elevation ramp makes softness grow
-// monotonically with height, as the M3 elevation table requires.
+// monotonically with height, as the elevation table of the design baseline
+// requires.
 constexpr qreal kBaseSigmaDp = 1.0;
 constexpr qreal kSigmaPerElevationDp = 0.5;
 

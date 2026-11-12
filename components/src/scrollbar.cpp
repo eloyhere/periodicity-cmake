@@ -293,7 +293,7 @@ void Scrollbar::paintContent(QPainter& painter, const QRectF& content)
     painter.setRenderHint(QPainter::Antialiasing, true);
     painter.setPen(Qt::NoPen);
 
-    // A Material scrollbar is a thumb, not a rail: the track only appears while
+    // A design baseline scrollbar is a thumb, not a rail: the track only appears while
     // the pointer is over the bar (or the thumb is being dragged), so an idle
     // scrollbar is a 8 dp pill rather than a permanent groove in the surface.
     const bool active = dragging_ || state().testFlag(ViewState::Hovered);

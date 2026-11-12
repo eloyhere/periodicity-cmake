@@ -15,11 +15,9 @@
 // section's height, so no layout manager places the cards.
 //
 // The menu components (MenuGroup, MenuItem, SubMenu) are demonstrated on the
-// Overlays page under "Menu rows". Their design still follows Material's
+// Overlays page under "Menu rows". Their design follows the design-baseline
 // navigation drawer guidance: a section label above a group of destinations,
-// with 16 dp of indentation per nesting level. See
-// https://m3.material.io/components/navigation-drawer/specs and
-// https://m2.material.io/components/navigation-drawer.
+// with 16 dp of indentation per nesting level.
 
 #include <md/components/affix.h>
 #include <md/components/alert.h>
@@ -117,6 +115,8 @@
 #include <md/layout/linear.h>
 #include <md/structure/table.h>
 #include <md/structure/virtual_source.h>
+#include <md/schedule/event_thread.h>
+#include <md/schedule/frame_scheduler.h>
 #include <md/theme/theme.h>
 
 #include "pool_demo.h"
@@ -142,6 +142,7 @@
 #include <QResizeEvent>
 #include <QScrollArea>
 #include <QScrollBar>
+#include <QScopeGuard>
 #include <QShowEvent>
 #include <QStackedWidget>
 #include <QStandardItemModel>
@@ -715,8 +716,8 @@ QWidget* basicPage(const Theme& theme)
     indeterminateRing->setIndeterminate(true);
 
     page->addCard(QStringLiteral("Progress and Ring"),
-                  QStringLiteral("Determinate, buffered and indeterminate. The ring is the "
-                                 "Android-style determinate arc plus rotation animation."),
+                  QStringLiteral("Determinate, buffered and indeterminate. The ring is a "
+                                 "determinate arc plus rotation animation."),
                   row({linear, ring, indeterminateLinear, indeterminateRing}, 28));
 
     auto* seek = new md::SeekBar;
@@ -1171,7 +1172,7 @@ QWidget* inputsPage(const Theme& theme)
 
     page->addTitle(QStringLiteral("Text inputs"));
     page->addLead(QStringLiteral(
-        "Material's filled text field: a label that floats, a focus underline, and a "
+        "The design-baseline filled text field: a label that floats, a focus underline, and a "
         "supporting line that switches to the error colour. The editor itself is a "
         "QLineEdit hosted inside the painted field, so IME and selection keep working."));
 
@@ -1398,7 +1399,7 @@ QWidget* displayPage(const Theme& theme)
 
     page->addTitle(QStringLiteral("Display and navigation"));
     page->addLead(QStringLiteral(
-        "Content presentation: the full M3 type scale, two model-backed lists (one "
+        "Content presentation: the full design-baseline type scale, two model-backed lists (one "
         "virtualised), a tab bar, a banner, a marquee, an anchored popup and a guided tour."));
 
     auto* typeColumn = new QWidget;
@@ -1682,7 +1683,7 @@ QWidget* displayPage(const Theme& theme)
         layout->addWidget(scrollNote, 0, Qt::AlignLeft);
     }
     page->addCard(QStringLiteral("Scrollbar"),
-                  QStringLiteral("A standalone Material 3 scrollbar: an 8 dp rounded track, "
+                  QStringLiteral("A standalone design-baseline scrollbar: an 8 dp rounded track, "
                                  "a thumb that widens on hover and turns primary while "
                                  "dragged, drag, track paging and the wheel."),
                   scrollColumn);
@@ -1697,9 +1698,9 @@ QWidget* themePage(const Theme& theme)
 
     page->addTitle(QStringLiteral("Theme and colour attributes"));
     page->addLead(QStringLiteral(
-        "Android applications configure their palette with colourPrimary, "
-        "colourSecondary and colourAccent. This page shows that attribute layer on "
-        "top of the Material 3 scheme, and lets a preset replace the whole palette "
+        "Applications configure their palette with colorPrimary, "
+        "colorSecondary and colorAccent. This page shows that attribute layer on "
+        "top of the design-baseline scheme, and lets a preset replace the whole palette "
         "for the gallery."));
 
     struct Attribute
@@ -1890,7 +1891,7 @@ QWidget* mediaPage(const Theme& theme)
     card->setVariant(md::Card::CardVariant::Elevated);
     card->setTitle(QStringLiteral("Elevated card"));
     card->setSubtitle(QStringLiteral("with media and an action"));
-    card->setBody(QStringLiteral("Material cards group related content on a raised "
+    card->setBody(QStringLiteral("Design-baseline cards group related content on a raised "
                                  "container. The media area is an Image child."));
     card->setMedia(media);
     auto* action = new md::Button(QStringLiteral("Open"));
@@ -2130,7 +2131,7 @@ QWidget* timeNavPage(const Theme& theme)
         const Step steps[] = {
             {"09:00", "Standup", "What shipped yesterday, what blocks today."},
             {"11:30", "Design review", "Walk through the theme page."},
-            {"15:00", "Implementation", "Land the Android colour attributes."},
+            {"15:00", "Implementation", "Land the colour role attributes."},
             {"18:00", "Wrap up", "Summarise and queue the next batch."},
         };
         for (const Step& step : steps) {
@@ -2413,11 +2414,11 @@ QWidget* overlaysPage(const Theme& theme)
 
     // Language -----------------------------------------------------------
     auto* language = new md::Language;
-    language->setCurrentLanguage(QStringLiteral("zh-Hans"));
-    auto* languageNote = new md::Text(QStringLiteral("zh-Hans"));
+    language->setCurrentLanguage(QStringLiteral("zh_CN"));
+    auto* languageNote = new md::Text(QStringLiteral("zh_CN"));
     languageNote->setRole(md::Text::TextRole::Caption);
-    QObject::connect(language, &md::Language::languageChanged, languageNote,
-                     [languageNote](const QString& code, const QLocale&) {
+    QObject::connect(language, &md::Language::localeChanged, languageNote,
+                     [languageNote](const QString& code) {
                          languageNote->setText(code);
                      });
 
@@ -2431,8 +2432,8 @@ QWidget* overlaysPage(const Theme& theme)
         layout->addStretch(1);
     }
     page->addCard(QStringLiteral("Language"),
-                  QStringLiteral("Ten common languages; picking one updates the code and "
-                                 "hands it to the host installer, which owns the .qm files."),
+                  QStringLiteral("Ten common languages; clicking the chip opens a modal "
+                                 "selector, and picking one installs its Qt .qm translation."),
                   languageRow);
 
     // Menu rows ----------------------------------------------------------
@@ -2911,7 +2912,7 @@ QWidget* navigationPage(const Theme& theme)
     drawerButton->move(16, 16);
 
     auto* drawer = new md::Drawer(page);
-    drawer->setHeader(QStringLiteral("Periodicity"), QStringLiteral("Material 3 components"));
+    drawer->setHeader(QStringLiteral("Periodicity"), QStringLiteral("Design baseline components"));
     drawer->addSection(QStringLiteral("Browse"));
     drawer->addItem(QStringLiteral("Inbox"));
     drawer->addItem(QStringLiteral("Starred"));
@@ -3783,6 +3784,27 @@ QWidget* additionsPage(const Theme& theme)
     return page;
 }
 
+// A short name for the runtime's current frame phase, used by the Scheduler
+// card's live read-out.
+QString framePhaseName(md::schedule::Phase phase)
+{
+    switch (phase) {
+    case md::schedule::Phase::Idle:
+        return QStringLiteral("Idle");
+    case md::schedule::Phase::PreFrame:
+        return QStringLiteral("PreFrame");
+    case md::schedule::Phase::Build:
+        return QStringLiteral("Build");
+    case md::schedule::Phase::Layout:
+        return QStringLiteral("Layout");
+    case md::schedule::Phase::Paint:
+        return QStringLiteral("Paint");
+    case md::schedule::Phase::PostFrame:
+        return QStringLiteral("PostFrame");
+    }
+    return QStringLiteral("?");
+}
+
 // The charts page: one card for the Canvas, one for the coordinate transform,
 // one per chart, then the Clock, Schedule and Scheduler. Every sample is a
 // table literal, so the page paints the same image on every run; the Canvas
@@ -4186,6 +4208,47 @@ QWidget* chartsPage(const Theme& theme)
         QStringLiteral("queue: idle — no pending tasks"));
     queueNote->setRole(md::Text::TextRole::Caption);
     queueNote->setWordWrap(true);
+
+    // The runtime read-out is driven by a frame callback, not a timer: it
+    // observes the phases the UI thread actually ran. It re-arms itself only
+    // while its Text exists and throttles repainting to four updates a second,
+    // so the read-out does not become the frame source it is observing.
+    auto* runtimeNote = new md::Text(QStringLiteral("runtime: not installed"));
+    runtimeNote->setRole(md::Text::TextRole::Caption);
+    runtimeNote->setWordWrap(true);
+    if (auto* ui = md::schedule::UiThread::instance()) {
+        auto refreshRuntime = std::make_shared<std::function<void()>>();
+        auto lastRefresh = std::make_shared<QElapsedTimer>();
+        *refreshRuntime = [ui, refreshRuntime, lastRefresh,
+                           noteGuard = QPointer<md::Text>(runtimeNote)] {
+            if (!noteGuard)
+                return;
+
+            if (!lastRefresh->isValid() || lastRefresh->hasExpired(250)) {
+                lastRefresh->restart();
+
+                const md::schedule::UiThread::FrameStats frames = ui->stats();
+                const md::schedule::EventThread* events =
+                    md::schedule::EventThread::instance();
+                const std::size_t depth = events != nullptr ? events->depth() : 0;
+
+                noteGuard->setText(
+                    QStringLiteral("frame %1 · %2 dropped · paint %3 µs mean / %4 µs max "
+                                   "· phase %5 · event queue %6")
+                        .arg(frames.frames)
+                        .arg(frames.droppedFrames)
+                        .arg(frames.meanPaintUs, 0, 'f', 1)
+                        .arg(frames.maxPaintUs, 0, 'f', 1)
+                        .arg(framePhaseName(frames.phase))
+                        .arg(static_cast<qulonglong>(depth)));
+            }
+
+            // One-shot callbacks are the boundary, so put this observer back
+            // for the next frame while its widget is alive.
+            ui->addFrameCallback(*refreshRuntime);
+        };
+        ui->addFrameCallback(*refreshRuntime);
+    }
     QObject::connect(postTasks, &md::Button::clicked, page,
                      [queue, scheduler, queueNote] {
                          const md::schedule::Priority priorities[] = {
@@ -4216,10 +4279,12 @@ QWidget* chartsPage(const Theme& theme)
     schedulerLayout->addWidget(row({postTasks}));
     schedulerLayout->addWidget(scheduler, 0, Qt::AlignLeft);
     schedulerLayout->addWidget(queueNote);
+    schedulerLayout->addWidget(runtimeNote);
     page->addCard(QStringLiteral("Scheduler"),
                   QStringLiteral("A panel over a dedicated queue owned by this page, not "
                                  "TaskQueue::main(); Post 5 tasks posts one coalesced task per "
-                                 "priority and the lanes show the pending share."),
+                                 "priority and the lanes show the pending share. The runtime line "
+                                 "is a frame-callback read-out of UiThread and EventThread."),
                   schedulerColumn);
 
     page->addStretch();
@@ -4416,7 +4481,7 @@ private:
 
         pages_ = {
             {QStringLiteral("Theme"),
-             QStringLiteral("Android colour attributes"),
+             QStringLiteral("Colour role attributes"),
              &themePage},
             {QStringLiteral("Foundations"),
              QStringLiteral("Shape, elevation, surfaces, motion"),
@@ -4498,7 +4563,7 @@ private:
             stack_->addWidget(entry.build(theme));
 
         // The component index is a NavigationView inside a modal Drawer, the
-        // Android drawer shape: sections are pages, rows are cards.
+        // design-baseline drawer shape: sections are pages, rows are cards.
         auto* navigation = new md::NavigationView;
         navigation->setHeaderVisible(false);
         navigation->setFixedWidth(320);
@@ -4606,6 +4671,15 @@ private:
 int main(int argc, char* argv[])
 {
     QApplication app(argc, argv);
+
+    // The UI and event runtimes are process-wide; the guard unwinds them in
+    // reverse order before QApplication is destroyed.
+    md::schedule::UiThread::install();
+    md::schedule::EventThread::install();
+    [[maybe_unused]] const auto threadingGuard = qScopeGuard([] {
+        md::schedule::EventThread::uninstall();
+        md::schedule::UiThread::uninstall();
+    });
 
     const QStringList args = QApplication::arguments();
     const bool dark = args.contains(QStringLiteral("--dark"));

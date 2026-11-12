@@ -1,8 +1,9 @@
 // Periodicity — the colour scheme (framework.md §3.1, §5.2).
 //
-// A ColorScheme is the complete M3 role set: every colour a component may use
-// is named here, so a component never invents a tint. Roles come in contrast
-// pairs (`X` / `onX`); a component may place `onX` content only on `X`.
+// A ColorScheme is the complete role set of the reference design system: every
+// colour a component may use is named here, so a component never invents a
+// tint. Roles come in contrast pairs (`X` / `onX`); a component may place
+// `onX` content only on `X`.
 //
 // The type is an immutable value: copy it, compare it, snapshot it for golden
 // tests. Only the baseline light and dark schemes exist — dynamic colour is
@@ -48,7 +49,7 @@ public:
 
     // Surface: the base layer and its content colours. `surfaceVariant` is
     // retained for compatibility with the baseline role set even though newer
-    // Material guidance models it with the surface-container ramp.
+    // The design guidance models it with the surface-container ramp.
     QColor surface;
     QColor onSurface;
     QColor surfaceVariant;
@@ -96,7 +97,7 @@ public:
     // The tonal surface colour for an elevation level. This is a colour
     // operation on the neutral palette, not an alpha-blended overlay: level 3
     // and level 4 deliberately share `surfaceContainerHigh`, which is the
-    // baseline M3 mapping.
+    // baseline mapping.
     [[nodiscard]] QColor surfaceAtElevation(Elevation level) const;
 
     // The interaction overlay for `content` in `state`, as a translucent copy

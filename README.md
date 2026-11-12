@@ -3,8 +3,8 @@
 English | [简体中文](README.zh-CN.md)
 
 Periodicity is a cross-platform C++ library of user-interface components for desktop
-applications, modelled on Material Design 3 and built on Qt Widgets. It paints every visual
-itself through `QPainter`; it does not restyle widgets with Qt Style Sheets, and it does not
+applications, built on Qt Widgets and following a declarative design baseline. It paints
+every visual itself through `QPainter`; it does not restyle widgets with Qt Style Sheets, and it does not
 fall back on the platform theme engine. The only things it takes from the host system are
 the fonts and the native window frame, so a layout that looks right on Windows looks right
 on macOS and Linux as well. Development happens at
@@ -33,7 +33,7 @@ permitted dependencies. Read it before changing a module boundary.
 | `ripple/` | L3 — pointer-origin hover and press feedback | `periodicity::ripple` |
 | `view/` | L4 — measure/arrange/paint kernel and state machine | `periodicity::view` |
 | `layout/` | L5 — containers, spacing, window size classes | `periodicity::layout` |
-| `components/` | L6 — public Material widgets | `periodicity::components` |
+| `components/` | L6 — public components | `periodicity::components` |
 | `demo/` | documentation application (Element-Plus-style showcase) | `periodicity_demo` |
 | `apps/ipc_echo/` | child process used by the Pool page and the IPC tests | `periodicity_ipc_echo` |
 | `tests/` | Qt Test suites, one directory per module | — |
@@ -190,9 +190,9 @@ with the default platform; `tools/visual_regression.py` does the same.
 Periodicity is still under construction. The chain from `core` to `components` now builds,
 tests and renders: basic widgets, inputs and pickers, dates/cascade/mention, layout
 containers, tool bars/badges/states, and the display widgets all have real implementations
-and tests. The token values recorded in `framework.md` §3 were verified against Google's
-reference token sources. Dynamic colour and Material 3 Expressive remain deliberately
-postponed; installation and export (`find_package(Periodicity)`) are not implemented yet,
+and tests. The token values recorded in `framework.md` §3 were verified against the upstream
+reference token sources. Dynamic colour and the expressive extensions of the design baseline
+remain deliberately postponed; installation and export (`find_package(Periodicity)`) are not implemented yet,
 so the library is currently consumed inside the source tree.
 
 Recent additions:

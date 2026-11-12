@@ -37,8 +37,8 @@ namespace md::structure {
 
 namespace detail {
 
-// Default alphabet: the 26 lower-case Latin letters, so "material" is a key
-// and "Material" is not.
+// Default alphabet: the 26 lower-case Latin letters, so "alpha" is a key
+// and "Alpha" is not.
 struct LowerCaseAlphabet
 {
     static constexpr std::size_t size = 26;

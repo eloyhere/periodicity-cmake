@@ -5,7 +5,7 @@
 // QAbstractButton auto-exclusive machinery, because the framework has no
 // QButtonGroup: setGroupId() names a group and checking one radio unchecks
 // every sibling discovered through parentWidget()->children() that shares the
-// group id. A radio is never unchecked by its own click, matching M3.
+// group id. A radio is never unchecked by its own click, matching the design baseline.
 
 #pragma once
 

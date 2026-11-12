@@ -10,7 +10,7 @@
 //
 // The attached form is the one a list row wants: BadgeView::setTarget() and no
 // layout arithmetic in the application. A count of zero hides the badge, which
-// is the Material rule for "nothing unread".
+// is the design baseline rule for "nothing unread".
 
 #pragma once
 

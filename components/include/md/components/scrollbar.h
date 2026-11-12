@@ -6,7 +6,7 @@
 // gallery's navigation drawer drives its menu column with it — so the
 // component never needs to know its viewport.
 //
-// Geometry follows Material 3: an 8 dp rounded track in
+// Geometry follows the design baseline: an 8 dp rounded track in
 // surfaceContainerHighest and a thumb whose colour is onSurfaceVariant at rest
 // and primary while hovered or dragged. The thumb widens on hover, which is
 // what makes the bar readable without a permanent fat rail. The track length
@@ -79,7 +79,7 @@ public:
     void setViewportExtent(int extent);
     [[nodiscard]] int viewportExtent() const noexcept { return viewportExtent_; }
 
-    // Material 3 metrics, in dp. The track and thumb are painted at these
+    // Design baseline metrics, in dp. The track and thumb are painted at these
     // sizes; the hovered thumb grows to `hoverThicknessDp`.
     void setThickness(qreal dp);
     [[nodiscard]] qreal thickness() const noexcept { return thicknessDp_; }

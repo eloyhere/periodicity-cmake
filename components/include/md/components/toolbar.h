@@ -1,9 +1,9 @@
 // Periodicity — ToolBar (framework.md §6.3, docs/backlog.md batch 7a).
 //
-// The Material 3 small top app bar: a navigation icon at the leading edge, a
+// The design baseline's small top app bar: a navigation icon at the leading edge, a
 // title next to it, and an action run. Unlike the collapsing AppBar this bar has
 // a fixed height; what changes with a scroll is its elevation, which is what
-// "scrolled under content" means in Material.
+// "scrolled under content" means in the design baseline.
 //
 // Children are ordinary View children, so a navigation icon and the actions are
 // measured and arranged by this container but paint, receive input and expose

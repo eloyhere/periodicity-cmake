@@ -1,9 +1,8 @@
 # 组件缺口分析（Component gap analysis）
 
-> 范围：`components/` 与 `layout/` 的公开组件，对照 Material Design 3，并补充产品设计与软件工程视角的缺口。
-> 方法：先盘点仓库现状（66 个公开头文件、16 个 Gallery 页面、50 个测试），再对照 [Material 3 组件目录](https://m3.material.io/components)、
-> [Compose Material3 API](https://developer.android.com/reference/kotlin/androidx/compose/material3/package-summary)、
-> [M3 Expressive](https://m3.material.io/blog/building-with-m3-expressive) 与 [WCAG 2.2 新增准则](https://www.w3.org/WAI/standards-guidelines/wcag/new-in-22/)。
+> 范围：`components/` 与 `layout/` 的公开组件，对照参考设计系统（下称“设计基线”），并补充产品设计与软件工程视角的缺口。
+> 方法：先盘点仓库现状（66 个公开头文件、16 个 Gallery 页面、50 个测试），再对照设计基线组件目录、
+> 组件 API、表达性扩展与 WCAG 2.2 新增准则。
 > 本文与 `docs/components.md`（已有目录）互补：那份回答"有什么"，这份回答"还缺什么、先做什么"。
 
 ---
@@ -13,7 +12,7 @@
 库的**广度已经很好**（表单、日期、虚拟表格、覆盖层分层、主题与 RTL 都有），但还缺三类东西：
 
 1. **基础控件的"最后一公里"**：`Switch`、`Divider`、`IconButton`、`Chip`、`FAB`、`BottomSheet`、`SearchBar`、`NavigationBar`。
-   这些不是"锦上添花"，而是任何真实产品界面都会用到、且 M3 规范明确列出的组件。
+   这些不是"锦上添花"，而是任何真实产品界面都会用到、且设计基线明确列出的组件。
 2. **应用壳与容器**：底部导航/导航栏、可调整分栏、可编辑数据网格、步骤条（Stepper）、上传区。
    有了它们，库才能从"组件集合"变成"能搭应用"。
 3. **工程能力**：**没有 install/export 规则**（外部工程无法 `find_package`）、**没有真正的无障碍实现**（只有 14 处 `setAccessibleName`，没有 `QAccessibleInterface`）、
@@ -51,21 +50,21 @@
 
 ---
 
-## 3. 对照 Material 3：组件缺口矩阵
+## 3. 对照设计基线：组件缺口矩阵
 
 图例：✅ 已有 · ◐ 部分具备 · ✗ 缺失。优先级：**P0** 产品必备 / **P1** 常见需求 / **P2** 锦上添花。
 
 ### 3.1 动作与选择
 
-| M3 组件 | 现状 | 缺口 | 优先级 |
+| 设计基线组件 | 现状 | 缺口 | 优先级 |
 | --- | --- | --- | --- |
 | Common buttons | ✅ `Button`（filled/tonal/elevated/outlined/text） | — | — |
 | Icon buttons | ✗ | 只有文字/图标+文字按钮，缺 24dp 图标按钮（standard/filled/tonal/outlined）与切换态 | **P0** |
 | FAB | ✗ | 缺浮动操作按钮（small/regular/large），含滚动隐藏与扩展态 | **P0** |
 | Extended FAB | ✗ | 图标 + 标签的扩展态 | P1 |
 | Segmented buttons | ✗ | 2–5 段单选/多选，带选中指示器 | P1 |
-| Split button | ✗ | 主操作 + 下拉（M3 Expressive） | P2 |
-| Button groups | ✗ | 成组按钮的连接/分离布局（M3 Expressive） | P2 |
+| Split button | ✗ | 主操作 + 下拉（表达性扩展） | P2 |
+| Button groups | ✗ | 成组按钮的连接/分离布局（表达性扩展） | P2 |
 | Switch | ✗ | **完全缺失**，只有 CheckBox/Radio；开关是设置页刚需 | **P0** |
 | Chips | ◐ `Tag` | 只有 filled/tonal/outlined + 可选/可关；缺 assist、filter（带勾选）、input（可输入）、suggestion 四种语义与尺寸 | **P0** |
 | Sliders | ◐ `SeekBar` | 单值滑块；缺双拇指区间滑块、刻度标签、离散吸附的可视化 | P1 |
@@ -74,7 +73,7 @@
 
 ### 3.2 容器与表面
 
-| M3 组件 | 现状 | 缺口 | 优先级 |
+| 设计基线组件 | 现状 | 缺口 | 优先级 |
 | --- | --- | --- | --- |
 | Bottom sheet（standard / modal） | ✗ | 拖拽把手、半展开/全展开、模态遮罩 | **P0** |
 | Side sheet | ✗ | 侧边面板（检查器、详情） | P1 |
@@ -91,7 +90,7 @@
 
 ### 3.3 输入与反馈
 
-| M3 组件 | 现状 | 缺口 | 优先级 |
+| 设计基线组件 | 现状 | 缺口 | 优先级 |
 | --- | --- | --- | --- |
 | Text fields | ✅ | 缺 multiline 自动增高、字符计数上限、前后缀插槽 | P1 |
 | Search（search bar / search view） | ✗ | 搜索框 + 展开式搜索视图 + 建议列表；`Complete` 只是自动补全 | **P0** |
@@ -102,9 +101,9 @@
 | Badge | ✅ | — | — |
 | Rating | ✅ | — | — |
 
-### 3.4 M3 Expressive（2025）新增
+### 3.4 表达性扩展（2025）新增
 
-M3 Expressive 在 2025 年补充了一批表达性组件与动效规范（button groups、split button、FAB menu、loading indicator、wavy progress、shape morph 等）。
+设计基线在 2025 年补充了一批表达性组件与动效规范（button groups、split button、FAB menu、loading indicator、wavy progress、shape morph 等）。
 这些**不建议现在做**：它们依赖新的动效与形状令牌，且产品收益低于 P0 缺口。等基础件补齐、令牌升级后再评估。
 
 ### 3.5 小结：组件层面的 P0 清单（8 项）
@@ -113,7 +112,7 @@ M3 Expressive 在 2025 年补充了一批表达性组件与动效规范（button
 2. `Divider` — 到处都用
 3. `IconButton` — 应用栏/工具栏/卡片操作
 4. `Chip`（四种语义）— 筛选、输入、建议
-5. `FAB` — M3 的主操作入口
+5. `FAB` — 设计基线的主操作入口
 6. `BottomSheet` — 移动端最常见的次级面板
 7. `SearchBar` / `SearchView` — 桌面与移动都需要
 8. `NavigationBar`（底部导航）— 移动端应用壳
@@ -226,7 +225,7 @@ SettingsList、CommandPalette、SplitPane；Doxygen + CHANGELOG；性能基准�
 
 ### 第三波（P2，按需）
 
-M3 Expressive 组件（button groups、split button、FAB menu、loading indicator、wavy progress）、图表/看板/日历排程、富文本、QR、签名、通知中心。
+表达性扩展组件（button groups、split button、FAB menu、loading indicator、wavy progress）、图表/看板/日历排程、富文本、QR、签名、通知中心。
 
 ### 不建议自研
 
@@ -248,15 +247,15 @@ M3 Expressive 组件（button groups、split button、FAB menu、loading indicat
 
 **工程（P1）**：性能基准 · API 文档站点 · CHANGELOG/SemVer · 伪本地化与 QLocale · Linux/macOS CI · 交互回放测试
 
-**工程（P2）**：clang-tidy 规则 · 覆盖率 · 高对比度主题 · 动态取色（Material You/HCT）
+**工程（P2）**：clang-tidy 规则 · 覆盖率 · 高对比度主题 · 动态取色（自适应配色/HCT）
 
 ---
 
 ## 8. 参考
 
-- Material Design 3 — Components：<https://m3.material.io/components>
-- Material 3 Expressive：<https://m3.material.io/blog/building-with-m3-expressive>
-- Compose Material3 API（组件面）：<https://developer.android.com/reference/kotlin/androidx/compose/material3/package-summary>
-- WCAG 2.2 新增准则：<https://www.w3.org/WAI/standards-guidelines/wcag/new-in-22/>
-- WCAG 2.2 规范：<https://www.w3.org/TR/WCAG22/>
+- 设计基线组件目录（上游文档）
+- 设计基线表达性扩展（上游文档）
+- 组件 API（上游文档）
+- WCAG 2.2 新增准则
+- WCAG 2.2 规范
 - 仓库内：`docs/components.md`（现有目录）、`docs/backlog.md`（批次计划）、`framework.md`（分层与约定）

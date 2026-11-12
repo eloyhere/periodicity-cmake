@@ -28,9 +28,10 @@ public:
     {
     }
 
-    // The named M3 shape tokens, with the baseline radii from ShapeTokens.kt.
-    // `extraExtraLarge` covers the largest surfaces and is not used by any
-    // baseline component, but it is part of the token set.
+    // The named shape tokens of the reference design system, with the baseline
+    // radii from the upstream token export. `extraExtraLarge` covers the
+    // largest surfaces and is not used by any baseline component, but it is
+    // part of the token set.
     [[nodiscard]] static constexpr Shape none() noexcept { return Shape(); }
 
     [[nodiscard]] static constexpr Shape extraSmall() noexcept
@@ -121,7 +122,7 @@ private:
 };
 
 // The named shapes a theme exposes. `full` is the pill, so the scale covers
-// Material's shape categories without leaking corner constants.
+// the design baseline's shape categories without leaking corner constants.
 class ShapeScale
 {
 public:

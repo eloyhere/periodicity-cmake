@@ -98,7 +98,7 @@ void ShapeDrawable::draw(QPainter& painter, const QRectF& bounds) const
             if (hasStroke) {
                 QPen pen(stroke_, strokeWidth());
                 // Round joins and caps keep a rounded outline from growing a
-                // miter spike at the corners, which is the M3 look for a
+                // miter spike at the corners, which is how the design baseline draws a
                 // stroked surface.
                 pen.setJoinStyle(Qt::RoundJoin);
                 pen.setCapStyle(Qt::RoundCap);

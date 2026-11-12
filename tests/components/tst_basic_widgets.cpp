@@ -1,4 +1,4 @@
-// Unit tests for the first batch of Material 3 components (framework.md §14).
+// Unit tests for the first batch of design-baseline components (framework.md §14).
 //
 // Every widget is exercised offscreen: the application theme is pinned to the
 // baseline light scheme, the widgets are measured from sizeHint(), rendered
@@ -187,7 +187,7 @@ void TestBasicWidgets::iconPaintsTintedSource()
 
 void TestBasicWidgets::textPaintsAndWraps()
 {
-    md::Text text(QStringLiteral("Material"));
+    md::Text text(QStringLiteral("Baseline"));
     text.setRole(md::Text::TextRole::Title);
     text.setAlignment(Qt::AlignCenter);
     text.resize(240, 48);

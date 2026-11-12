@@ -10,7 +10,12 @@
 #include <md/event/pointer_event.h>
 #include <md/event/wheel_event.h>
 
+#include <QVariant>
+
 #include <QPointF>
+#include <QCoreApplication>
+#include <QDebug>
+#include <QThread>
 
 #include <algorithm>
 #include <cstddef>
@@ -193,6 +198,20 @@ private:
 
 bool EventDispatcher::dispatch(Event& event, EventTarget& target)
 {
+    // EventThread hands its decoded input batch to the UI thread, where this
+    // dispatcher runs in the layout phase. A dispatch that arrives from another
+    // thread while that runtime is installed would touch widgets off the UI
+    // thread, so it is refused before the event or the target chain is touched.
+    // The marker is a Qt application property, which keeps this headless module
+    // from depending on schedule (or on any UI type).
+    if (QCoreApplication* app = QCoreApplication::instance();
+        app != nullptr && app->property("md.schedule.eventThreadInstalled").toBool()
+        && QThread::currentThread() != app->thread()) {
+        qWarning("EventDispatcher::dispatch refused on a non-UI thread while EventThread is "
+                 "installed");
+        return false;
+    }
+
     // Re-entry is allowed, but bounded: after the cap the extra pass is
     // refused without touching the event, which lets the stack unwind.
     if (t_activeDispatches.size() >= kMaxDispatchNesting) {

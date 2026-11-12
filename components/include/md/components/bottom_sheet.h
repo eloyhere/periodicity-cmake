@@ -1,4 +1,4 @@
-// Periodicity — BottomSheet, the Material 3 bottom sheet.
+// Periodicity — BottomSheet, the design baseline bottom sheet.
 //
 // A BottomSheet is an in-window overlay, exactly like Drawer and Dialog: it
 // creates no platform window. A modal sheet reparents itself to the host
@@ -10,8 +10,8 @@
 // rung, so it stacks above ordinary page widgets while a dialog opened later
 // restacks above it.
 //
-// The surface is bottom-anchored and has 28 dp top corners, the Material 3
-// large shape. It carries a 32x4 dp drag handle with 22 dp of top padding, an
+// The surface is bottom-anchored and has 28 dp top corners, the large shape of the
+// design baseline. It carries a 32x4 dp drag handle with 22 dp of top padding, an
 // optional titleLarge title inset 24 dp from the sides, and a content viewport
 // below it. The surface never grows taller than 90% of the host, so a tall body
 // scrolls inside the viewport instead of covering the whole window.
@@ -22,7 +22,7 @@
 // is shown; close() is synchronous for a non-modal sheet and starts a slide-out
 // for a modal one, which emits closed() when the slide ends.
 //
-// Dismissal follows the two Material paths and the accessibility contract: a
+// Dismissal follows the two paths in the design baseline and the accessibility contract: a
 // modal sheet closes on Escape and on a backdrop press while
 // dismissesOnBackdrop() is true, and dragging the handle down past a quarter of
 // the sheet height closes it. Escape is the keyboard equivalent of that drag

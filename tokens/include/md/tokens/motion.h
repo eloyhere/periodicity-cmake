@@ -15,7 +15,7 @@
 namespace md {
 
 // A cubic Bézier easing curve, with the two control points expressed as in
-// CSS and Material: (0,0) and (1,1) are implicit endpoints.
+// CSS: (0,0) and (1,1) are implicit endpoints.
 struct CubicBezier
 {
     qreal x1 = 0.0;
@@ -53,6 +53,7 @@ enum class Duration {
     // is exactly 250 ms apart.
     Extended1,
     Extended2,
+    Extended3,
 };
 
 enum class Easing {
@@ -81,6 +82,7 @@ enum class MotionLevel : quint8 {
     Level3, // 750 ms
     Level4, // 1000 ms
     Level5, // 1250 ms
+    Level6, // 1500 ms
 };
 
 // Duration of `duration` in milliseconds.
@@ -125,6 +127,8 @@ enum class MotionLevel : quint8 {
         return Ms(750);
     case Duration::Extended2:
         return Ms(1250);
+    case Duration::Extended3:
+        return Ms(1500);
     }
     return Ms(0);
 }
@@ -238,6 +242,8 @@ struct MotionScheme
             return spec(Duration::ExtraLong4);
         case MotionLevel::Level5:
             return spec(Duration::Extended2);
+        case MotionLevel::Level6:
+            return spec(Duration::Extended3);
         }
         return spec(Duration::Medium2);
     }

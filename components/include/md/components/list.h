@@ -51,11 +51,11 @@ public:
     void setItemDelegate(QStyledItemDelegate* delegate);
     [[nodiscard]] QStyledItemDelegate* itemDelegate() const;
 
-    // The uniform row height, in dp. The M3 one-line list item is 56 dp.
+    // The uniform row height, in dp. The design baseline one-line list item is 56 dp.
     void setRowHeight(qreal dp);
     [[nodiscard]] qreal rowHeight() const noexcept;
 
-    // The M3 row metrics: a one-, two- or three-line list item is 56, 72 or
+    // The design baseline row metrics: a one-, two- or three-line list item is 56, 72 or
     // 88 dp tall. setRowLines() is a token-named shorthand for setRowHeight();
     // an explicit setRowHeight() stays authoritative and may be called at any
     // time.

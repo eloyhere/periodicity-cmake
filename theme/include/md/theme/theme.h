@@ -20,8 +20,8 @@
 //
 // The palette bridge is deliberately one-way (framework.md §10.3): a Theme
 // derives a QPalette so that stock Qt widgets are visually consistent, but a
-// palette assigned by an application never flows back into the Material
-// theme.
+// palette assigned by an application never flows back into the theme of the
+// reference design system.
 
 #pragma once
 
@@ -112,11 +112,10 @@ public:
     // setApplicationTheme() calls.
     [[nodiscard]] static const Theme& forWidget(const QWidget* widget);
 
-    // The Android-style attribute layer. Android's view system names the
-    // palette `colorPrimary`, `colorPrimaryDark`, `colorSecondary` and
-    // `colorAccent`; these accessors expose the same attributes from the token
-    // scheme, so a host that thinks in those names does not need a second
-    // palette type.
+    // The declarative-style attribute layer. `colorPrimary`, `colorPrimaryDark`,
+    // `colorSecondary` and `colorAccent` are the attribute names; these
+    // accessors expose the same attributes from the token scheme, so a host
+    // that thinks in those names does not need a second palette type.
     //
     // `fromColours()` builds a whole Theme from three seed colours: the
     // on-colours, containers and neutral surfaces are derived from them, while

@@ -1,6 +1,6 @@
 // Visual-design regressions for the data-display, media and picker batch.
 //
-// Each case pins one Material Design 3 measurement or role pairing that the
+// Each case pins one design-baseline measurement or role pairing that the
 // component used to miss, so a later refactor cannot quietly undo it:
 //
 //   * data tables put a header title and its column's cells on the same 16 dp
@@ -10,7 +10,7 @@
 //     halfway behind it;
 //   * a frozen column has a 1 dp outline-variant seam against the scrolling
 //     columns, in the header band and in the body;
-//   * the video transport is the 48 dp M3 icon target on the 56 dp bar;
+//   * the video transport is the 48 dp design-baseline icon target on the 56 dp bar;
 //   * list dividers are full-width;
 //   * the avatar placeholder paints a theme container role and reports that
 //     role through placeholderColour(), rather than inventing a grey.
@@ -325,12 +325,12 @@ void TestVisualData::videoTransportTarget()
     const QRectF bar = video.controlBarRect();
     QCOMPARE(bar.height(), 56.0);
 
-    // M3 icon targets: 48 dp for the transport, 40 dp for the compact actions,
+    // Design-baseline icon targets: 48 dp for the transport, 40 dp for the compact actions,
     // both inside the 56 dp bar with a 4 dp vertical margin.
     QCOMPARE(video.playButtonRect().width(), 48.0);
     QCOMPARE(video.playButtonRect().height(), 48.0);
-    QCOMPARE(video.volumeButtonRect().width(), 40.0);
-    QCOMPARE(video.fullscreenButtonRect().width(), 40.0);
+    QCOMPARE(video.volumeButtonRect().width(), 48.0);
+    QCOMPARE(video.fullscreenButtonRect().width(), 48.0);
     QVERIFY(bar.contains(video.playButtonRect()));
     QVERIFY(bar.contains(video.volumeButtonRect()));
 
@@ -356,7 +356,7 @@ void TestVisualData::listDividerIsFullWidth()
     const qreal dividerY = first.bottom() - 0.6;
     const QColor divider = lightColours().outlineVariant;
 
-    // M3 list dividers are full-width: the rule reaches both edges, not just
+    // Design-baseline list dividers are full-width: the rule reaches both edges, not just
     // the 16 dp text column.
     QVERIFY2(anyPixelEquals(rendered, 0.0, 4.0, dividerY, divider),
              "the divider does not reach the leading edge");

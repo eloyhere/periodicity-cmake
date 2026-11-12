@@ -22,7 +22,7 @@ constexpr qreal kPaddingHorizontalDp = 8.0;
 constexpr qreal kPaddingVerticalDp = 4.0;
 constexpr qreal kAnchorGapDp = 8.0;
 constexpr qreal kCornerDp = 4.0;
-// M3 plain tooltip: max container width 200 dp.
+// Design baseline plain tooltip: max container width 200 dp.
 constexpr qreal kMaxWidthDp = 200.0;
 
 } // namespace
@@ -356,7 +356,7 @@ void Tooltip::paintContent(QPainter& painter, const QRectF& content)
 
     const qreal radius = density.dp(kCornerDp);
     painter.setPen(Qt::NoPen);
-    // M3 plain tooltip: inverse surface, 4 dp corner radius, and no elevation
+    // Design baseline plain tooltip: inverse surface, 4 dp corner radius, and no elevation
     // shadow — the tooltip is separated from the page by its inverted tone, not
     // by a drop shadow, so the widget stays a transparent overlay.
     painter.setBrush(colours.inverseSurface);

@@ -5,9 +5,9 @@
 // onPrimary. The 48 dp widget rectangle is the touch target, so a click
 // anywhere inside it toggles the state.
 //
-// M3 selects interaction feedback for a selection control with a 40 dp state
-// layer circle centred on the glyph, not with an overlay over the whole target.
-// The shared View overlay would fill the entire 48 dp rectangle, so it is
+// The design baseline selects interaction feedback for a selection control with a
+// 40 dp state-layer circle centred on the glyph, not with an overlay over the whole
+// target. The shared View overlay would fill the entire 48 dp rectangle, so it is
 // switched off here and the circle is painted below the box instead. The pill
 // shape keeps the keyboard focus ring on the same circular geometry.
 
@@ -32,7 +32,7 @@ namespace {
 constexpr qreal kBoxSizeDp = 18.0;
 constexpr qreal kBorderDp = 2.0;
 constexpr qreal kTouchSizeDp = 48.0;
-// M3 measurement: the checkbox interaction layer is a 40 dp circle, smaller
+// Design baseline measurement: the checkbox interaction layer is a 40 dp circle, smaller
 // than the 48 dp target.
 constexpr qreal kStateLayerDp = 40.0;
 
@@ -43,7 +43,7 @@ QColor withAlpha(const QColor& colour, qreal alpha)
     return result;
 }
 
-// The M3 interaction overlay: onSurface at the state-layer opacity for the
+// The design baseline interaction overlay: onSurface at the state-layer opacity for the
 // strongest active interaction bit. A disabled control has no layer.
 QColor stateLayerFor(const ColorScheme& colours, ViewStates state, bool enabled)
 {
@@ -72,12 +72,12 @@ CheckBox::CheckBox(QWidget* parent)
     setFocusPolicy(Qt::StrongFocus);
     setBackgroundColour(QColor(Qt::transparent));
     // The state layer and the focus indicator of a selection control are round
-    // (M3), so the shared shape is the pill rather than the default 8 dp
+    // (design baseline), so the shared shape is the pill rather than the default 8 dp
     // rounded rectangle.
     setShape(Theme::forWidget(this).shapes().full);
     // The framework overlay would cover the entire 48 dp target; the 40 dp
     // circle is painted in paintContent() instead. Selection controls have no
-    // ripple in M3, so nothing else is lost.
+    // ripple in the design baseline, so nothing else is lost.
     setInteractionFeedbackEnabled(false);
 }
 
@@ -190,7 +190,7 @@ void CheckBox::paintContent(QPainter& painter, const QRectF& content)
         painter.setBrush(fill);
         painter.drawPath(boxPath);
 
-        // M3 draws the disabled check as the surface role showing through the
+        // Design baseline draws the disabled check as the surface role showing through the
         // 12 % onSurface container; a 38 % onSurface mark would all but vanish.
         const QColor mark = enabled ? colours.onPrimary : colours.surface;
         painter.setPen(QPen(mark, border, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
@@ -208,7 +208,7 @@ void CheckBox::paintContent(QPainter& painter, const QRectF& content)
         }
     } else {
         // The disabled contour is onSurfaceVariant at 38 %, not onSurface: the
-        // M3 unselected outline role is the variant.
+        // Design baseline unselected outline role is the variant.
         const QColor contour = enabled
             ? colours.onSurfaceVariant
             : withAlpha(colours.onSurfaceVariant, kDisabledContentOpacity);

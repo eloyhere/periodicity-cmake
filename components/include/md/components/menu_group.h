@@ -1,7 +1,7 @@
 // Periodicity — MenuGroup, a titled group of menu rows with one selection.
 //
 // A MenuGroup is what turns a pile of MenuItems into a navigation section: an
-// optional 40 dp title (a Material section label), then the rows at 2 dp
+// optional 40 dp title (a design baseline section label), then the rows at 2 dp
 // spacing, one selected row at most, and a keyboard cursor that walks the
 // visible rows. The group is a ViewGroup: the rows are real children, so focus,
 // hover and hit testing are Qt's, and the group only owns the arrangement and
@@ -17,7 +17,7 @@
 // Selection is single by construction. The built-in model is private to the
 // group; setSelectionModel() attaches an external MenuSelectionModel so several
 // views can share one index. Activating an expandable row never selects it: it
-// opens, which is the Material navigation behaviour.
+// opens, which is the design baseline navigation behaviour.
 
 #pragma once
 

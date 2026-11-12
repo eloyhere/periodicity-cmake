@@ -12,6 +12,18 @@
 // the registry restacks the registered widgets in ascending level order so the
 // ordering is stable regardless of which widget was shown last.
 //
+// A Modal may also present a card: a child widget placed above the scrim. The
+// card is animated by ContainerTransform (fade, scale, rise) and the scrim
+// fades with it. Because the card is an ordinary child and the animation is a
+// single graphics effect on it, nothing is painted over the card's children
+// and no sibling is raised above them. This is the modal half of the design baseline's
+// container transform: the content lives inside the surface that moves.
+//
+// Entry uses Level2 (500 ms) with EmphasizedDecelerate for the card and Level1
+// (250 ms) with Standard for the scrim; dismissal uses Level1 with
+// EmphasizedAccelerate. Reduced motion snaps in one turn and never starts an
+// animator.
+//
 // Levels are values, not enums only, so a host can place its own surface
 // between two of ours without editing the library.
 
@@ -20,16 +32,24 @@
 #include <md/view/view.h>
 
 #include <QHash>
+#include <QPointer>
 #include <QRectF>
 #include <QString>
 
 class QEvent;
+class QHideEvent;
 class QKeyEvent;
 class QMouseEvent;
 class QPainter;
 class QWidget;
 
 namespace md {
+
+namespace animation {
+class Animator;
+}
+
+class ContainerTransform;
 
 class Modal final : public View
 {
@@ -55,7 +75,7 @@ public:
     [[nodiscard]] int levelValue() const;
 
     // 0 is transparent, 1 is the theme's scrim colour at full strength. The
-    // default is 0.32, the Material modal scrim.
+    // default is 0.32, the baseline modal scrim.
     void setDim(qreal dim);
     [[nodiscard]] qreal dim() const noexcept;
 
@@ -66,6 +86,42 @@ public:
     [[nodiscard]] bool dismissesOnClick() const noexcept;
     void setDismissOnEscape(bool dismiss);
     [[nodiscard]] bool dismissesOnEscape() const noexcept;
+
+    // Card content -------------------------------------------------------
+    // The surface shown above the scrim. The modal reparents the card and takes
+    // ownership of it; replacing it deletes the previous card. A null card
+    // leaves the modal as a bare scrim, which is what the layer tests use.
+    void setCard(QWidget* card);
+    [[nodiscard]] QWidget* card() const noexcept;
+
+    // The card's final rectangle in modal coordinates. An empty rect (the
+    // default) places the card against the anchor when one is set, or centres
+    // it otherwise. Setting a rectangle disables automatic placement.
+    void setCardRect(const QRectF& rect);
+    [[nodiscard]] QRectF cardRect() const;
+
+    // The chip a selector grows from. The card is placed adjacent to it
+    // (preferring below, flipping above when there is no room) and the scrim
+    // still covers the window, so the chip stays visible behind it.
+    void setAnchor(QWidget* anchor);
+    void setAnchorRect(const QRectF& globalRect);
+    [[nodiscard]] QWidget* anchor() const noexcept;
+
+    // Where focus goes when the modal closes. The default is the widget that
+    // had focus when open() was called, which is the chip for a chip → modal
+    // interaction.
+    void setFocusReturn(QWidget* widget);
+    [[nodiscard]] QWidget* focusReturn() const noexcept;
+
+    // Motion -------------------------------------------------------------
+    // When false every open()/close() applies its end state synchronously.
+    void setAnimated(bool animated);
+    [[nodiscard]] bool isAnimated() const noexcept;
+    [[nodiscard]] bool isAnimating() const noexcept;
+
+    // The scrim's current strength in 0..1, after the fade. Exposed so a host
+    // can paint a matching scrim, and so tests can observe the fade.
+    [[nodiscard]] qreal scrimOpacity() const noexcept;
 
     void open();
     void close();
@@ -90,18 +146,45 @@ signals:
     void clicked();
     void opened();
     void closed();
+    // The entrance reached its end state; the exit finished and the modal is
+    // hidden. With reduced motion (or setAnimated(false)) both are emitted
+    // synchronously from open()/close().
+    void openFinished();
+    void closeFinished();
 
 protected:
     void measureOverride(MeasureSpec width, MeasureSpec height) override;
     void paintContent(QPainter& painter, const QRectF& content) override;
     void mousePressEvent(QMouseEvent* event) override;
     void keyPressEvent(QKeyEvent* event) override;
+    void hideEvent(QHideEvent* event) override;
     bool eventFilter(QObject* watched, QEvent* event) override;
 
 private:
+    enum class Phase
+    {
+        Idle,
+        Opening,
+        Open,
+        Closing,
+    };
+
     void applyWindowGeometry();
+    void positionCard();
+    [[nodiscard]] QRectF effectiveAnchorRect() const;
     void installFilters();
     void removeFilters();
+
+    void startEntrance();
+    void startExit();
+    void animateScrim(bool visible, bool animate);
+    void maybeFinishOpen();
+    void maybeFinishClose();
+    void finishClose();
+    void abort();
+    void restoreFocus();
+    [[nodiscard]] QList<QWidget*> focusableWidgets() const;
+    bool trapFocus(QKeyEvent* event);
 
     QWidget* host_ = nullptr;
     int level_ = static_cast<int>(Level::Dialog);
@@ -110,6 +193,25 @@ private:
     bool dismissOnClick_ = true;
     bool dismissOnEscape_ = true;
     bool open_ = false;
+    bool closeEmitted_ = false;
+
+    QPointer<QWidget> card_;
+    QPointer<QWidget> anchor_;
+    QPointer<QWidget> focusReturn_;
+    QPointer<QWidget> previousFocus_;
+    QRectF anchorRect_;
+    bool hasAnchorRect_ = false;
+    QRectF explicitCardRect_;
+    bool hasExplicitCardRect_ = false;
+
+    ContainerTransform* cardTransform_ = nullptr;
+    animation::Animator* scrimAnimator_ = nullptr;
+
+    Phase phase_ = Phase::Idle;
+    bool animated_ = true;
+    bool scrimDone_ = true;
+    bool cardDone_ = true;
+    qreal scrimOpacity_ = 1.0;
 };
 
 } // namespace md

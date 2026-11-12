@@ -1,11 +1,11 @@
 // Visual-design tests for the input/action family (framework.md §14).
 //
-// These tests pin the Material 3 geometry and colour roles that the components
+// These tests pin the design-baseline geometry and colour roles that the components
 // must paint, independently of the interaction tests in the sibling files:
 //   * the button's 40 dp visual surface inside the 48 dp touch target, its
 //     20 dp icon slot and the 8 dp icon/label gap;
 //   * the chip's 32 dp height, 8 dp corner radius and 16/8 dp padding;
-//   * the 40 dp interaction circle of a selection control (M3 measures it
+//   * the 40 dp interaction circle of a selection control (the design baseline measures it
 //     smaller than the 48 dp target, so it must not wash the whole widget);
 //   * the filled text field's onSurfaceVariant resting indicator and its
 //     4 dp + bodySmall supporting band;
@@ -102,7 +102,7 @@ void TestVisualInputs::buttonVisualSurface()
     md::Button button(QStringLiteral("Continue"));
     button.resize(button.sizeHint());
 
-    // 48 dp touch target, 40 dp painted container (M3 button height).
+    // 48 dp touch target, 40 dp painted container (design-baseline button height).
     QCOMPARE(button.sizeHint().height(), 48);
 
     const QImage image = renderWidget(button);
@@ -123,7 +123,7 @@ void TestVisualInputs::buttonIconSlot()
     md::Button withIcon(QStringLiteral("Continue"));
     withIcon.setIcon(solidIcon());
 
-    // M3: a 20 dp leading icon and an 8 dp gap. The icon side padding is the
+    // Design baseline: a 20 dp leading icon and an 8 dp gap. The icon side padding is the
     // same 16 dp as the label side, so the whole difference is icon + gap.
     QCOMPARE(withIcon.iconSize(), 20.0);
     QCOMPARE(withIcon.sizeHint().width() - textOnly.sizeHint().width(), 28);
@@ -142,7 +142,7 @@ void TestVisualInputs::chipGeometry()
     md::Tag chip(QStringLiteral("Filter"));
     chip.resize(chip.sizeHint());
 
-    // M3 chip container: 32 dp high with an 8 dp corner radius.
+    // Design-baseline chip container: 32 dp high with an 8 dp corner radius.
     QCOMPARE(chip.sizeHint().height(), 32);
 
     const QImage image = renderWidget(chip);
@@ -204,7 +204,7 @@ void TestVisualInputs::textFieldIndicatorRole()
 
     const QImage image = renderWidget(input);
 
-    // The resting 1 dp active indicator is onSurfaceVariant (M3 filled text
+    // The resting 1 dp active indicator is onSurfaceVariant (the design-baseline filled text
     // field), not the outline role it used to be. field.bottom() is 56, so the
     // 1 dp line centred on 55.5 covers row 55 completely.
     QVERIFY(colours().onSurfaceVariant.rgb() != colours().outline.rgb());
@@ -219,7 +219,7 @@ void TestVisualInputs::textFieldSupportingBand()
 
     input.measure(md::MeasureSpec::unspecified(), md::MeasureSpec::unspecified());
 
-    // 56 dp field + 4 dp top padding + a 16 dp bodySmall line (M3).
+    // 56 dp field + 4 dp top padding + a 16 dp bodySmall line (design baseline).
     QCOMPARE(input.measuredSize().height(), 76.0);
 
     input.setErrorText(QStringLiteral("Required"));

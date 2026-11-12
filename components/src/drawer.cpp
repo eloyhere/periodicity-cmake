@@ -1,4 +1,4 @@
-// Periodicity — Drawer, the Material 3 navigation drawer.
+// Periodicity — Drawer, the design baseline navigation drawer.
 //
 // The widget owns three visuals that the base pipeline cannot know about: the
 // scrim, the panel with its asymmetric trailing edge, and the painted rows. All
@@ -44,13 +44,13 @@ namespace {
 
 constexpr qreal kDefaultWidthDp = 360.0;
 constexpr qreal kPanelCornerDp = 16.0;
-// M3 navigation drawer: the headline block is inset 16 dp horizontally and has
+// Design baseline navigation drawer: the headline block is inset 16 dp horizontally and has
 // 24 dp of padding above and below it, with a 4 dp gap between headline and
 // supporting line.
 constexpr qreal kHeaderSidePaddingDp = 16.0;
 constexpr qreal kHeaderTopPaddingDp = 24.0;
 constexpr qreal kHeaderGapDp = 4.0;
-// M3 drawer item height and active-indicator height are both 56 dp; the pill is
+// Design baseline drawer item height and active-indicator height are both 56 dp; the pill is
 // 336 dp wide inside a 360 dp panel, i.e. 12 dp in from each side, and its
 // content is inset a further 16 dp.
 constexpr qreal kItemHeightDp = 56.0;
@@ -846,7 +846,7 @@ void Drawer::paintContent(QPainter& painter, const QRectF& content)
         }
     }
 
-    // M3 modal drawer: surface container low at elevation level 1, with no
+    // Design baseline modal drawer: surface container low at elevation level 1, with no
     // outline — the shadow and the scrim already separate it from the page. A
     // full 1 dp outline also drew a border along the three window edges the
     // panel is attached to, which read as a double edge next to the host.
@@ -883,7 +883,7 @@ void Drawer::paintContent(QPainter& painter, const QRectF& content)
         const qreal padding = density.dp(kHeaderSidePaddingDp);
         const qreal width = std::max(qreal(0.0), header.width() - padding * 2.0);
 
-        // M3 nav drawer headline: the small headline role, top-aligned inside a
+        // Design baseline nav drawer headline: the small headline role, top-aligned inside a
         // 24 dp block, with the supporting line 4 dp under it.
         const QFont titleFont = fontFor(theme.type().titleSmall, density, this);
         const QFont subtitleFont = fontFor(theme.type().bodySmall, density, this);

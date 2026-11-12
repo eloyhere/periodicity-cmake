@@ -8,7 +8,7 @@
 //
 // The component itself owns no interaction: it is not focusable, paints no
 // container and contributes only its requested size to measurement. RTL
-// mirroring is opt-in per icon, because most Material Symbols are
+// mirroring is opt-in per icon, because most icons in the icon set are
 // direction-agnostic while arrows and chevrons are not (framework.md §7.6).
 
 #pragma once

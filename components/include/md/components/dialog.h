@@ -86,7 +86,7 @@ signals:
 
 protected:
     // Appends an action button and returns its index. The last action is the
-    // right-most (the primary action in a Material dialog).
+    // right-most (the primary action in a design baseline dialog).
     int addActionButton(const QString& text, ActionRole role);
 
     // Re-measures and re-lays out the dialog after the body changed.

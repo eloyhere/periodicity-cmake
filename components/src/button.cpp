@@ -3,8 +3,8 @@
 // The variant decides the container and content roles; the enabled bit decides
 // the disabled opacities (framework.md §3.6). The container is drawn here
 // rather than by View's background layer because the visual surface is the
-// 40 dp M3 height centred inside the 48 dp touch target, while the background
-// layer always fills the whole widget rectangle. The shape still comes from
+// 40 dp height of the design baseline centred inside the 48 dp touch target, while the
+// background layer always fills the whole widget rectangle. The shape still comes from
 // View's shape token, so the ripple, the state overlay and the focus ring all
 // agree with the painted pill.
 
@@ -33,9 +33,9 @@ namespace {
 
 constexpr qreal kTouchHeightDp = 48.0;
 constexpr qreal kVisualHeightDp = 40.0;
-// M3 Expressive small-button padding is 16 dp on both sides, whether or not the
-// button carries a leading icon (24 dp is no longer recommended); the icon and
-// the label stay 8 dp apart.
+// The expressive small-button padding of the design baseline is 16 dp on both sides,
+// whether or not the button carries a leading icon (24 dp is no longer recommended);
+// the icon and the label stay 8 dp apart.
 constexpr qreal kPaddingDp = 16.0;
 constexpr qreal kIconGapDp = 8.0;
 constexpr qreal kMinWidthDp = 48.0;

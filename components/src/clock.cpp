@@ -78,7 +78,7 @@ constexpr qreal kPi = 3.14159265358979323846;
 }
 
 // The main time line, without the meridiem. 24-hour text always has a leading
-// zero; 12-hour text never does, which is the Material clock convention.
+// zero; 12-hour text never does, which is the design baseline clock convention.
 [[nodiscard]] QString formatTime(const QTime& time, bool use24Hour, bool showSeconds)
 {
     if (!time.isValid())

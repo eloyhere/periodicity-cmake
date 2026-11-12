@@ -406,7 +406,7 @@ QWidget* typographyColumn(const Theme& theme)
     }};
 
     for (const auto& [name, style] : styles) {
-        auto* sample = new QLabel(QStringLiteral("Material Design 3"));
+        auto* sample = new QLabel(QStringLiteral("Design baseline"));
         sample->setFont(fontFor(style, theme.density()));
         sample->setStyleSheet(QStringLiteral("color:%1;").arg(theme.colours().onSurface.name()));
 

@@ -1,4 +1,4 @@
-// Periodicity — NavigationView, the Material 3 navigation panel content.
+// Periodicity — NavigationView, the design baseline navigation panel content.
 //
 // A drawer or a navigation rail needs a reusable list of destinations: an
 // optional account header, section labels, dividers and selectable rows with

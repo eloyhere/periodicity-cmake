@@ -26,6 +26,7 @@ class QWidget;
 
 namespace md {
 
+class Modal;
 class Store;
 
 class Font final : public QObject
@@ -33,6 +34,8 @@ class Font final : public QObject
     Q_OBJECT
 
 public:
+    ~Font() override;
+
     class Adapter
     {
     public:
@@ -86,6 +89,24 @@ public:
     // its children after emitting changed().
     void notifyChanged();
 
+    // Selector -----------------------------------------------------------
+    // Font is a non-visual configuration container, so the chip → selector
+    // affordance lives at the host layer: these entry points present the
+    // family list in a modal whose card carries the enter/exit motion.
+    //
+    // Opens a modal family selector above the host's window, anchored at
+    // `anchor` (the chip) when given and at the host otherwise. Choosing a
+    // family updates this container through setFamily() and closes the modal.
+    void openSelector(QWidget* anchor = nullptr);
+
+    // The selector content as a standalone View, parented to `parent`. The
+    // caller owns the result; choosing a family still calls setFamily() on
+    // this container. Exposed so a host can place the list in its own surface.
+    QWidget* createSelector(QWidget* parent = nullptr);
+
+    // True while the modal opened by openSelector() is on screen.
+    [[nodiscard]] bool isSelectorOpen() const noexcept;
+
 signals:
     void changed();
 
@@ -96,6 +117,7 @@ private:
     std::unique_ptr<Adapter> adapter_;
     QString family_;
     qreal scale_ = 1.0;
+    QPointer<Modal> selector_;
 };
 
 } // namespace md

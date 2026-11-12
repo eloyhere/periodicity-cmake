@@ -63,7 +63,7 @@ public:
     void setHeadersVisible(bool visible);
     [[nodiscard]] bool headersVisible() const noexcept;
 
-    // The uniform row height, in dp. The M3 table row is 48 dp.
+    // The uniform row height, in dp. The design baseline table row is 48 dp.
     void setRowHeight(qreal dp);
     [[nodiscard]] qreal rowHeight() const noexcept;
 

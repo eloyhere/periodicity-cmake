@@ -153,7 +153,7 @@ void TestSearchBar::placeholderAndTextRoundTrip()
 
     bar.measure(md::MeasureSpec::unspecified(), md::MeasureSpec::unspecified());
     QCOMPARE(bar.measuredSize().width(), 360.0);  // the 360 dp default width
-    QCOMPARE(bar.measuredSize().height(), 56.0);  // the M3 search-bar height
+    QCOMPARE(bar.measuredSize().height(), 56.0);  // the design-baseline search-bar height
 }
 
 void TestSearchBar::textChangedFromSetTextAndTyping()

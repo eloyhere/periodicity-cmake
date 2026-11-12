@@ -1,4 +1,4 @@
-// Periodicity — Chip (M3 assist, filter, input and suggestion chips).
+// Periodicity — Chip (design baseline assist, filter, input and suggestion chips).
 //
 // One 32 dp, 8 dp-corner component with four semantic variants. An unselected
 // chip is transparent with a 1 dp outline; a selected filter (or input) chip
@@ -60,7 +60,7 @@ public:
     void setLeadingIcon(const QIcon& icon);
     [[nodiscard]] QIcon leadingIcon() const;
 
-    // A no-op for Assist and Suggestion: the M3 variants have no selected
+    // A no-op for Assist and Suggestion: the design baseline variants have no selected
     // state. Switching away from a selectable variant clears the flag and
     // reports selectedChanged(false).
     void setSelected(bool selected);

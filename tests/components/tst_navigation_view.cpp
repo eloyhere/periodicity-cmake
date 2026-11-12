@@ -252,7 +252,7 @@ void TestNavigationView::rendersWithoutCrashing()
 {
     md::NavigationView nav;
     nav.setHeaderTitle(QStringLiteral("Periodicity"));
-    nav.setHeaderSubtitle(QStringLiteral("Material 3"));
+    nav.setHeaderSubtitle(QStringLiteral("Design baseline"));
     nav.addSection(QStringLiteral("Browse"));
     nav.addItem(QStringLiteral("Inbox"), QIcon(), QStringLiteral("3"));
     nav.addItem(QStringLiteral("Starred"));

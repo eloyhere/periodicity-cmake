@@ -1,6 +1,6 @@
 // Visual contract for the container / navigation / overlay family.
 //
-// These assertions pin the Material Design 3 measurements the components resolve
+// These assertions pin the design-baseline measurements the components resolve
 // from the theme, so a later refactor cannot quietly drift away from the spec:
 // a basic dialog is an extra-large surface, a menu is an extra-small one, menu
 // rows are 48 dp tall, and a plain tooltip's container never grows past 200 dp.
@@ -40,7 +40,7 @@ void TestVisualContainers::dialogUsesTheExtraLargeSurface()
     QWidget host;
     md::Dialog dialog(&host);
 
-    // M3 basic dialog: 28 dp corner radius, i.e. the extra-large shape token.
+    // Basic dialog: 28 dp corner radius, i.e. the design baseline's extra-large shape token.
     QCOMPARE(dialog.shape(), md::Theme::baselineLight().shapes().extraLarge);
     QCOMPARE(dialog.elevation(), md::Elevation::Level0);
 }
@@ -50,7 +50,7 @@ void TestVisualContainers::menuUsesTheExtraSmallContainerShape()
     QWidget host;
     md::Menu menu(&host);
 
-    // M3 menu container: 4 dp corner radius, i.e. the extra-small shape token.
+    // Menu container: 4 dp corner radius, i.e. the design baseline's extra-small shape token.
     QCOMPARE(menu.shape(), md::Theme::baselineLight().shapes().extraSmall);
 }
 
@@ -79,7 +79,7 @@ void TestVisualContainers::tooltipContainerIsCappedAt200Dp()
 
     tooltip.measure(md::MeasureSpec::unspecified(), md::MeasureSpec::unspecified());
 
-    // M3 plain tooltip: max container width 200 dp, padding included.
+    // Plain tooltip: max container width 200 dp, padding included.
     QVERIFY(tooltip.measuredSize().width() > 0.0);
     QVERIFY(tooltip.measuredSize().width() <= 200.0);
 }

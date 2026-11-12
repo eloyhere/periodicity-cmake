@@ -5,7 +5,7 @@
 // navigates months with the arrows while a click on the title switches to the
 // month grid and then to the year grid. Minimum and maximum dates are enforced
 // both for the pointer and for the keyboard, and the selection, today and the
-// disabled cells each have a distinct M3 treatment.
+// disabled cells each have a distinct design baseline treatment.
 //
 // The component paints itself: it has no child widgets, so every hit target is
 // described by a public rectangle (dateRect, monthRect, yearRect, the header

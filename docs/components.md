@@ -63,7 +63,7 @@ widget, a token or a painter.
 
 | Component | Header | Notes | Tests | Gallery |
 | --- | --- | --- | --- | --- |
-| `Typography` | `typography.h` | All fifteen M3 type-scale roles | `tests/components/tst_display_controls.cpp` | Display |
+| `Typography` | `typography.h` | All fifteen design-baseline type-scale roles | `tests/components/tst_display_controls.cpp` | Display |
 | `List` | `list.h` | Model-backed rows, selection, keyboard, wheel | same | Display |
 | `Recycler` | `recycler.h` | Virtualised rows with view-type pooling | same | Display |
 | `PopUp` | `popup.h` | Anchored surface, placement flipping, outside/Esc dismissal | same | Display |
@@ -200,7 +200,7 @@ installing a ThemeScope on the view and lets subclasses extend `onStoreChanged()
   `child->arrange()` rather than `setGeometry()`. `View::resizeEvent()` also
   re-arranges, so a container placed in an ordinary Qt layout still places its
   children.
-- The pipeline no longer paints a contour around every view. Material outlines
+- The pipeline no longer paints a contour around every view. The design baseline outlines
   only the surfaces that ask for one; `layer::OutlineLayer` remains available to
   a component that draws it itself (an outlined button, a card).
 - The gallery is the visual counterpart of these tests: if a page renders and

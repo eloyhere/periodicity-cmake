@@ -22,7 +22,7 @@ enum class Elevation : quint8 {
 
 // Height of `level` above the surface, in dp.
 //
-// The ramp is Material's canonical 0, 1, 3, 6, 8, 12 sequence rather than a
+// The ramp is the canonical 0, 1, 3, 6, 8, 12 elevation ramp rather than a
 // linear scale, because perceived depth grows more slowly than the physical
 // offset. The values are the single source of truth for shadow offsets and
 // for the tonal surface mapping in ColorScheme.

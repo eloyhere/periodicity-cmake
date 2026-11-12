@@ -1,6 +1,6 @@
 // Periodicity — TreeSelect: a model-driven tree menu behind a filled field.
 //
-// The closed control is a Material filled field painted by this component: the
+// The closed control is a design baseline filled field painted by this component: the
 // current label, the placeholder and the chevron. Opening it raises a menu on
 // the control's own md::Dropdown surface: the surface is a child of the window
 // — not a Qt::Popup — so the menu shares the window's theme scope, belongs to

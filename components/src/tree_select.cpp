@@ -41,11 +41,11 @@ namespace md {
 
 namespace {
 
-// M3 measurements, in dp; the density converts them to pixels.
+// Design baseline measurements, in dp; the density converts them to pixels.
 constexpr qreal kFieldHeightDp = 56.0;
 constexpr qreal kHorizontalPaddingDp = 16.0;
 constexpr qreal kFieldRadiusDp = 4.0;
-// The M3 menu container is the extra-small shape (4 dp); the popup used 8 dp,
+// The design baseline menu container is the extra-small shape (4 dp); the popup used 8 dp,
 // which read as a card rather than a menu surface.
 constexpr qreal kPopupRadiusDp = 4.0;
 constexpr qreal kPopupPaddingDp = 4.0;

@@ -1,4 +1,4 @@
-// Periodicity — NavigationBar, the Material 3 bottom navigation bar.
+// Periodicity — NavigationBar, the design baseline bottom navigation bar.
 //
 // A navigation bar is a single 80 dp strip of three to five destinations. Each
 // destination is one column: a 32 dp indicator pill around a 24 dp icon, a 4 dp
@@ -57,8 +57,8 @@ public:
 
     // Appends a destination and returns its index. The first destination added
     // to an empty bar becomes the current one; later ones do not change the
-    // selection. The bar lays out any count evenly — three to five is the M3
-    // recommendation, not an enforced limit.
+    // selection. The bar lays out any count evenly — three to five is the
+    // design baseline recommendation, not an enforced limit.
     int addDestination(const Destination& destination);
     void clearDestinations();
 

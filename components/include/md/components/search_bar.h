@@ -1,4 +1,4 @@
-// Periodicity — SearchBar, the Material 3 search field.
+// Periodicity — SearchBar, the design baseline search field.
 //
 // SearchBar paints the 56 dp pill, the leading magnifier, the placeholder and
 // the trailing clear affordance itself; a transparent QLineEdit is embedded as

@@ -2,13 +2,16 @@
 
 #include <md/components/font.h>
 #include <md/components/language.h>
+#include <md/components/modal.h>
 #include <md/components/text.h>
+#include <md/components/theme_switcher.h>
 #include <md/store/store.h>
 #include <md/theme/theme.h>
 #include <md/theme/theme_scope.h>
 
 #include <QApplication>
 #include <QEvent>
+#include <QPushButton>
 #include <QSignalSpy>
 #include <QTest>
 #include <QWidget>
@@ -73,6 +76,10 @@ private slots:
     void themeAdapterDerivesFromInherited();
     void languageContainerProvidesStringsAndDirection();
     void viewLocalizedReadsTheLanguageStore();
+
+    void fontSelectorOpensModal();
+    void fontSelectorContentIsStandalone();
+    void themeSwitcherSelectorOpensModal();
 
     void cleanupTestCase();
 };
@@ -195,6 +202,82 @@ void TestConfigContainers::viewLocalizedReadsTheLanguageStore()
              QStringLiteral("Fallback"));
 
     language->setValue(QStringLiteral("strings"), QVariantMap());
+}
+
+void TestConfigContainers::fontSelectorOpensModal()
+{
+    QWidget host;
+    host.resize(800, 600);
+    host.show();
+
+    md::Font* font = md::Font::install(&host, QStringLiteral("Courier New"), 1.0);
+    QVERIFY(font != nullptr);
+
+    auto* chip = new QPushButton(QStringLiteral("Font"), &host);
+    chip->setGeometry(40, 40, 120, 40);
+    chip->show();
+
+    font->openSelector(chip);
+    QVERIFY(font->isSelectorOpen());
+
+    auto* modal = host.findChild<md::Modal*>();
+    QVERIFY(modal != nullptr);
+    QVERIFY(modal->isOpen());
+    QCOMPARE(modal->anchor(), static_cast<QWidget*>(chip));
+    QVERIFY(modal->card() != nullptr);
+    QVERIFY(!modal->card()->sizeHint().isEmpty());
+    QVERIFY(!modal->grab().isNull());
+
+    QTest::keyClick(modal->card(), Qt::Key_Escape);
+    QVERIFY(!font->isSelectorOpen());
+    QTRY_VERIFY_WITH_TIMEOUT(host.findChild<md::Modal*>() == nullptr, 2000);
+}
+
+void TestConfigContainers::fontSelectorContentIsStandalone()
+{
+    QWidget host;
+    md::Font* font = md::Font::install(&host, QStringLiteral("Courier New"), 1.0);
+    QVERIFY(font != nullptr);
+
+    QWidget* selector = font->createSelector();
+    QVERIFY(selector != nullptr);
+    selector->resize(selector->sizeHint());
+    selector->show();
+    QVERIFY(!selector->grab().isNull());
+    delete selector;
+}
+
+void TestConfigContainers::themeSwitcherSelectorOpensModal()
+{
+    QWidget host;
+    host.resize(800, 600);
+    host.show();
+
+    auto* switcher = new md::ThemeSwitcher(&host);
+    switcher->addPreset(QStringLiteral("Light"), md::Theme::baselineLight());
+    switcher->addPreset(QStringLiteral("Dark"), md::Theme::baselineDark());
+    switcher->setGeometry(40, 40, 420, 300);
+    switcher->show();
+
+    switcher->openSelector();
+    QVERIFY(switcher->isSelectorOpen());
+
+    auto* modal = host.findChild<md::Modal*>();
+    QVERIFY(modal != nullptr);
+    QVERIFY(modal->isOpen());
+
+    auto* list = qobject_cast<md::ThemeSwitcher*>(modal->card());
+    QVERIFY(list != nullptr);
+    QCOMPARE(list->presetCount(), 2);
+
+    QSignalSpy applied(switcher, &md::ThemeSwitcher::presetActivated);
+    list->applyPreset(1);
+    QCOMPARE(applied.count(), 1);
+    QCOMPARE(switcher->currentPreset(), 1);
+    QVERIFY(!switcher->isSelectorOpen());
+
+    QTRY_VERIFY_WITH_TIMEOUT(host.findChild<md::Modal*>() == nullptr, 2000);
+    md::Theme::setApplicationTheme(md::Theme::baselineLight());
 }
 
 QTEST_MAIN(TestConfigContainers)

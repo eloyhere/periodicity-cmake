@@ -7,7 +7,7 @@
 // close "X" are painted by the component. The action is a real Button child, so
 // it inherits the framework's state layer, ripple and focus handling.
 //
-// Severity chooses the M3 role pair: Info uses the high surface container,
+// Severity chooses the design baseline role pair: Info uses the high surface container,
 // Success the secondary container, Warning the tertiary container and Error the
 // error container. The component resolves the pair from the active theme; it
 // never hard-codes a colour.

@@ -24,7 +24,7 @@ namespace md {
 
 namespace {
 
-// The M3 small top app bar title style.
+// The small top app bar title style of the reference design system.
 QFont titleFont(const Theme& theme)
 {
     const TextStyle& style = theme.type().titleLarge;

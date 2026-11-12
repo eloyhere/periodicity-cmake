@@ -1,4 +1,4 @@
-// Periodicity — the Fab component (Material 3 floating action button).
+// Periodicity — the Fab component (design baseline floating action button).
 //
 // The container is an ordinary View surface: shape, background colour and
 // elevation are set from the theme and painted by View's background and
@@ -43,7 +43,7 @@ constexpr qreal kLargeIconSizeDp = 36.0;
 
 constexpr qreal kExtendedHeightDp = 56.0;
 constexpr qreal kExtendedIconGapDp = 18.0;
-// Material 3's extended FAB uses a 16 dp leading inset and a 20 dp trailing
+// The design baseline's extended FAB uses a 16 dp leading inset and a 20 dp trailing
 // inset; only the icon/label gap is overridden by the component contract.
 constexpr qreal kExtendedLeadingPaddingDp = 16.0;
 constexpr qreal kExtendedTrailingPaddingDp = 20.0;

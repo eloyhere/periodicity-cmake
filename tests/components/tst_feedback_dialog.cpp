@@ -662,20 +662,19 @@ void TestFeedbackDialog::languageMenuSelection()
 
     language.openMenu();
     QVERIFY(language.isMenuOpen());
-    QVERIFY(language.menu() != nullptr);
-    QVERIFY(language.menu()->isOpen());
-    QCOMPARE(language.menu()->count(), 3);
-    QVERIFY(language.menu()->isItemChecked(2));
-    QVERIFY(language.menu()->itemRect(0).isValid());
+    QVERIFY(language.selectorPanel() != nullptr);
+    QVERIFY(language.selectorPanel()->isVisible());
 
-    md::Menu* menu = language.menu();
-    clickAt(*menu, menu->itemRect(0).center());
+    // The selector is a modal card with a two-column list: en/zh_CN on the
+    // first row, ja on the second. "ja" is current and focused; Left moves to
+    // "zh_CN" and Enter activates it.
+    QTest::keyClick(language.selectorPanel(), Qt::Key_Left);
+    QTest::keyClick(language.selectorPanel(), Qt::Key_Return);
 
-    QCOMPARE(language.currentLanguage(), QStringLiteral("en"));
+    QCOMPARE(language.currentLanguage(), QStringLiteral("zh_CN"));
     QCOMPARE(changeCount, 1);
-    QCOMPARE(installedCode, QStringLiteral("en"));
+    QCOMPARE(installedCode, QStringLiteral("zh_CN"));
     QVERIFY(!language.isMenuOpen());
-    QVERIFY(!menu->isOpen());
 }
 
 void TestFeedbackDialog::componentsPaintWithoutCrashing()

@@ -1,4 +1,4 @@
-// Periodicity — BottomSheet, the Material 3 bottom sheet.
+// Periodicity — BottomSheet, the design baseline bottom sheet.
 //
 // The widget owns four visuals the base pipeline cannot place: the scrim, the
 // bottom-anchored surface with its two rounded top corners, the drag handle and
@@ -53,9 +53,9 @@ constexpr qreal kDefaultWidthDp = 360.0;
 // The surface may use nine tenths of the host at most; the body scrolls past
 // that instead of pushing the sheet over the whole window.
 constexpr qreal kMaxHeightRatio = 0.90;
-// M3 large shape: a bottom sheet rounds only its two top corners.
+// Design baseline large shape: a bottom sheet rounds only its two top corners.
 constexpr qreal kTopCornerDp = 28.0;
-// The drag handle is 32x4 dp, centred, 22 dp below the top edge (M3).
+// The drag handle is 32x4 dp, centred, 22 dp below the top edge (design baseline).
 constexpr qreal kHandleTopPaddingDp = 22.0;
 constexpr qreal kHandleWidthDp = 32.0;
 constexpr qreal kHandleHeightDp = 4.0;
@@ -839,7 +839,7 @@ void BottomSheet::paintContent(QPainter& painter, const QRectF& content)
         painter.drawPath(radii.toPath(surface.adjusted(-inset, -inset, inset, inset)));
     }
 
-    // M3 bottom sheet: surface container low. There is no outline: the shape,
+    // Design baseline bottom sheet: surface container low. There is no outline: the shape,
     // the shadow and the scrim are what separate it from the page.
     painter.setPen(Qt::NoPen);
     painter.setBrush(colours.surfaceContainerLow);

@@ -3,10 +3,10 @@
 // The tint is applied with CompositionMode_SourceIn into a pixmap that is
 // cached under the source identity, the colour, the pixel size, the device
 // pixel ratio, the resolved direction and the revision. The source is scaled
-// with a smooth transform because Material Symbols are vector-derived masks;
-// the tinted result is then drawn without further scaling (the pixmap carries
-// the device pixel ratio, so QPainter lays it out at the requested logical
-// size).
+// with a smooth transform because the icon set is made of vector-derived
+// masks; the tinted result is then drawn without further scaling (the pixmap
+// carries the device pixel ratio, so QPainter lays it out at the requested
+// logical size).
 
 #include <md/drawable/icon_drawable.h>
 

@@ -1,6 +1,6 @@
 // Periodicity — measurement constraints (framework.md §6.2).
 //
-// A MeasureSpec is the Android-style constraint handed down the measurement
+// A MeasureSpec is the declarative-style constraint handed down the measurement
 // contract: a size together with a mode that says how the size may be used.
 // It is a plain value type with no Qt object overhead, and everything that
 // can be computed at compile time is constexpr so that default measurements

@@ -15,6 +15,7 @@
 
 #include <QColor>
 #include <QList>
+#include <QPointer>
 #include <QString>
 
 class QKeyEvent;
@@ -23,6 +24,8 @@ class QPainter;
 class QRectF;
 
 namespace md {
+
+class Modal;
 
 class ThemeSwitcher final : public View
 {
@@ -36,6 +39,7 @@ public:
     };
 
     explicit ThemeSwitcher(QWidget* parent = nullptr);
+    ~ThemeSwitcher() override;
 
     // Adds a preset built from three seed colours. The type, shape and motion
     // scales come from the baseline of the current brightness.
@@ -57,7 +61,15 @@ public:
     [[nodiscard]] QRectF presetRect(int index) const;
     [[nodiscard]] QRectF swatchRect(int index, int swatch) const;
 
-    // The Android attribute names this component labels its swatches with.
+    // Selector -----------------------------------------------------------
+    // Presents the same presets in a modal above this widget's window,
+    // anchored at `anchor` (the chip). The modal's card carries the enter and
+    // exit motion; this widget stays where it is. Choosing a row applies that
+    // preset to the original switcher and closes the modal.
+    void openSelector(QWidget* anchor = nullptr);
+    [[nodiscard]] bool isSelectorOpen() const noexcept;
+
+    // The attribute names this component labels its swatches with.
     [[nodiscard]] static QString swatchLabel(int swatch);
 
 signals:
@@ -77,6 +89,7 @@ private:
 
     QList<Preset> presets_;
     int current_ = -1;
+    QPointer<Modal> selector_;
 };
 
 } // namespace md

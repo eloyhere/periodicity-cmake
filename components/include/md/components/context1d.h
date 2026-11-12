@@ -8,7 +8,7 @@
 // Canvas composes into a larger chart, not a full plot widget.
 //
 // The context retains its data; Canvas repaints it on demand. All dimensions
-// are density-scaled from Material dp, and the default colours come from the
+// are density-scaled from the design baseline's dp, and the default colours come from the
 // active theme.
 
 #pragma once

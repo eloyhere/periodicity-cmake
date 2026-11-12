@@ -1,20 +1,25 @@
 // Periodicity — Language, a language-switcher chip.
 //
-// The component paints the current language's native name (English,
-// 简体中文, 日本語, …) together with a globe and a chevron. Clicking it opens an
-// anchored Menu with one checkable row per language; choosing a row updates
-// currentLanguage() and emits languageChanged(code, locale).
+// The component paints the current language's native name (English, 中文,
+// 日本語, …) together with a globe and a chevron. Clicking it opens a modal
+// selector with one row per supported locale; choosing a row installs the
+// matching Qt translation through md::i18n and emits localeChanged().
 //
-// The component never installs a translation itself. A host that owns .qm
-// files can hand over an installer with setTranslatorInstaller(); the callback
-// receives the new language code every time the selection actually changes.
-// That keeps resource loading, QTranslator ownership and persistence in the
-// application layer.
+// The locale list comes from i18n::availableLocales(), so a row can exist
+// before its .qm is embedded: selecting such a row keeps the selector's state
+// and warns no louder than i18n::install() returning false. A host that owns
+// its own translation files can still call setTranslatorInstaller() to
+// supplement (or replace) the built-in loader.
+//
+// The chip remains usable as the language container of a widget subtree: the
+// Adapter/installOn() API is unchanged, and a successful selection notifies the
+// scope after the global translation has changed.
 
 #pragma once
 
 #include <md/view/view.h>
 
+#include <QCoreApplication>
 #include <QIcon>
 #include <QList>
 #include <QLocale>
@@ -25,6 +30,7 @@
 #include <functional>
 #include <memory>
 
+class QEvent;
 class QKeyEvent;
 class QMouseEvent;
 class QPainter;
@@ -33,7 +39,6 @@ class QWidget;
 
 namespace md {
 
-class Menu;
 class Store;
 
 class Language : public View
@@ -62,6 +67,9 @@ public:
     // languageChanged() and invokes the installer, if one was set.
     bool setCurrentLanguage(const QString& code);
     [[nodiscard]] QString currentLanguage() const;
+    // The locale code currently selected ("en", "zh_CN", …). This is the value
+    // handed to md::i18n::install(); it is a code, not a QLocale.
+    [[nodiscard]] QString currentLocale() const;
     [[nodiscard]] LanguageEntry currentEntry() const;
 
     void setTranslatorInstaller(std::function<void(const QString& code)> installer);
@@ -108,19 +116,26 @@ public:
     void setIcon(const QIcon& icon);
     [[nodiscard]] QIcon icon() const;
 
+    // Opens the modal language selector. The name is kept for hosts that
+    // already call openMenu(); the surface is a modal now, not a popup menu.
     void openMenu();
     void closeMenu();
     [[nodiscard]] bool isMenuOpen() const;
 
-    // The menu panel, once it has been created. It is a child of the window,
-    // not of this widget; the component owns it.
-    [[nodiscard]] Menu* menu() const;
+    // The selector surface, or nullptr until it has been opened once. It is a
+    // child of the Modal scrim, which is a child of the window.
+    [[nodiscard]] QWidget* selectorPanel() const;
 
     // The built-in common-language list.
     [[nodiscard]] static QList<LanguageEntry> defaultLanguages();
 
 signals:
+    // The existing configuration-container signal, kept for hosts that need the
+    // QLocale alongside the code.
     void languageChanged(QString code, QLocale locale);
+    // Emitted whenever the selected locale actually changes. The argument is
+    // the code passed to md::i18n::install().
+    void localeChanged(const QString& locale);
 
 protected:
     void measureOverride(MeasureSpec width, MeasureSpec height) override;
@@ -129,12 +144,14 @@ protected:
     void mousePressEvent(QMouseEvent* event) override;
     void mouseReleaseEvent(QMouseEvent* event) override;
     void keyPressEvent(QKeyEvent* event) override;
+    void changeEvent(QEvent* event) override;
     void onThemeChanged() override;
 
 private:
-    void rebuildMenu();
-    void handleMenuTrigger(int index);
+    void showSelector();
+    void handleSelection(const QString& code);
     void syncAppearance();
+    void syncAccessibleDescription();
     void notifyScope();
 
     QList<LanguageEntry> languages_;
@@ -144,7 +161,11 @@ private:
     std::unique_ptr<Adapter> adapter_;
     QPointer<QWidget> scopeHost_;
 
-    QPointer<Menu> menu_;
+    // modal_ is the full-window Modal scrim; panel_ is the language card drawn
+    // inside it. Neither is a layout child of the chip, and no overlay is
+    // painted above the content in this widget.
+    QPointer<QWidget> modal_;
+    QPointer<QWidget> panel_;
     bool menuOpen_ = false;
     bool pressed_ = false;
 };

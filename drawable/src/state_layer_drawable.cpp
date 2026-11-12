@@ -3,8 +3,8 @@
 // The opacity comes from the token function rather than a local table: a
 // revision of the state-layer specification therefore changes every component
 // in one place. The composite is a plain source-over fill: the overlay colour
-// keeps its RGB and only its alpha is scaled, which is exactly how M3
-// composites an interaction layer over a container.
+// keeps its RGB and only its alpha is scaled, which is exactly how the
+// reference design system composites an interaction layer over a container.
 
 #include <md/drawable/state_layer_drawable.h>
 

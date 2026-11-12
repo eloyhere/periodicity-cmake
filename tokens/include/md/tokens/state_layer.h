@@ -48,8 +48,9 @@ inline constexpr qreal kDisabledContainerOpacity = 0.12;
 // `content` with its alpha multiplied by the state-layer opacity for `state`.
 //
 // The RGB channels are untouched: the layer is the content colour at a lower
-// alpha, so compositing it over the container yields exactly the M3 overlay.
-// A zero-opacity state produces a fully transparent colour.
+// alpha, so compositing it over the container yields exactly the overlay of
+// the reference design system. A zero-opacity state produces a fully
+// transparent colour.
 [[nodiscard]] QColor applyStateLayer(const QColor& content, ViewState state);
 
 } // namespace md

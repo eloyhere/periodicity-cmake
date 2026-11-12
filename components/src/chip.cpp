@@ -1,4 +1,4 @@
-// Periodicity — Chip (M3 assist, filter, input and suggestion chips).
+// Periodicity — Chip (design baseline assist, filter, input and suggestion chips).
 //
 // Measurement is one font pass over the visible parts: the optional leading
 // 18 dp slot, the label and the optional trailing close target. Painting
@@ -35,7 +35,7 @@ namespace md {
 
 namespace {
 
-// M3 chip measurements: 32 dp container with an 8 dp corner radius, 16 dp on a
+// Design baseline chip measurements: 32 dp container with an 8 dp corner radius, 16 dp on a
 // text edge, 8 dp on an icon edge, 18 dp leading icons, 8 dp between elements.
 constexpr qreal kHeightDp = 32.0;
 constexpr qreal kStartPaddingDp = 16.0;
@@ -234,7 +234,7 @@ void Chip::paintContent(QPainter& painter, const QRectF& content)
     }
 
     // Unselected chips are outlined; the selected form fills with the
-    // secondary container and drops the stroke (M3 filter chip).
+    // secondary container and drops the stroke (design baseline filter chip).
     if (!selected_) {
         const qreal inset = density.dp(kOutlineWidthDp) / 2.0;
         QPen pen(outlineColour(), density.dp(kOutlineWidthDp));
@@ -497,7 +497,7 @@ bool Chip::showsClose() const noexcept
 
 bool Chip::isSelectable() const noexcept
 {
-    // M3 gives only the filter chip a selected state; the input chip carries a
+    // The design baseline gives only the filter chip a selected state; the input chip carries a
     // selection here as well because the API exposes one and removing it would
     // silently discard a host's state. Assist and suggestion chips are always
     // stateless.
@@ -539,7 +539,7 @@ QColor Chip::outlineColour() const
 void Chip::syncAppearance()
 {
     const Theme& theme = Theme::forWidget(this);
-    // M3 chips are 8 dp rounded rectangles, not pills.
+    // Design baseline chips are 8 dp rounded rectangles, not pills.
     setShape(theme.shapes().small);
     setContentColour(contentColour());
     requestUpdate();
