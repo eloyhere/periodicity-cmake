@@ -18,6 +18,7 @@
 
 #include <md/core/geometry.h>
 #include <md/theme/theme.h>
+#include <md/tokens/state_layer.h>
 
 #include <QAbstractItemModel>
 #include <QDoubleValidator>
@@ -116,6 +117,21 @@ QColor withAlpha(const QColor& colour, qreal alpha)
     QColor result = colour;
     result.setAlphaF(static_cast<float>(std::clamp(alpha, 0.0, 1.0)));
     return result;
+}
+
+// Linear cross-fade between two colours, used by the floating label while it
+// moves between its resting and floating roles. Rounding per channel keeps the
+// two endpoints exact, so a fully settled label still paints the plain token
+// colour.
+QColor mixColour(const QColor& from, const QColor& to, qreal fraction)
+{
+    const qreal amount = std::clamp(fraction, 0.0, 1.0);
+    const auto channel = [amount](int start, int end) {
+        return static_cast<int>(qRound(start + (end - start) * amount));
+    };
+
+    return QColor(channel(from.red(), to.red()), channel(from.green(), to.green()),
+                  channel(from.blue(), to.blue()), channel(from.alpha(), to.alpha()));
 }
 
 QString elided(const QFont& font, const QString& text, qreal width)
@@ -222,6 +238,8 @@ public:
 
     void setModel(QAbstractItemModel* model)
     {
+        if (model_ != model)
+            resetRipple();
         model_ = model;
         update();
     }
@@ -284,6 +302,9 @@ public:
         }
 
         setGeometry(x, y, width, height);
+        // A row ripple belongs to one presentation of the menu; opening it
+        // again must not resume the previous one.
+        resetRipple();
         show();
         raise();
 
@@ -332,6 +353,39 @@ protected:
                                                        : withAlpha(colours.onSurface, 0.08));
             }
 
+            // A row is not a widget, so the press feedback is painted here: a
+            // circle growing from the press point (or the row centre for a
+            // keyboard move) clipped to its row, under the label. Only the
+            // active row has a ripple; every other row paints nothing.
+            if (row == rippleRow_ && rippleProgress_ > 0.0) {
+                try {
+                    const auto cornerDistance = [this, &rowRect](qreal x, qreal y) {
+                        return std::hypot(x - rippleOrigin_.x(), y - rippleOrigin_.y());
+                    };
+                    const qreal reach = std::max({
+                        cornerDistance(rowRect.left(), rowRect.top()),
+                        cornerDistance(rowRect.right(), rowRect.top()),
+                        cornerDistance(rowRect.left(), rowRect.bottom()),
+                        cornerDistance(rowRect.right(), rowRect.bottom()),
+                    });
+                    const qreal rippleRadius =
+                        reach * std::clamp(rippleProgress_, 0.0, 1.0);
+
+                    if (rippleRadius > 0.0) {
+                        painter.save();
+                        painter.setClipRect(rowRect);
+                        painter.setPen(Qt::NoPen);
+                        painter.setBrush(applyStateLayer(colours.onSurface,
+                                                         ViewState::Pressed));
+                        painter.drawEllipse(rippleOrigin_, rippleRadius, rippleRadius);
+                        painter.restore();
+                    }
+                } catch (...) {
+                    // The ripple is decoration: a throwing paint helper must not
+                    // take the menu surface down with it.
+                }
+            }
+
             const QString label = model_ != nullptr
                 ? model_->data(model_->index(row, 0), Qt::DisplayRole).toString()
                 : QString();
@@ -377,7 +431,30 @@ protected:
         }
 
         const int row = rowAt(event->position());
+        pressedRow_ = row;
         if (row >= 0) {
+            // Activate on release so the pressed row can show its ripple; the
+            // press itself only starts the animation.
+            startRipple(row, event->position());
+            event->accept();
+            return;
+        }
+
+        QWidget::mousePressEvent(event);
+    }
+
+    void mouseReleaseEvent(QMouseEvent* event) override
+    {
+        if (event->button() != Qt::LeftButton) {
+            QWidget::mouseReleaseEvent(event);
+            return;
+        }
+
+        const int row = rowAt(event->position());
+        const int pressed = pressedRow_;
+        pressedRow_ = -1;
+
+        if (row >= 0 && row == pressed) {
             const int chosen = row;
             if (activate_)
                 activate_(chosen);
@@ -386,7 +463,14 @@ protected:
             return;
         }
 
-        QWidget::mousePressEvent(event);
+        // Releasing outside the pressed row leaves no held state behind; an
+        // unfinished ripple still runs to its end and clears itself there.
+        if (rippleProgress_ >= 1.0 && rippleRow_ >= 0) {
+            rippleRow_ = -1;
+            rippleProgress_ = 0.0;
+            update();
+        }
+        QWidget::mouseReleaseEvent(event);
     }
 
     void keyPressEvent(QKeyEvent* event) override
@@ -399,28 +483,29 @@ protected:
 
         switch (event->key()) {
         case Qt::Key_Up:
-            highlighted_ = highlighted_ <= 0 ? rows - 1 : highlighted_ - 1;
-            update();
+            moveHighlight(highlighted_ <= 0 ? rows - 1 : highlighted_ - 1);
             event->accept();
             return;
         case Qt::Key_Down:
-            highlighted_ = (highlighted_ + 1) % rows;
-            update();
+            moveHighlight((highlighted_ + 1) % rows);
             event->accept();
             return;
         case Qt::Key_Home:
-            highlighted_ = 0;
-            update();
+            moveHighlight(0);
             event->accept();
             return;
         case Qt::Key_End:
-            highlighted_ = rows - 1;
-            update();
+            moveHighlight(rows - 1);
             event->accept();
             return;
         case Qt::Key_Return:
         case Qt::Key_Enter:
         case Qt::Key_Space:
+            // Keyboard activation gets the same row ripple as a press. A menu
+            // selection closes the popup immediately, so this is the settled
+            // frame's first step, not a transition the user waits on.
+            if (highlighted_ >= 0 && highlighted_ < rows)
+                startKeyboardRipple(highlighted_);
             if (highlighted_ >= 0 && highlighted_ < rows && activate_) {
                 const int chosen = highlighted_;
                 activate_(chosen);
@@ -458,6 +543,9 @@ protected:
 
     void hideEvent(QHideEvent* event) override
     {
+        // No frame timer may survive a closed menu, and no row keeps feedback
+        // it cannot show.
+        resetRipple();
         QWidget::hideEvent(event);
         if (dismiss_)
             dismiss_();
@@ -467,6 +555,88 @@ private:
     [[nodiscard]] int visibleRows() const
     {
         return std::min(model_ != nullptr ? model_->rowCount() : 0, maxRows_);
+    }
+
+    // The painted row rectangle, shared by paint and the ripple origin so a
+    // press at a row's edge is clamped to exactly the box the user sees.
+    [[nodiscard]] QRectF rowRectFor(int row) const
+    {
+        const Theme& theme = Theme::forWidget(anchor_);
+        const qreal unit = theme.density().dp(1.0);
+        const qreal padding = theme.density().dp(kMenuPaddingDp);
+        const qreal rowHeight = theme.density().dp(kMenuItemHeightDp);
+        const QRectF bounds = QRectF(rect()).adjusted(unit * 0.5, unit * 0.5,
+                                                      -unit * 0.5, -unit * 0.5);
+        return QRectF(bounds.left() + padding,
+                      bounds.top() + padding + row * rowHeight,
+                      std::max(0.0, bounds.width() - padding * 2.0), rowHeight);
+    }
+
+    void resetRipple()
+    {
+        rippleAnimator_.stop();
+        rippleRow_ = -1;
+        pressedRow_ = -1;
+        rippleProgress_ = 0.0;
+    }
+
+    // Grows the pressed row's state layer from `origin` over medium2. Reduced
+    // motion, a zero-length token and a hidden popup paint the settled layer at
+    // once; there are no intermediate frames to show.
+    void startRipple(int row, const QPointF& origin)
+    {
+        if (row < 0 || row >= visibleRows())
+            return;
+
+        const QRectF rowRect = rowRectFor(row);
+        rippleRow_ = row;
+        rippleOrigin_ = QPointF(std::clamp(origin.x(), rowRect.left(), rowRect.right()),
+                                std::clamp(origin.y(), rowRect.top(), rowRect.bottom()));
+        rippleProgress_ = 0.0;
+
+        const Theme& theme = Theme::forWidget(anchor_);
+        const MotionSpec spec = theme.motion().medium2();
+        rippleAnimator_.stop();
+
+        if (theme.motion().reducedMotion || spec.duration.count() <= 0 || !isVisible()) {
+            rippleProgress_ = 1.0;
+            update();
+            return;
+        }
+
+        rippleAnimator_.start(spec, [this](qreal fraction) {
+            // The Animator swallows a throwing callback; the local guard keeps
+            // the same isolation around the repaint this callback triggers.
+            try {
+                rippleProgress_ = std::clamp(fraction, 0.0, 1.0);
+                // A keyboard ripple is not held by a press, so it clears once
+                // it has settled. A mouse ripple stays while the button is down.
+                if (rippleProgress_ >= 1.0 && pressedRow_ != rippleRow_) {
+                    rippleRow_ = -1;
+                    rippleProgress_ = 0.0;
+                }
+                update();
+            } catch (...) {
+            }
+        });
+        update();
+    }
+
+    void startKeyboardRipple(int row)
+    {
+        if (row < 0 || row >= visibleRows())
+            return;
+
+        startRipple(row, rowRectFor(row).center());
+    }
+
+    void moveHighlight(int row)
+    {
+        highlighted_ = row;
+        update();
+        // WCAG 2.5.7: the keyboard path gets the same press feedback as the
+        // pointer path, with the ripple originating at the row centre.
+        startKeyboardRipple(highlighted_);
     }
 
     [[nodiscard]] int rowAt(const QPointF& position) const
@@ -491,6 +661,13 @@ private:
     int current_ = -1;
     int highlighted_ = -1;
     int maxRows_ = 8;
+    // The row whose press feedback is being painted. The ripple is a painted
+    // value, not a child widget: the popup draws every row itself.
+    int rippleRow_ = -1;
+    int pressedRow_ = -1;
+    QPointF rippleOrigin_;
+    qreal rippleProgress_ = 0.0;
+    animation::Animator rippleAnimator_;
     std::function<void(int)> activate_;
     std::function<void()> dismiss_;
 };
@@ -516,6 +693,7 @@ TextInput::TextInput(QWidget* parent)
 
     connect(editor_, &QLineEdit::textChanged, this, [this](const QString& changed) {
         onEditorTextChanged(changed);
+        updateLabelTransition();
         emit textChanged(changed);
     });
     connect(editor_, &QLineEdit::editingFinished, this, &TextInput::editingFinished);
@@ -524,7 +702,18 @@ TextInput::TextInput(QWidget* parent)
     requestUpdate();
 }
 
-TextInput::~TextInput() = default;
+TextInput::~TextInput()
+{
+    // The embedded editor is a QObject child and is destroyed after this
+    // object's derived part. During teardown it can lose focus and emit
+    // editingFinished(), which would forward a TextInput signal from an object
+    // whose dynamic type is already a base class - Qt asserts on that. Detach
+    // the editor first so no signal or event can reach a half-destroyed object.
+    if (editor_ != nullptr) {
+        editor_->removeEventFilter(this);
+        QObject::disconnect(editor_, nullptr, this, nullptr);
+    }
+}
 
 QString TextInput::text() const
 {
@@ -679,6 +868,11 @@ QRectF TextInput::clearButtonRect() const
     return QRectF(field.right() - side, field.center().y() - side / 2.0, side, side);
 }
 
+qreal TextInput::labelProgress() const noexcept
+{
+    return labelProgress_;
+}
+
 void TextInput::measureOverride(MeasureSpec width, MeasureSpec height)
 {
     const Theme& theme = Theme::forWidget(this);
@@ -714,9 +908,6 @@ void TextInput::paintContent(QPainter& painter, const QRectF& content)
 
     const QColor container = enabled ? colours.surfaceContainerHighest
                                      : withAlpha(colours.onSurface, 0.04);
-    const QColor labelColour = !enabled
-        ? withAlpha(colours.onSurface, 0.38)
-        : invalid ? colours.error : focused ? colours.primary : colours.onSurfaceVariant;
     const QColor underline = !enabled
         ? withAlpha(colours.onSurface, 0.12)
         : invalid ? colours.error : focused ? colours.primary : colours.onSurfaceVariant;
@@ -733,30 +924,51 @@ void TextInput::paintContent(QPainter& painter, const QRectF& content)
     painter.drawLine(QPointF(field.left(), underlineY), QPointF(field.right(), underlineY));
 
     if (!label_.isEmpty()) {
-        const bool floating = focused || !text().isEmpty();
-        const QFont labelFont = themeFont(theme, floating ? theme.type().bodySmall
-                                                          : theme.type().bodyLarge);
-        painter.setFont(labelFont);
-        painter.setPen(labelColour);
+        // The label interpolates between the two settled layouts rather than
+        // switching between them: at 0 it is bodyLarge, vertically centred in
+        // the whole field; at 1 it is bodySmall on the floating line. The box
+        // (top and height) is interpolated with the same fraction as the type,
+        // so AlignVCenter produces a continuous path. The left edge is fixed at
+        // the field padding in both states; only the reserved trailing space
+        // grows with the progress, so the label never jumps horizontally.
+        //
+        // Colour is part of the same interpolation: a resting label is
+        // onSurfaceVariant and a floating one is primary while the field is
+        // focused (and stays onSurfaceVariant when it floats because it holds
+        // text). Error and disabled keep their own roles at both ends.
+        const qreal progress = std::clamp(labelProgress_, 0.0, 1.0);
+        const TextStyle& restingStyle = theme.type().bodyLarge;
+        const TextStyle& floatingStyle = theme.type().bodySmall;
 
-        if (floating) {
-            // The label's box is its own token line height, and the clear
-            // button's box is reserved so a long label cannot run under it.
-            const bool clearVisible = clearEnabled_ && enabled && !text().isEmpty();
-            const qreal reserved = clearVisible ? density.dp(48.0) : 0.0;
-            const QRectF labelRect(field.left() + padding,
-                                   field.top() + floatingLabelTop(theme),
-                                   std::max(0.0, field.width() - padding * 2.0 - reserved),
-                                   labelLineHeight(theme));
-            painter.drawText(labelRect, static_cast<int>(Qt::AlignLeft | Qt::AlignVCenter),
-                             elided(labelFont, label_, labelRect.width()));
-        } else {
-            const QRectF labelRect(field.left() + padding, field.top(),
-                                   std::max(0.0, field.width() - padding * 2.0),
-                                   field.height());
-            painter.drawText(labelRect, static_cast<int>(Qt::AlignLeft | Qt::AlignVCenter),
-                             elided(labelFont, label_, labelRect.width()));
-        }
+        TextStyle labelStyle = restingStyle;
+        labelStyle.sizeSp = restingStyle.sizeSp
+            + (floatingStyle.sizeSp - restingStyle.sizeSp) * progress;
+        labelStyle.trackingSp = restingStyle.trackingSp
+            + (floatingStyle.trackingSp - restingStyle.trackingSp) * progress;
+        labelStyle.weight = static_cast<int>(std::lround(
+            restingStyle.weight + (floatingStyle.weight - restingStyle.weight) * progress));
+
+        const QFont labelFont = themeFont(theme, labelStyle);
+        painter.setFont(labelFont);
+
+        const QColor restingColour = !enabled ? withAlpha(colours.onSurface, 0.38)
+            : invalid ? colours.error : colours.onSurfaceVariant;
+        const QColor floatingColour = !enabled ? withAlpha(colours.onSurface, 0.38)
+            : invalid ? colours.error : focused ? colours.primary : colours.onSurfaceVariant;
+        painter.setPen(mixColour(restingColour, floatingColour, progress));
+
+        // The clear button's box is reserved proportionally, so a long label
+        // shortens smoothly instead of being re-elided in one step.
+        const bool clearVisible = clearEnabled_ && enabled && !text().isEmpty();
+        const qreal reserved = clearVisible ? density.dp(48.0) * progress : 0.0;
+        const qreal labelTop = field.top() + floatingLabelTop(theme) * progress;
+        const qreal labelHeight = field.height()
+            + (labelLineHeight(theme) - field.height()) * progress;
+        const QRectF labelRect(field.left() + padding, labelTop,
+                               std::max(0.0, field.width() - padding * 2.0 - reserved),
+                               std::max(0.0, labelHeight));
+        painter.drawText(labelRect, static_cast<int>(Qt::AlignLeft | Qt::AlignVCenter),
+                         elided(labelFont, label_, labelRect.width()));
     }
 
     if (clearEnabled_ && enabled && !text().isEmpty()) {
@@ -822,6 +1034,10 @@ void TextInput::changeEvent(QEvent* event)
 
     if (event->type() == QEvent::ThemeChange) {
         applyThemeToEditor();
+        // Turning reduced motion on while the label is in flight must not
+        // leave a frame timer running: settle at the state the field reports.
+        if (Theme::forWidget(this).motion().reducedMotion)
+            settleLabel();
         requestUpdate();
     }
 }
@@ -833,11 +1049,13 @@ bool TextInput::eventFilter(QObject* watched, QEvent* event)
         case QEvent::FocusIn:
             focused_ = true;
             onEditorFocusChanged(true);
+            updateLabelTransition();
             requestUpdate();
             break;
         case QEvent::FocusOut:
             focused_ = false;
             onEditorFocusChanged(false);
+            updateLabelTransition();
             requestUpdate();
             break;
         case QEvent::KeyPress: {
@@ -896,6 +1114,84 @@ void TextInput::revalidate()
 bool TextInput::editorFocused() const
 {
     return focused_ || (editor_ != nullptr && editor_->hasFocus());
+}
+
+qreal TextInput::labelTarget() const
+{
+    // The label floats while the editor has focus or holds text. focused_ is
+    // maintained by the event filter, so a FocusOut is reflected here even
+    // while Qt is still completing the focus transfer.
+    return (focused_ || !text().isEmpty()) ? 1.0 : 0.0;
+}
+
+void TextInput::settleLabel()
+{
+    labelAnimator_.stop();
+    labelProgress_ = labelTarget();
+    requestUpdate();
+}
+
+void TextInput::updateLabelTransition()
+{
+    const qreal target = labelTarget();
+
+    // A field without a label has nothing to move, and a hidden field has no
+    // frames to show: both settle at the target instead of keeping a frame
+    // timer alive.
+    if (label_.isEmpty() || !isVisible()) {
+        labelAnimator_.stop();
+        labelProgress_ = target;
+        requestUpdate();
+        return;
+    }
+
+    const Theme& theme = Theme::forWidget(this);
+    const MotionSpec spec = theme.motion().medium2();
+    if (theme.motion().reducedMotion || spec.duration.count() <= 0) {
+        labelAnimator_.stop();
+        labelProgress_ = target;
+        requestUpdate();
+        return;
+    }
+
+    if (std::abs(labelProgress_ - target) < 0.001) {
+        labelAnimator_.stop();
+        labelProgress_ = target;
+        requestUpdate();
+        return;
+    }
+
+    // Stop first and ramp again from the painted value. The Animator's own
+    // retargeting starts the new run at its previous progress, which this
+    // callback would then apply on top of `from` a second time.
+    const qreal from = labelProgress_;
+    labelAnimator_.stop();
+    labelAnimator_.start(spec, [this, from, target](qreal fraction) {
+        // The Animator already swallows a throwing callback; the local guard
+        // keeps the same isolation here so a paint-side helper can never unwind
+        // through Qt's animation stack.
+        try {
+            labelProgress_ = from + (target - from) * std::clamp(fraction, 0.0, 1.0);
+            requestUpdate();
+        } catch (...) {
+        }
+    });
+    requestUpdate();
+}
+
+void TextInput::onShown()
+{
+    // A hidden field does not tick, so show is a settlement point: the state
+    // that changed while hidden is painted exactly, and the next focus or text
+    // change starts its own transition.
+    settleLabel();
+}
+
+void TextInput::onHidden()
+{
+    // The end state is what matters when the field is shown again; leaving a
+    // frame timer running while nothing can be seen would be wasted work.
+    settleLabel();
 }
 
 bool TextInput::hasSupportingText() const
@@ -1268,9 +1564,9 @@ void DropDown::setSourceModel(QAbstractItemModel* model)
     const int previousIndex = current_;
     const QVariant previousValue = currentValue();
 
-    adapter_->setSourceModel(nullptr);
+    setAdapterSource(nullptr);
     ownedModel_.reset();
-    adapter_->setSourceModel(model);
+    setAdapterSource(model);
 
     current_ = count() > 0 ? 0 : -1;
     requestUpdate();
@@ -1617,7 +1913,64 @@ void DropDown::ensureOwnedModel()
         return;
 
     ownedModel_ = std::make_unique<Model>();
-    adapter_->setSourceModel(ownedModel_.get());
+    setAdapterSource(ownedModel_.get());
+}
+
+void DropDown::setAdapterSource(QAbstractItemModel* model)
+{
+    QAbstractItemModel* previous = adapter_->sourceModel();
+    if (previous == model)
+        return;
+
+    if (previous != nullptr)
+        QObject::disconnect(previous, nullptr, this, nullptr);
+
+    adapter_->setSourceModel(model);
+
+    if (model == nullptr)
+        return;
+
+    // A reset or a row removal can invalidate the held index: the handler
+    // clamps it to the new count and reports the change. The try/catch keeps a
+    // model that throws while it mutates from breaking the widget.
+    connect(model, &QAbstractItemModel::rowsInserted, this, [this] {
+        try {
+            refreshFromModel();
+        } catch (...) {
+        }
+    });
+    connect(model, &QAbstractItemModel::rowsRemoved, this, [this] {
+        try {
+            refreshFromModel();
+        } catch (...) {
+        }
+    });
+    connect(model, &QAbstractItemModel::modelReset, this, [this] {
+        try {
+            refreshFromModel();
+        } catch (...) {
+        }
+    });
+}
+
+void DropDown::refreshFromModel()
+{
+    const int rows = count();
+    const int previousIndex = current_;
+
+    current_ = rows <= 0 ? -1 : std::clamp(current_, 0, rows - 1);
+    requestUpdate();
+
+    if (previousIndex == current_)
+        return;
+
+    emit currentIndexChanged(current_);
+
+    // The model has already shrunk by the time this slot runs, so the value the
+    // control held before the change can no longer be read back from it. The
+    // value follows the index: report it whenever the clamp moves the row, and
+    // report the invalid value when the model emptied (-1 has no value).
+    emit currentValueChanged(currentValue());
 }
 
 void DropDown::handlePopupActivated(int row)
@@ -2460,9 +2813,9 @@ void PickerBase::setSourceModel(QAbstractItemModel* model)
     if (adapter_->sourceModel() == model)
         return;
 
-    adapter_->setSourceModel(nullptr);
+    setAdapterSource(nullptr);
     ownedModel_.reset();
-    adapter_->setSourceModel(model);
+    setAdapterSource(model);
     refreshFromModel();
 }
 
@@ -2820,11 +3173,11 @@ QVariant PickerBase::valueForRow(int row) const
 
 void PickerBase::setOwnedValues(QVariantList values, QStringList labels)
 {
-    adapter_->setSourceModel(nullptr);
+    setAdapterSource(nullptr);
 
     ownedModel_ = std::make_unique<Model>();
     ownedModel_->setValues(std::move(values), std::move(labels));
-    adapter_->setSourceModel(ownedModel_.get());
+    setAdapterSource(ownedModel_.get());
 
     refreshFromModel();
 }
@@ -2957,6 +3310,43 @@ qreal PickerBase::centerY() const
     return contentRect().center().y();
 }
 
+void PickerBase::setAdapterSource(QAbstractItemModel* model)
+{
+    QAbstractItemModel* previous = adapter_->sourceModel();
+    if (previous == model)
+        return;
+
+    if (previous != nullptr)
+        QObject::disconnect(previous, nullptr, this, nullptr);
+
+    adapter_->setSourceModel(model);
+
+    if (model == nullptr)
+        return;
+
+    // A reset or a row removal can invalidate the held index: the handler
+    // clamps it to the new count and reports the change. The try/catch keeps a
+    // model that throws while it mutates from breaking the widget.
+    connect(model, &QAbstractItemModel::rowsInserted, this, [this] {
+        try {
+            refreshFromModel();
+        } catch (...) {
+        }
+    });
+    connect(model, &QAbstractItemModel::rowsRemoved, this, [this] {
+        try {
+            refreshFromModel();
+        } catch (...) {
+        }
+    });
+    connect(model, &QAbstractItemModel::modelReset, this, [this] {
+        try {
+            refreshFromModel();
+        } catch (...) {
+        }
+    });
+}
+
 void PickerBase::refreshFromModel()
 {
     stopSettling();
@@ -2965,12 +3355,10 @@ void PickerBase::refreshFromModel()
     const int rows = count();
     const int previous = current_;
 
-    if (rows <= 0)
-        current_ = -1;
-    else if (current_ < 0)
-        current_ = 0;
-    else
-        current_ = cyclic_ ? normalized(current_) : std::min(current_, rows - 1);
+    // A model that shrank leaves the held row outside the new range. Clamp it
+    // (even in cyclic mode: wrapping would jump to the first row instead of
+    // the nearest survivor) and report the change; an empty model has no row.
+    current_ = rows <= 0 ? -1 : std::clamp(current_, 0, rows - 1);
 
     requestUpdate();
 

@@ -225,27 +225,35 @@ These are **state-layer** opacities, not component colours: a widget never hard-
 
 ## 4. Layered architecture
 
-### 4.1 Layer diagram
+### 4.1 Layer order
+
+The build and documentation order (the `add_subdirectory` order in the root
+`CMakeLists.txt`) is:
+
+**core → structure → store → pool → schedule → tokens → theme → event →
+drawable → layer → animation → ripple → view → layout → components**
+
+The levels below group the modules for reading; the position inside the
+painting group is not a dependency claim (`layer` consumes `ripple`, which the
+list places after it). §13.1 is the authoritative edge list.
 
 ```
-                    ┌──────────────────────────────┐
-  L6  components    │ Button, Card, TextField, …   │
-                    ├──────────────────────────────┤
-  L5  layout        │ Row/Column/Frame, size classes│
-                    ├──────────────────────────────┤
-  L4  view          │ View, ViewGroup, state machine│
-                    ├───────────┬──────────┬────────┤
-  L3  drawable/layer│ Drawable  │ Layer    │ Motion │
-                    ├───────────┴──────────┴────────┤
-  L2  theme         │ MaterialTheme, ThemeScope    │
-                    ├──────────────────────────────┤
-  L1  tokens        │ Colour, Type, Shape, Motion  │
-                    ├──────────────────────────────┤
-  L1p pool          │ Pools, threads, IO, IPC      │
-                    ├──────────────────────────────┤
-  L0  core          │ Units, geometry, state flags │
-                    └──────────────────────────────┘
-                         Qt 6 Core / Gui / Widgets
+L6  components    Widgets, charts, Canvas, Clock, Schedule, Scheduler
+L5  layout        Row/Column/Frame, size classes, adaptive behaviour
+L4  view          View, ViewGroup, measure/arrange/paint kernel
+L3  drawable      Drawing primitives
+    layer         Background, elevation and foreground stages
+    animation     Tweening driven by motion tokens
+    ripple        Pointer-origin hover and press feedback
+L3  event         Event values, dispatch, propagation, gestures
+L2  theme         Theme bundle and scoped resolution
+L1  tokens        Colour, type, shape, elevation, motion, state
+L1  schedule      Task priority queue
+L1p pool          Object pools, threads, ring buffers, IO, IPC
+L1b store         Named stores over a bounded LRU value map
+L1a structure     Nodes, trees, forests, allocator, LRU containers
+L0  core          Units, geometry, state flags
+                  Qt 6 Core / Gui / Widgets
 ```
 
 ### 4.2 Layer responsibilities
@@ -253,23 +261,102 @@ These are **state-layer** opacities, not component colours: a widget never hard-
 | Layer | Owns | Must not |
 | --- | --- | --- |
 | L0 `core` | Density, `MeasureSpec`, `ViewStates`, geometry helpers, logging categories | Include `QWidget`, `QPainter` or any token type |
-| L1 `schedule` | Task priority queue: ordering, coalescing, budgeted flushes | Know about widgets, painting or tokens |
+| L1a `structure` | Headless containers (nodes, trees, forests, skip list), `BlockAllocator`/`ObjectPool<T>`, the LRU map/set/list family, and the table/virtual-source contracts | Include Qt Widgets, a token, a painter or any widget |
+| L1b `store` | Process-wide registry of named stores; each store's values live in a bounded `UnorderedLRUMap` with LRU eviction | Paint, or include Qt Widgets |
 | L1p `pool` | Object pools, thread pool, ring buffers, IO thread, cross-thread mailbox, same-machine process IPC | Include `QtWidgets`, a token type or any widget |
+| L1 `schedule` | Task priority queue: ordering, coalescing, budgeted flushes | Know about widgets, painting or tokens |
 | L1 `tokens` | Immutable colour scheme, type scale, shape scale, elevation scale, motion specs, state opacities | Know about widgets, painting or Qt Widgets |
 | L2 `theme` | The token bundle, scoped resolution, light/dark switching, `QPalette` bridge | Paint anything |
 | L3 `event` | Event values, dispatch chain, capture/intercept/bubble, gesture recognition | Know about widgets, painting or tokens |
 | L3 `drawable` / `layer` / `animation` / `ripple` | Drawing primitives, composited layers, tweening, pointer-origin feedback | Contain component-specific policy (a button's padding is not a drawable) |
 | L4 `view` | Measure/arrange/paint template, event-to-state mapping, focus, hit testing | Know any concrete component |
 | L5 `layout` | Containers, spacing, window size classes, RTL arrangement | Paint beyond backgrounds |
-| L6 `components` | Public widgets and their anatomy | Introduce new token values or bypass the view template |
+| L6 `components` | Public widgets, the chart stack and the time components | Introduce new token values or bypass the view template |
 
 ### 4.3 Rules
 
-1. **Dependencies point downwards only.** No layer may include a header from a layer above it.
+1. **Dependencies follow §13.1.** No module may include a header from a module its row does not permit.
 2. **Tokens are data.** A token type has no virtual functions, no `QObject` base and no dependency on `QtWidgets`.
 3. **One paint path.** Every component paints through `View::paintEvent`, which is `final`.
 4. **No cross-layer friendship.** Where a lower layer must notify an upper one, it uses a signal or a callback supplied by the upper layer, never an upward `#include`.
 5. **`detail/` is private.** Headers under `detail/` are not installed and may change without notice.
+6. **The module order is a build order, not a topological sort.** `layer` consumes `ripple` even though the list in §4.1 places `ripple` later; the matrix in §13.1 is the contract.
+
+### 4.4 The `structure` sub-layers: allocator and LRU
+
+`structure/allocator/` supplies the storage the rest of `structure` builds on.
+`BlockAllocator` serves fixed-size raw blocks from chunks: one `new[]` per
+chunk, an intrusive free list threaded through the free blocks themselves, O(1)
+allocate and deallocate, `reserve(n)` and `shrinkToFit()`. Chunk buffers never
+move, so a block address stays valid until the allocator is destroyed.
+`ObjectPool<T>` adds object lifetime on top: `create()` placement-constructs a
+`T` in a block, `destroy()` runs its destructor and returns the block, and
+`reserve(n)` warms the pool. Both are single-threaded and Qt-free.
+
+`structure/lru/` is the recency layer. `UnorderedLRUMap`/`Set` put the index in
+a `std::unordered_map`; `OrderedLRUMap`/`Set` put it in a `std::map`; all four
+share `detail::LruCore`, so promotion is O(1), a full cache evicts the oldest
+entry before inserting, `setCapacity()` shrinks by evicting oldest-first, and
+`setEvictionHandler()` runs after the victim has left both containers.
+`ArrayLRUList` stores order slots in one growable array; `LinkedLRUList` stores
+them in intrusive nodes and is the default order container.
+
+`LinkedLRUList`'s node pool is `structure::ObjectPool<Node>` — that is, the
+allocator above — and deliberately not `md::pool::ObjectPool`. `structure` may
+depend on `core` only (`tools/check_layering.cmake`), while `pool` is a separate
+side layer; using it would invert the order. The duplication is the price of
+keeping the data-structure layer headless and independently testable.
+
+### 4.5 The chart stack
+
+`ChartBase` is the shared surface of every chart. It owns the title, the
+legend, the coordinate frame (grid, axes, tick marks, tick labels, axis
+titles), the categorical palette and the empty state, keeps a
+`MathematicsCoordination` mapped into `plotRect()`, and calls `paintPlot()` for
+the data marks. The frame is painted *before* `paintPlot()`, so a series never
+has to erase a grid line. **A chart never paints axes itself**: it either uses
+the inherited frame or opts out with `setAxesVisible(false)` (pie, radar,
+heatmap, funnel).
+
+`MathematicsCoordination` is the data-to-pixel transform. It keeps three
+ranges — the requested `dataBounds()`, the auto-fit `fittedBounds()` and the
+currently mapped `visibleBounds()` — and provides `toPixel()`/`toData()`, nice
+1/2/5 × 10^k ticks, an animated auto-fit (medium2, reduced-motion aware),
+`zoomAt()`, `pan()` and `setVisibleBounds()`. It can paint a frame standalone or
+be installed into a host plot area with `setPlotArea()`/`paintFrame()`.
+
+Nine charts build on that surface: `LineChart`, `ScatterChart`, `PieChart`,
+`BarChart`, `HistogramChart`, `BoxPlotChart`, `HeatmapChart`, `RadarChart` and
+`FunnelChart`.
+
+`Canvas` hosts the drawing contexts: `Context1D` (a scalar sparkline strip),
+`Context2D` (a retained `QPainter` command façade) and `Context3D` (a retained
+primitive scene with a camera). `Context3D` projects with `QPainter` by
+default — the software path is always compiled and is what the headless tests
+exercise — and can embed a `QOpenGLWidget` backend when the components target
+is built with `PERIODICITY_HAS_OPENGL`; if no GL context is available at paint
+time it falls back to software and logs once. `Canvas::requestDraw()` schedules
+the repaint; contexts do not schedule their own.
+
+### 4.6 Exception isolation
+
+Qt does not expect a virtual hook to throw. `view/view/error_guard.h` provides
+`view::guard()`: it invokes a callable, catches any exception, reports it once
+per entry point (through `GuardReport`) and returns false. `View` runs its four
+entry points — `paintEvent()`, `measure()`, `arrange()` and `event()` — through
+that guard, so a broken component stays paintable and the event loop keeps
+running. The happy path allocates nothing; the diagnostic string is built only
+on failure.
+
+Modules whose callbacks do not pass through `View` carry their own boundary.
+`schedule` catches each task in `TaskQueue::flush()` and keeps draining; `pool`
+catches worker, IO-task and mailbox exceptions and releases the `parallelFor`
+latch on every path; `animation` invokes `onValue` from a copy behind a
+`QPointer` guard; `ripple` guards the queued repaint notification so a throwing
+observer cannot unwind into the event loop; and `event` contains handler
+exceptions in the dispatcher and resets a gesture when its callback throws.
+Application code can therefore throw without unwinding into Qt's event or paint
+loop.
 
 ---
 
@@ -1130,24 +1217,32 @@ The repository currently contains a Visual Studio CMake template: a `main()` tha
 
 Rows are consumers; columns are dependencies. A tick means the include and the link are permitted.
 
-| ↓ depends on → | core | schedule | tokens | theme | event | ripple | drawable | layer | animation | view | layout | components |
-| --- | :-: | :-: | :-: | :-: | :-: | :-: | :-: | :-: | :-: | :-: | :-: | :-: |
-| **core** | — | | | | | | | | | | | |
-| **schedule** | ✓ | — | | | | | | | | | | |
-| **tokens** | ✓ | | — | | | | | | | | | |
-| **theme** | ✓ | | ✓ | — | | | | | | | | |
-| **event** | ✓ | | | | — | | | | | | | |
-| **ripple** | ✓ | | ✓ | ✓ | | — | | | | | | |
-| **drawable** | ✓ | | ✓ | ✓ | | | — | | | | | |
-| **layer** | ✓ | | ✓ | ✓ | | ✓ | ✓ | — | | | | |
-| **animation** | ✓ | | ✓ | | | | | | — | | | |
-| **view** | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | — | | |
-| **layout** | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | — | |
-| **components** | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | — |
+| ↓ depends on → | core | structure | store | pool | schedule | tokens | theme | event | drawable | layer | animation | ripple | view | layout | components |
+| --- | :-: | :-: | :-: | :-: | :-: | :-: | :-: | :-: | :-: | :-: | :-: | :-: | :-: | :-: | :-: |
+| **core** | — | | | | | | | | | | | | | | |
+| **structure** | ✓ | — | | | | | | | | | | | | | |
+| **store** | ✓ | ✓ | — | | | | | | | | | | | | |
+| **pool** | ✓ | | | — | | | | | | | | | | | |
+| **schedule** | ✓ | | | | — | | | | | | | | | | |
+| **tokens** | ✓ | | | | | — | | | | | | | | | |
+| **theme** | ✓ | | ✓ | | | ✓ | — | | | | | | | | |
+| **event** | ✓ | | | | | | | — | | | | | | | |
+| **drawable** | ✓ | | | | | ✓ | ✓ | | — | | | | | | |
+| **layer** | ✓ | | | | | ✓ | ✓ | | ✓ | — | | ✓ | | | |
+| **animation** | ✓ | | | | | ✓ | ✓ | | | | — | | | | |
+| **ripple** | ✓ | | | | | ✓ | ✓ | | | | | — | | | |
+| **view** | ✓ | | | | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | — | | |
+| **layout** | ✓ | | | | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | — | |
+| **components** | ✓ | ✓ | ✓ | | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | — |
 
-`structure`, `store` and `pool` are headless side layers, left out of the matrix for width:
-`structure` and `pool` depend on `core` only, and none of them may include a token, a widget or
-a painted surface.
+The matrix is the full contract; the layering check in `tools/check_layering.cmake`
+mirrors it with one `ALLOWED_<module>` list per row. `structure` depends on
+`core` only. `store` adds `structure`, because a store's value map is a
+`structure::UnorderedLRUMap`. `pool` remains a headless side layer on `core`
+only. `theme` consumes `store` for its published configuration, `animation`
+and `ripple` both consume `theme`, and `layer` consumes `ripple`. None of
+`structure`, `store` or `pool` may include a token, a widget or a painted
+surface.
 
 ### 13.2 Forbidden dependencies
 
@@ -1165,7 +1260,7 @@ a painted surface.
 ### 13.3 Enforcement
 
 1. **Target boundaries.** Each module links only what the matrix permits, and only target-level includes are exported. An illegal `#include` fails to compile because the header directory is not on the include path.
-2. **Layering check.** `cmake -P tools/check_layering.cmake` walks every public header, extracts `#include <md/...>` lines and compares the includer's module with the matrix. CI fails on a violation, including in pull requests.
+2. **Layering check.** `cmake -P tools/check_layering.cmake` walks every public header, extracts `#include <md/...>` lines and compares the includer's module with the matrix. The script encodes each row as an `ALLOWED_<module>` list — for example `ALLOWED_store` is `core;structure` — so the matrix and the check cannot drift apart. CI fails on a violation, including in pull requests.
 3. **Header hygiene.** Public headers must compile standalone: a generated target compiles each header in isolation with only its permitted dependencies.
 4. **Review rule.** A new module requires an update to this document and to the matrix before it is added to the build.
 

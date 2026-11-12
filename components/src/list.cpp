@@ -75,8 +75,10 @@ void List::setModel(QAbstractItemModel* model)
 
     model_ = model;
     current_ = QPersistentModelIndex();
+    hasSelection_ = false;
     hoveredRow_ = -1;
     pressedRow_ = -1;
+    removedCurrentRow_ = -1;
     scrollOffset_ = 0.0;
 
     connectModel();
@@ -172,6 +174,7 @@ void List::setCurrentIndex(const QModelIndex& index)
         return;
 
     current_ = next;
+    hasSelection_ = next.isValid();
     if (next.isValid())
         ensureVisible(next.row());
 
@@ -181,6 +184,8 @@ void List::setCurrentIndex(const QModelIndex& index)
 
 void List::clearSelection()
 {
+    hasSelection_ = false;
+
     if (!current_.isValid())
         return;
 
@@ -215,11 +220,14 @@ void List::scrollToRow(int row)
 
 int List::firstVisibleRow() const
 {
+    const int count = rowCount();
     const qreal rh = rowHeightPx();
-    if (rh <= 0.0 || rowCount() == 0)
+    if (rh <= 0.0 || count == 0 || contentRect().height() <= 0.0)
         return 0;
 
-    return std::clamp(static_cast<int>(std::floor(scrollOffset_ / rh)), 0, rowCount());
+    // A collapsed viewport lets ensureVisible() scroll to `count * rowHeight`,
+    // whose row number is `count`; an index always names an existing row.
+    return std::clamp(static_cast<int>(std::floor(scrollOffset_ / rh)), 0, count - 1);
 }
 
 int List::visibleRowCount() const
@@ -297,24 +305,51 @@ void List::connectModel()
         requestUpdate();
     });
 
+    // QPersistentModelIndex invalidates itself inside beginRemoveRows(), before
+    // rowsRemoved() runs, so the selected row is cached while it still exists.
+    connect(model_, &QAbstractItemModel::rowsAboutToBeRemoved, this,
+            [this](const QModelIndex& parent, int first, int last) {
+                removedCurrentRow_ = !parent.isValid() && current_.isValid()
+                        && current_.row() >= first && current_.row() <= last
+                    ? current_.row()
+                    : -1;
+            });
+
     connect(model_, &QAbstractItemModel::rowsRemoved, this, [this] {
-        if (current_.isValid() && current_.row() >= rowCount()) {
-            current_ = QPersistentModelIndex();
-            emit currentIndexChanged(QModelIndex());
+        try {
+            const bool selectionRemoved = removedCurrentRow_ >= 0;
+            removedCurrentRow_ = -1;
+
+            if (selectionRemoved) {
+                current_ = QPersistentModelIndex();
+                hasSelection_ = false;
+                emit currentIndexChanged(QModelIndex());
+            }
+
+            clampScroll();
+            requestUpdate();
+        } catch (...) {
+            // A model that throws while the view repairs itself must not break
+            // the widget.
         }
-        clampScroll();
-        requestUpdate();
     });
 
     connect(model_, &QAbstractItemModel::modelReset, this, [this] {
-        const bool hadCurrent = current_.isValid();
-        current_ = QPersistentModelIndex();
-        hoveredRow_ = -1;
-        pressedRow_ = -1;
-        scrollOffset_ = 0.0;
-        if (hadCurrent)
-            emit currentIndexChanged(QModelIndex());
-        requestUpdate();
+        try {
+            const bool hadCurrent = hasSelection_ || current_.isValid();
+            current_ = QPersistentModelIndex();
+            hasSelection_ = false;
+            removedCurrentRow_ = -1;
+            hoveredRow_ = -1;
+            pressedRow_ = -1;
+            scrollOffset_ = 0.0;
+            if (hadCurrent)
+                emit currentIndexChanged(QModelIndex());
+            requestUpdate();
+        } catch (...) {
+            // A model that throws while the view repairs itself must not break
+            // the widget.
+        }
     });
 
     connect(model_, &QAbstractItemModel::layoutChanged, this, [this] {

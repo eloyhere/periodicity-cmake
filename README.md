@@ -21,6 +21,7 @@ permitted dependencies. Read it before changing a module boundary.
 | --- | --- | --- |
 | `core/` | L0 — units, geometry, state flags | `periodicity::core` |
 | `structure/` | L1a — headless data structures (nodes, trees, forests, pools) and the table/virtual-source contracts | `periodicity::structure` |
+| `store/` | L1b — named configuration stores over a bounded LRU value map | `periodicity::store` |
 | `pool/` | L1p — object pools, thread pool, ring buffers, IO thread, mailbox and process IPC | `periodicity::pool` |
 | `schedule/` | L1 — task priority queue (input before UI) | `periodicity::schedule` |
 | `tokens/` | L1 — colour, type, shape, elevation, motion, state | `periodicity::tokens` |
@@ -193,3 +194,8 @@ and tests. The token values recorded in `framework.md` §3 were verified against
 reference token sources. Dynamic colour and Material 3 Expressive remain deliberately
 postponed; installation and export (`find_package(Periodicity)`) are not implemented yet,
 so the library is currently consumed inside the source tree.
+
+Recent additions:
+
+* **Visualisation** — `Canvas` hosts 1D, 2D and 3D drawing contexts, and nine chart components (`LineChart`, `ScatterChart`, `PieChart`, `BarChart`, `HistogramChart`, `BoxPlotChart`, `HeatmapChart`, `RadarChart`, `FunnelChart`) share the `ChartBase` / `MathematicsCoordination` stack.
+* **LRU containers** — `structure` now provides `UnorderedLRUMap`/`Set`, `OrderedLRUMap`/`Set`, `ArrayLRUList` and `LinkedLRUList`, with O(1) promotion and capacity eviction.

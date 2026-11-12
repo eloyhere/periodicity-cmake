@@ -15,6 +15,8 @@ Severity legend:
 
 ## Summary
 
+All P1 findings below were fixed in the `fix(p1)` batch; P2 findings remain open.
+
 | Module | P0 | P1 | P2 | Baseline (that module's own suite) |
 | --- | --- | --- | --- | --- |
 | core | 0 | 2 | 4 | `tst_core` 10 pass |
@@ -66,6 +68,8 @@ Baseline: `tst_core.exe` — **10 passed, 0 failed, 0 skipped**. P0 findings: no
 - Actual: `dp()` multiplies unconditionally, so `scale=0` makes every dp/sp value 0 (collapsed layout) while `pxToDp(24)` still returns 24; with `scale=-2`, `dp(12)==-24` but `pxToDp(-24)` returns -24, not 12.
 - Fix: one `effectiveScale()` (`scale > 0 && qIsFinite(scale) ? scale : 1.0`) used by `dp`, `sp` and `pxToDp`.
 
+**Status:** fixed — `dp`, `sp` and `pxToDp` now share `effectiveScale()`, so a non-positive or non-finite scale falls back to 1.0.
+
 ### ISSUE-core-2: NaN corner radius silently becomes the maximum radius
 - Severity: P1
 - Location: `core/src/geometry.cpp:20`
@@ -73,6 +77,8 @@ Baseline: `tst_core.exe` — **10 passed, 0 failed, 0 skipped**. P0 findings: no
 - Expected: the negative-radius rule at `:18-19` — an invalid radius degenerates to 0.
 - Actual: `radius <= 0.0` and `radius < limit` are both false for NaN, so the ternary returns `limit`: the most-rounded corner the rectangle allows, the opposite of degenerate.
 - Fix: `if (!(radius > 0.0)) return 0.0;` then clamp the rest (Inf still clamps to `limit`).
+
+**Status:** fixed — `clampRadius()` now tests `!(radius > 0.0)`, so a NaN radius degenerates to zero instead of the maximum.
 
 ### ISSUE-core-3: `toPath`'s empty-rect guard misses NaN/Inf bounds
 - Severity: P2
@@ -139,6 +145,8 @@ Baseline: `tst_pool` 19, `tst_thread_pool` 13, `tst_ring_channel` 12, `tst_ipc` 
 - Actual: the worker swallows the exception and only increments `failed_`; `pending.count_down()` is skipped, so the wait never returns.
 - Fix: count down in a scope guard in the wrapper that invokes the body.
 
+**Status:** fixed — `parallelFor()` now counts its latch down from a completion hook that runs when the body throws.
+
 ### ISSUE-pool-2: `parallelFor` hangs if the queue is discarded concurrently
 - Severity: P1
 - Location: `pool/src/thread_pool.cpp:131-135`, `:152`
@@ -147,6 +155,8 @@ Baseline: `tst_pool` 19, `tst_thread_pool` 13, `tst_ring_channel` 12, `tst_ipc` 
 - Actual: queued chunk nodes are destroyed without counting down, so the latch never reaches zero.
 - Fix: have the task node's destructor count down, or drain pending chunks through a completion path.
 
+**Status:** fixed — queued chunk nodes now carry that completion hook, so a concurrent discard releases the latch.
+
 ### ISSUE-pool-3: `ObjectPool` double destroy / foreign release corrupts the free list in release builds
 - Severity: P1
 - Location: `pool/include/md/pool/block_pool.h:278-290` (`isFree()` is `return false` under `NDEBUG`), `release()` at `:135-144`; debug-only asserts at `object_pool.h:126-128`
@@ -154,6 +164,8 @@ Baseline: `tst_pool` 19, `tst_thread_pool` 13, `tst_ring_channel` 12, `tst_ipc` 
 - Expected: rejected or a documented precondition; at worst a no-op.
 - Actual: in release the block is pushed onto the free list twice and `inUse_` underflows; the pool later hands out the same storage to two owners.
 - Fix: keep a debug-and-release check (a generation counter or a magic word), or document the precondition as a contract violation and always assert.
+
+**Status:** fixed — `BlockPool::release()` now validates ownership and liveness and counts rejected releases instead of corrupting the free list.
 
 ### ISSUE-pool-4: `Mailbox` is unbounded and can lose its wake-up permanently
 - Severity: P2
@@ -221,6 +233,8 @@ Baseline: `tst_event.exe` 20 passed / 0 failed. Tests live at `tests/event/tst_e
 - Actual: `resetForDispatch()` (`event.cpp:70-76`) clears accepted/stopped and nulls the target; earlier `accept()`/`stopPropagation()` is lost. The bubble loop never re-sets the target (`:142-150`), so outer bubble handlers see the inner target. Nesting is unbounded → stack overflow.
 - Fix: guard against re-entry (assert/no-op) or save/restore phase, target and flags; cap nesting depth.
 
+**Status:** fixed — a `DispatchScope` now saves and restores the outer pass's phase, target and flags, and nesting is capped.
+
 ### ISSUE-event-2: a target destroyed during dispatch is a use-after-free
 - Severity: P1
 - Location: `event/src/event_dispatcher.cpp:82-92`, `:135`
@@ -229,6 +243,8 @@ Baseline: `tst_event.exe` 20 passed / 0 failed. Tests live at `tests/event/tst_e
 - Actual: the chain is a raw `std::vector<EventTarget*>` and the loops keep calling into freed memory. `Event::m_target` (`event.h:95`) survives the dispatch, so a retained event dangles (locked in by `tst_event.cpp:223-224`).
 - Fix: hold `QPointer` in the chain and abort on a nulled node; clear `m_target` on return.
 
+**Status:** fixed — the chain is a snapshot of lifetime tokens, dispatch aborts on a dead node, and the target is cleared on exit.
+
 ### ISSUE-event-3: a lost release leaves the gesture pressed forever
 - Severity: P1
 - Location: `event/src/gesture_detector.cpp:75-96`
@@ -236,6 +252,8 @@ Baseline: `tst_event.exe` 20 passed / 0 failed. Tests live at `tests/event/tst_e
 - Expected: `gesture_detector.h:12-13` — no callback at all; cancel on focus loss.
 - Actual: only `handleUp()`/`reset()` clear `m_pressed`; a later move fires `onLongPress` (`:94-96`) and every later move is consumed. `handle()` ignores `FocusOut` (`:41-54`) although `View::focusOutEvent` dispatches one (`view/src/view.cpp:546-548`); `Callbacks` has no `onCancel`.
 - Fix: reset on `FocusOut`/`PointerLeave`, add a stale-press deadline and an `onCancel` callback, correct the header claim.
+
+**Status:** fixed — `GestureDetector` now cancels on `FocusOut`/`PointerLeave` through a new `onCancel` callback.
 
 ### ISSUE-event-4: a second `PointerDown` silently abandons an in-progress drag
 - Severity: P2
@@ -274,6 +292,8 @@ Baseline: `tst_theme.exe` 20 passed. No font resolver in this module (font resol
 - Actual: `install()` does `delete existing` with no `ThemeChange` posted and no destructor; widgets keep cached colours (e.g. `NavigationView` caches its background in the constructor, `components/src/navigation_view.cpp:57`). `tst_theme.cpp:349-352` deletes a scope but only re-checks resolution.
 - Fix: post `ThemeChange` to the host subtree before replacing and in the destructor (or `deleteLater()`); note that `install()` also invalidates every previously returned `const Theme&`.
 
+**Status:** fixed — `ThemeScope::install()` and the destructor now post `ThemeChange` to the host subtree.
+
 ### ISSUE-theme-2: application theme read unsynchronised from worker threads
 - Severity: P1
 - Location: `theme/src/theme.cpp:166` (setter checks the thread at `:160-164`; getter at `:180-183`)
@@ -281,6 +301,8 @@ Baseline: `tst_theme.exe` 20 passed. No font resolver in this module (font resol
 - Expected: a data-race-free read (or a documented GUI-thread-only contract enforced everywhere).
 - Actual: the setter assigns a plain static `Theme`; `applicationTheme()` and `forWidget()` read it with no lock → race on `QColor`/`QString` members (UB). The rejected setter also fails silently.
 - Fix: mutex + return by value/`shared_ptr<const Theme>`, or mark all resolution GUI-thread and document it.
+
+**Status:** fixed — the application theme is now stored behind a mutex and read as an immutable snapshot.
 
 ### ISSUE-theme-3: adapter scopes never re-resolve after an ancestor or application theme change
 - Severity: P2
@@ -326,6 +348,8 @@ Baseline: `tst_store.exe` 7 passed. No P0 found.
 - Actual: only `changed()` is emitted; a watcher on `valueChanged` — `View::bindStore` (`view/src/view.cpp:701-705`) — keeps the old theme after a clear. Untested.
 - Fix: emit `valueChanged(key, {})` over a key snapshot before `changed()`, or add `cleared()`; document and test both.
 
+**Status:** fixed — `clear()` now emits `valueChanged`/`removed` once per key from a snapshot, then `cleared()`.
+
 ### ISSUE-store-2: removal is indistinguishable from an invalid value
 - Severity: P1
 - Location: `store/src/store.cpp:111-121`
@@ -333,6 +357,8 @@ Baseline: `tst_store.exe` 7 passed. No P0 found.
 - Expected: watchers can tell removal from an invalid value.
 - Actual: the old value is captured and discarded (`Q_UNUSED(old)`), and the signal carries `QVariant()` — identical to setting an invalid value. `Language` (`components/src/language.cpp:576-580`) reacts by calling `setCurrentLanguage("")`. Tests assert state only (`store/tests/tst_store.cpp:75-77`).
 - Fix: add `removed(key)` or a presence flag; document `hasValue()` as the discriminator; test the payload.
+
+**Status:** fixed — `remove()` now emits `removed(key)`, and `hasValue()` discriminates removal from an invalid value.
 
 ### ISSUE-store-3: registry unsynchronised; `open()` can return two stores for one id
 - Severity: P2
@@ -386,6 +412,8 @@ Baseline: `tst_schedule.exe` 10 passed. Tests live at `tests/schedule/tst_schedu
 - Actual: `flushing_ = true` (`:112`) is cleared only at `:127`; a throw leaves it true forever, so `flush()` returns 0 and `scheduleFlush()` bails — posts pile up and never run.
 - Fix: scope guard resetting state and rescheduling, plus a per-task catch.
 
+**Status:** fixed — `flush()` now catches each task and resets its bookkeeping through a scope guard.
+
 ### ISSUE-schedule-2: `retired_` grows without bound in normal coalesced use
 - Severity: P1
 - Location: `schedule/src/task_queue.cpp:48-49`, `:63`, `:136-152`
@@ -394,6 +422,8 @@ Baseline: `tst_schedule.exe` 10 passed. Tests live at `tests/schedule/tst_schedu
 - Actual: `popNext` never erases `coalesced_[key]`, so the next `postCoalesced` retires a dead id that nothing erases. Each `View::requestUpdate()` after a flush leaks one node — unbounded under animation.
 - Fix: carry `key` in `Entry`; erase `coalesced_[key]` when the popped id matches.
 
+**Status:** fixed — the coalescing map now holds the queued entry and erases its key when the entry is popped.
+
 ### ISSUE-schedule-3: unsynchronised queue; `main()` affinity is whoever calls first
 - Severity: P1
 - Location: `schedule/src/task_queue.cpp:26-30`, `:32-39`
@@ -401,6 +431,8 @@ Baseline: `tst_schedule.exe` 10 passed. Tests live at `tests/schedule/tst_schedu
 - Expected: framework.md §5.12 rule 5 — one queue per thread, main queue GUI-thread-only.
 - Actual: stated only as a comment; `main()` adopts the caller's affinity, and `post` mutates deques with no mutex → data race.
 - Fix: assert thread affinity in `post`/`flush`/`main()`; add a queued or mutexed cross-thread path.
+
+**Status:** fixed — `post()`, `postCoalesced()` and `flush()` now assert thread affinity, and the main queue is GUI-thread-bound.
 
 ### ISSUE-schedule-4: `postCoalesced` violates its documented priority/position contract
 - Severity: P2
@@ -445,6 +477,8 @@ Baseline: `tst_binary` 10, `tst_compound` 12 — pass.
 - Expected: O(n) time, stack depth independent of n — `LinearTree::clear` (`linear_tree.h:270-278`) already releases iteratively "so that a long list cannot exhaust the stack".
 - Actual: `sizeOf`/`heightOf`/the traversals/`cloneSubtree`/`refreshSubtree` recurse per level, and the defaulted `~BinaryTree` destroys a left-child chain recursively. Tens of thousands of sorted inserts overflow the 1 MB stack in `size()`, `height()`, `toInorder()` or at scope exit. Only AVL is depth-bounded; no test goes past 100.
 - Fix: iterative traversal/teardown or a documented depth cap; test a 100k-node chain.
+
+**Status:** fixed — traversals, copies and teardown are now iterative, so stack depth no longer grows with the tree.
 
 ### ISSUE-structure-2: `Forest::tree(index)` is unchecked while `removeTree(index)` is checked
 - Severity: P2
@@ -506,6 +540,8 @@ Baseline: `tst_tokens` 20 passed; `tst_motion_levels` 6 passed. No name-keyed ro
 - Actual: raw multiplication. `scale=-1` gives `dp(80)=-80`, `dp(200)=-200`, and `std::clamp(preferred, -80, -200)` violates `lo <= hi` (debug assert, UB in release). Huge scales overflow `qRound`; scale 0 zeroes every dp; `pxToDp` returns the value for `scale <= 0` while `dp()` multiplies, so they are not inverses.
 - Fix: normalise once (finite check, clamp to e.g. 0.1..4.0) and reuse in `dp`, `sp`, `pxToDp`.
 
+**Status:** fixed — `Density` normalises its scale once through `effectiveScale()` before every conversion.
+
 ### ISSUE-tokens-2: `ColorScheme` is an unvalidated mutable aggregate, and the derived path already fails contrast
 - Severity: P2
 - Location: `tokens/include/md/tokens/color_scheme.h:24-100`
@@ -558,6 +594,8 @@ Baseline: `tst_view` 19 passed. The exe needs `D:\Qt\6.8.3\msvc2022_64\bin` on `
 - Actual: `paintEvent` binds `const Theme&` from `Theme::forWidget(this)` (`:387`) into `context`, then runs `paintContent` (`:398`) before `foreground_.paint(...)` (`:405`). If paintContent writes the "theme" store value, `onStoreChanged` calls `ThemeScope::install(this, …)` (`:781`), which deletes the existing scope (`theme/src/theme_scope.cpp:47-48`) — the reference is freed and stages 5–7 read it (use-after-free); without deletion the overlay would still mix two themes.
 - Fix: copy the `Theme` by value into the context, or rebuild `context` after `paintContent`.
 
+**Status:** fixed — `paintEvent()` now copies the `Theme` by value before running the paint stages.
+
 ### ISSUE-view-2: `paintChildren` iterates a vector a child can mutate during render
 - Severity: P1
 - Location: `view/src/view_group.cpp:108`
@@ -565,6 +603,8 @@ Baseline: `tst_view` 19 passed. The exe needs `D:\Qt\6.8.3\msvc2022_64\bin` on `
 - Expected: destroying or adding a child while the parent paints cannot invalidate the paint loop.
 - Actual: `for (View* view : views_) { … view->render(...) }` (`:108-116`) runs arbitrary child code synchronously; the `destroyed` lambda does `std::erase(views_, view)` (`:57-59`) and `addView` can `push_back`/reallocate (`:53`). Either invalidates the iterator — UB. No `deleteLater` convention exists in `view/src`.
 - Fix: index with a size snapshot and re-check membership, or paint a copy and skip dead entries.
+
+**Status:** fixed — `paintChildren()` now iterates a `QPointer` snapshot and re-checks membership before each render.
 
 ### ISSUE-view-3: `contentRect` is documented as overridable but is not virtual
 - Severity: P2
@@ -634,6 +674,8 @@ Baseline: `tst_layer` 12 passed.
 - Actual: `controller_(parent)` constructs the value member `ripple::RippleController` (`layer/include/md/layer/ripple_layer.h:54`), a `QObject` (`ripple/include/md/ripple/ripple.h:89`), as a child of `parent`. If the parent dies first it deletes the member, and `~RippleLayer` destroys it again → invalid free/UB. In-repo callers pass no parent (`demo/src/demo_ui.h:245`, `tests/layer/tst_ripple_layer.cpp:51`), so it is latent public-API damage.
 - Fix: `controller_(nullptr)` (or drop/assert the parameter) and document that the controller's lifetime is the layer's.
 
+**Status:** fixed — `RippleLayer` now constructs its controller with a null parent and documents that the layer owns it.
+
 ### ISSUE-layer-2: the shape clip replaces the caller's clip instead of intersecting it
 - Severity: P2
 - Location: `layer/src/background.cpp:29`, `layer/src/foreground.cpp:56`
@@ -686,6 +728,8 @@ Baseline: `tst_layouts` — **15 passed, 1 failed** when run from the build tree
 - Actual: `spare` is 0 (`:207-208`), yet the remainder fix-up rewrites the last weighted slot (`:254`). 40+40 with weight on the second gives 40/20 at axis 60, while at axis 0 the same code skips (`adjusted < 0`, `:255-256`) and leaves 40/40. The invariant at `:242-244` holds only by crushing one child, and discontinuously.
 - Fix: skip the remainder when `spare <= 0`, and clamp to `qMax(natural, slot)` so a weight never shrinks a child below its measurement.
 
+**Status:** fixed — the remainder fix-up now runs only when `spare > 0`, and every slot keeps at least its natural size.
+
 ### ISSUE-layout-2: hidden `AppBar` actions still reserve and receive space
 - Severity: P1
 - Location: `layout/src/appbar.cpp:224-228` (measure), `:278-288` (arrange), `actions()` `:88-96`
@@ -693,6 +737,8 @@ Baseline: `tst_layouts` — **15 passed, 1 failed** when run from the build tree
 - Expected: a hidden child occupies nothing, as in Linear (`linear.h:125`), Frame (`frame.h:100`), Constraint (`constraint.h:118`) and Coordinator (`coordinator.cpp:184`).
 - Actual: `actions()` returns every non-navigation child including hidden ones; measure adds its width (`:227`) and arrange places it (`:281-316`). Hiding an action leaves a trailing gap and steals title width.
 - Fix: filter `!action->isHidden()` in `actions()` or skip it in both loops.
+
+**Status:** fixed — `AppBar::actions()` and both layout loops now skip hidden children.
 
 ### ISSUE-layout-3: `setScrollRange` clamps the offset silently
 - Severity: P2
@@ -749,6 +795,8 @@ Baseline: `tst_animation` 10 passed (needs the Qt `bin` on `PATH`).
 - Expected: no member access after user code, so deletion is safe or explicitly rejected.
 - Actual: `completeRun()` calls `onValue_(1.0)` at `:172`, then reads `generation_` at `:177`; `snapRun()` repeats it at `:189`/`:191`. If the callback deletes the animator or its parent, both reads are use-after-free and `finished()` may be emitted on a dead `QObject`. (Deleting inside `finished()` is safe because nothing follows `:178` — which is why `ripple/src/ripple.cpp:211-215` only needs `deleteLater()`.)
 - Fix: `QPointer<Animator> guard(this);` around the call and return when null; document the callback contract.
+
+**Status:** fixed — the callback now runs from a copy behind a `QPointer` guard, and the animator returns when the callback destroys it.
 
 ### ISSUE-animation-2: re-entrant `start()`/`stop()` destroys the executing `std::function`
 - Severity: P2
@@ -810,6 +858,8 @@ Baseline: `tst_drawable` 12 passed.
 - Actual: `pixelSize` is `qCeil(imageRect * dpr)` then `bucketize()` (`:245-251`, `:71-74`; `value + 7` overflows `int` near `INT_MAX`). `renderMask` constructs `QImage mask(pixelSize)` (`:141`) with no `isNull()` check — Qt returns a null image when allocation fails — then allocates `width*height` bytes (`:154-155`). The copy loop calls `mask.constScanLine(y)` (`:157`), which returns `nullptr` for a null image, and `line[4*x+3]` dereferences it (`:160`). At 40000×40000 the vector alone is 1.6 GB; failure is an uncaught `std::bad_alloc`.
 - Fix: bounds-check the device size against a hard cap (e.g. 8192 px per side), test `mask.isNull()` and `buffer.empty()`, and return without painting.
 
+**Status:** fixed — the shadow mask is now capped at 8192 px per side and checked for a null image before scanning.
+
 ### ISSUE-drawable-2: a negative blur scale inverts the shadow offset while the margins are zero
 - Severity: P2
 - Location: `drawable/src/shadow_drawable.cpp:269`
@@ -854,6 +904,8 @@ Sampled: the input family (`input.cpp`, `date_picker.cpp`, `time_picker.cpp`), t
 - Actual: neither class connects `modelReset`/`rowsInserted`/`rowsRemoved` (those connections exist only in `list.cpp`, `recycler.cpp`, `table.cpp`, `tree_select.cpp`), and `refreshFromModel()` runs only from `setSourceModel`/`setCyclic`/`setOwnedValues`. `current_` keeps a now-invalid row: `DropDown::paintContent` draws `adapter_->text(current_)` (`:1506`) and `Adapter::data` rejects an index ≥ `rowCount()` (`model.cpp:132-134`), so the closed field paints an empty value with no placeholder while `currentIndex()` still reports it; `PickerBase` paints `normalized(current_ + slot)` (`:2654`), i.e. `current_ % rows`, so NumberPicker/RingPicker show row 0 while `currentIndex()` says 2. No signal in either case.
 - Fix: from both `setSourceModel()`s connect `modelReset`/`rowsInserted`/`rowsRemoved` to a clamp-and-emit refresh, clamping with `count() <= 0 ? -1 : std::clamp(current_, 0, count() - 1)`.
 
+**Status:** fixed — DropDown and PickerBase now connect `modelReset`/`rowsRemoved` to a clamp-and-emit refresh.
+
 ### ISSUE-components-2: removing the selected row drops the selection without a signal
 - Severity: P1
 - Location: `components/src/recycler.cpp:429`; `components/src/list.cpp:301`
@@ -861,6 +913,8 @@ Sampled: the input family (`input.cpp`, `date_picker.cpp`, `time_picker.cpp`), t
 - Expected: one `currentIndexChanged(QModelIndex())`, the contract `Table` implements at `table.cpp:670-687` and List itself implements for reset at `list.cpp:315-316`.
 - Actual: Recycler's `rowsRemoved` handler only calls `rebuild()`, and its `modelReset` handler clears `current_` (`:430-434`) with no emit. List tries, but its guard `current_.isValid() && current_.row() >= rowCount()` can never hold for a removed row: `QPersistentModelIndex` invalidates itself during `beginRemoveRows`, so `isValid()` is already false when the slot runs. Result: `currentRow()` flips to -1 and the row stops painting as selected, while a consumer mirroring `currentIndexChanged` keeps pointing at the deleted row. `tests/components/tst_display_controls.cpp:444-446` only asserts `currentRow() == -1`.
 - Fix: cache the current row in `rowsAboutToBeRemoved` (or compare against a stored previous row count) and emit in `rowsRemoved`; emit on Recycler's reset too.
+
+**Status:** fixed — List and Recycler now cache the current row before removal and emit `currentIndexChanged` on removal and reset.
 
 ### ISSUE-components-3: `NavigationBar` activates on press and cannot be cancelled
 - Severity: P2

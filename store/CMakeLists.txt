@@ -6,6 +6,6 @@
 # widget-free (Qt Core only); the Font, ThemeScope and Language containers in
 # components publish their data here.
 periodicity_add_module(store
-  DEPENDS periodicity::core Qt6::Core)
+  DEPENDS periodicity::core periodicity::structure Qt6::Core)
 
 add_subdirectory(tests)

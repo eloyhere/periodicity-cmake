@@ -14,10 +14,10 @@ if(NOT DEFINED SOURCE_DIR)
   get_filename_component(SOURCE_DIR "${CMAKE_CURRENT_LIST_DIR}/.." ABSOLUTE)
 endif()
 
-set(MODULES core store structure pool schedule tokens theme event ripple drawable layer animation view layout components)
+set(MODULES core structure store pool schedule tokens theme event ripple drawable layer animation view layout components)
 
 set(ALLOWED_core "")
-set(ALLOWED_store "core")
+set(ALLOWED_store "core;structure")
 set(ALLOWED_structure "core")
 set(ALLOWED_pool "core")
 set(ALLOWED_schedule "core")

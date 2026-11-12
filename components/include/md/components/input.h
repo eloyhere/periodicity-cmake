@@ -22,6 +22,7 @@
 
 #pragma once
 
+#include <md/animation/animator.h>
 #include <md/components/model.h>
 #include <md/view/view.h>
 
@@ -105,6 +106,12 @@ public:
     [[nodiscard]] QRectF fieldRect() const;
     [[nodiscard]] QRectF clearButtonRect() const;
 
+    // The floating label's animated progress: 0 is the resting label centred in
+    // the field (bodyLarge) and 1 is the floating label on its top line
+    // (bodySmall). Exposed so a test or a layout tool can observe the
+    // transition without sampling the painted pixels.
+    [[nodiscard]] qreal labelProgress() const noexcept;
+
 signals:
     void textChanged(const QString& text);
     void editingFinished();
@@ -118,6 +125,8 @@ protected:
     void mousePressEvent(QMouseEvent* event) override;
     void changeEvent(QEvent* event) override;
     bool eventFilter(QObject* watched, QEvent* event) override;
+    void onShown() override;
+    void onHidden() override;
     [[nodiscard]] bool focusable() const override;
 
     // Derived controls describe why the current text is not acceptable. An
@@ -145,14 +154,26 @@ private:
     void syncPlaceholder();
     [[nodiscard]] bool hasSupportingText() const;
 
+    // The floating-label animation. The target is 1 while the editor has focus
+    // or holds text; 0 otherwise. updateLabelTransition() moves labelProgress_
+    // towards it over the theme's medium2 token, settling at once when the
+    // theme asks for reduced motion or the field has no frames to show.
+    [[nodiscard]] qreal labelTarget() const;
+    void updateLabelTransition();
+    void settleLabel();
+
     QLineEdit* editor_ = nullptr;
     QString placeholder_;
     QString label_;
     QString helper_;
     QString errorText_;
+    // The painted floating-label progress in 0..1. It is interpolated, never a
+    // boolean: the vertical position, the type size and the colour all read it.
+    qreal labelProgress_ = 0.0;
     bool focused_ = false;
     bool password_ = false;
     bool clearEnabled_ = false;
+    animation::Animator labelAnimator_;
 };
 
 // A filled text field pre-wired with an email validator.
@@ -249,6 +270,10 @@ private:
 // highlight, Return/Space activate it, Escape and a click outside dismiss it.
 // Items come from Model (through addItem()) or from any flat item model through
 // setSourceModel(), which is borrowed, never owned.
+//
+// A borrowed source is observed: a reset or a row removal clamps the current
+// index to the surviving rows (or -1 when none are left) and reports the change
+// through currentIndexChanged()/currentValueChanged().
 // ---------------------------------------------------------------------------
 class DropDown : public View
 {
@@ -312,6 +337,8 @@ private:
     void ensureOwnedModel();
     void handlePopupActivated(int row);
     void handlePopupDismissed();
+    void setAdapterSource(QAbstractItemModel* model);
+    void refreshFromModel();
 
     Adapter* adapter_ = nullptr;
     std::unique_ptr<Model> ownedModel_;
@@ -542,6 +569,7 @@ private:
     void tick();
     [[nodiscard]] int normalized(int index) const;
     [[nodiscard]] qreal centerY() const;
+    void setAdapterSource(QAbstractItemModel* model);
     void refreshFromModel();
 
     Adapter* adapter_ = nullptr;

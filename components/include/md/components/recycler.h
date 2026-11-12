@@ -57,7 +57,9 @@ public:
     explicit Recycler(QWidget* parent = nullptr);
 
     // The model is not owned. The recycler observes dataChanged, rowsInserted,
-    // rowsRemoved, modelReset and layoutChanged.
+    // rowsRemoved, modelReset and layoutChanged. Removing the selected row (or
+    // resetting the model) clears the selection and reports it once through
+    // currentIndexChanged() with an invalid index.
     void setModel(QAbstractItemModel* model);
     [[nodiscard]] QAbstractItemModel* model() const;
 
@@ -151,6 +153,12 @@ private:
     ItemFactory factory_;
     ItemBinder binder_;
     QPersistentModelIndex current_;
+    // beginResetModel() invalidates current_ before modelReset() is emitted,
+    // so the reset notification needs the selection state cached here.
+    bool hasSelection_ = false;
+    // The selected row cached by rowsAboutToBeRemoved(): QPersistentModelIndex
+    // has already invalidated itself by the time rowsRemoved() runs.
+    int removedCurrentRow_ = -1;
     QHash<int, QVector<Item*>> pool_;
     QVector<Item*> active_;
     int prefetchRows_ = 2;

@@ -151,6 +151,8 @@ void Recycler::setModel(QAbstractItemModel* model)
 
     model_ = model;
     current_ = QPersistentModelIndex();
+    hasSelection_ = false;
+    removedCurrentRow_ = -1;
     scrollOffset_ = 0.0;
 
     connectModel();
@@ -262,6 +264,7 @@ void Recycler::setCurrentIndex(const QModelIndex& index)
         return;
 
     current_ = next;
+    hasSelection_ = next.isValid();
     if (next.isValid())
         ensureVisible(next.row());
 
@@ -426,12 +429,53 @@ void Recycler::connectModel()
     });
 
     connect(model_, &QAbstractItemModel::rowsInserted, this, [this] { rebuild(); });
-    connect(model_, &QAbstractItemModel::rowsRemoved, this, [this] { rebuild(); });
-    connect(model_, &QAbstractItemModel::modelReset, this, [this] {
-        current_ = QPersistentModelIndex();
-        scrollOffset_ = 0.0;
-        rebuild();
+
+    // QPersistentModelIndex invalidates itself inside beginRemoveRows(), before
+    // rowsRemoved() runs, so the selected row is cached while it still exists.
+    connect(model_, &QAbstractItemModel::rowsAboutToBeRemoved, this,
+            [this](const QModelIndex& parent, int first, int last) {
+                removedCurrentRow_ = !parent.isValid() && current_.isValid()
+                        && current_.row() >= first && current_.row() <= last
+                    ? current_.row()
+                    : -1;
+            });
+
+    connect(model_, &QAbstractItemModel::rowsRemoved, this, [this] {
+        try {
+            const bool selectionRemoved = removedCurrentRow_ >= 0;
+            removedCurrentRow_ = -1;
+
+            if (selectionRemoved) {
+                current_ = QPersistentModelIndex();
+                hasSelection_ = false;
+                emit currentIndexChanged(QModelIndex());
+            }
+
+            rebuild();
+        } catch (...) {
+            // A model that throws while the view repairs itself must not break
+            // the widget.
+        }
     });
+
+    connect(model_, &QAbstractItemModel::modelReset, this, [this] {
+        try {
+            const bool hadCurrent = hasSelection_ || current_.isValid();
+            current_ = QPersistentModelIndex();
+            hasSelection_ = false;
+            removedCurrentRow_ = -1;
+            scrollOffset_ = 0.0;
+
+            if (hadCurrent)
+                emit currentIndexChanged(QModelIndex());
+
+            rebuild();
+        } catch (...) {
+            // A model that throws while the view repairs itself must not break
+            // the widget.
+        }
+    });
+
     connect(model_, &QAbstractItemModel::layoutChanged, this, [this] { rebuild(); });
 }
 

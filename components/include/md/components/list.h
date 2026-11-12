@@ -42,6 +42,8 @@ public:
     // The model is not owned. Passing nullptr empties the list and clears the
     // selection. All model change signals are observed, so insertion, removal,
     // resets and data changes keep the selection and the scroll offset valid.
+    // Removing the selected row clears the selection and reports it once
+    // through currentIndexChanged() with an invalid index.
     void setModel(QAbstractItemModel* model);
     [[nodiscard]] QAbstractItemModel* model() const;
 
@@ -127,8 +129,14 @@ private:
     QPointer<QAbstractItemModel> model_;
     QStyledItemDelegate* delegate_ = nullptr;
     QPersistentModelIndex current_;
+    // beginResetModel() invalidates current_ before modelReset() is emitted,
+    // so the reset notification needs the selection state cached here.
+    bool hasSelection_ = false;
     int hoveredRow_ = -1;
     int pressedRow_ = -1;
+    // The selected row cached by rowsAboutToBeRemoved(): QPersistentModelIndex
+    // has already invalidated itself by the time rowsRemoved() runs.
+    int removedCurrentRow_ = -1;
     qreal rowHeightDp_ = 56.0;
     qreal scrollOffset_ = 0.0;
 };

@@ -20,7 +20,10 @@ if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
   set(CMAKE_BUILD_TYPE Debug CACHE STRING "Build type" FORCE)
 endif()
 
-find_package(Qt6 6.8 REQUIRED COMPONENTS Core Gui Widgets Test Network)
+# OpenGLWidgets is optional: Context3D always has its software projection path,
+# and compiles the QOpenGLWidget backend only when Qt provides the module.
+find_package(Qt6 6.8 REQUIRED COMPONENTS Core Gui Widgets Test Network
+  OPTIONAL_COMPONENTS OpenGLWidgets)
 qt_standard_project_setup(REQUIRES 6.8)
 
 list(PREPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
@@ -30,8 +33,8 @@ enable_testing()
 
 # Layers in dependency order (framework.md §4).
 add_subdirectory(core)
-add_subdirectory(store)
 add_subdirectory(structure)
+add_subdirectory(store)
 add_subdirectory(pool)
 add_subdirectory(schedule)
 add_subdirectory(tokens)

@@ -348,29 +348,51 @@ void NavigationBar::paintDestination(QPainter& painter, int index, const QRectF&
 
 void NavigationBar::mousePressEvent(QMouseEvent* event)
 {
-    View::mousePressEvent(event);
+    try {
+        View::mousePressEvent(event);
 
-    if (!isEnabled() || event->button() != Qt::LeftButton)
-        return;
+        if (!isEnabled() || event->button() != Qt::LeftButton)
+            return;
 
-    const int index = destinationIndexAt(event->position());
-    if (index < 0)
-        return;
+        const int index = destinationIndexAt(event->position());
+        if (index < 0)
+            return;
 
-    setFocus(Qt::MouseFocusReason);
-    pressed_ = index;
-    activate(index);
-    event->accept();
+        // Activation waits for the release, so a press that becomes a drag (or
+        // ends anywhere else) can be abandoned. The pressed destination is
+        // remembered so the release can require the same one.
+        setFocus(Qt::MouseFocusReason);
+        pressed_ = index;
+        requestUpdate();
+        event->accept();
+    } catch (...) {
+        // A throwing observer of the press must not break the bar.
+    }
 }
 
 void NavigationBar::mouseReleaseEvent(QMouseEvent* event)
 {
-    if (pressed_ >= 0) {
+    try {
+        const int pressed = pressed_;
         pressed_ = -1;
-        requestUpdate();
-    }
 
-    View::mouseReleaseEvent(event);
+        const int released = isEnabled() && event->button() == Qt::LeftButton
+            ? destinationIndexAt(event->position())
+            : -1;
+
+        if (pressed >= 0)
+            requestUpdate();
+
+        View::mouseReleaseEvent(event);
+
+        // Only a release over the destination that was pressed activates it.
+        if (pressed >= 0 && pressed == released) {
+            activate(released);
+            event->accept();
+        }
+    } catch (...) {
+        // A throwing observer of the release must not break the bar.
+    }
 }
 
 void NavigationBar::mouseMoveEvent(QMouseEvent* event)

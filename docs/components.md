@@ -173,6 +173,25 @@ installing a ThemeScope on the view and lets subclasses extend `onStoreChanged()
 | `Collapse` | `layout/collapse.h` | One expandable section with an animated height | same | Layouts |
 | `Coordinator` | `layout/coordinator.h` | Nested-scroll behaviours attached to children | same | Layouts |
 
+## Visualisation and time
+
+| Component | Header | Notes | Tests | Gallery |
+| --- | --- | --- | --- | --- |
+| `Clock` | `clock.h` | Analog or digital dial, explicit zones, frozen instants | `tests/components/tst_clock.cpp` | Charts |
+| `Schedule` | `schedule.h` | Day/week agenda, overlap lanes, drag and keyboard moves | `tests/components/tst_schedule.cpp` | Charts |
+| `Scheduler` | `scheduler.h` | Task-queue lanes, pending counts and batch-budget controls | `tests/components/tst_scheduler.cpp` | Charts |
+| `Canvas` | `canvas.h` | Hosts 1D, 2D and 3D drawing contexts | `tests/components/tst_canvas.cpp` | Charts |
+| `MathematicsCoordination` | `math_coordination.h` | Data-to-pixel transform, nice ticks, auto-fit and navigation | `tests/components/tst_math_coordination.cpp` | Charts |
+| `LineChart` | `line_chart.h` | Multi-series lines, smooth curves, area fills, markers | `tests/components/tst_line_chart.cpp` | Charts |
+| `ScatterChart` | `scatter_chart.h` | Multi-series circle, square or diamond markers with hover | `tests/components/tst_scatter_chart.cpp` | Charts |
+| `PieChart` | `pie_chart.h` | Slices, donut mode, percentages and reveal animation | `tests/components/tst_pie_chart.cpp` | Charts |
+| `BarChart` | `bar_chart.h` | Grouped or stacked bars, horizontal mode, value labels | `tests/components/tst_bar_chart.cpp` | Charts |
+| `HistogramChart` | `histogram_chart.h` | Automatic bins, density and cumulative modes | `tests/components/tst_histogram_chart.cpp` | Charts |
+| `BoxPlotChart` | `box_plot_chart.h` | Five-number boxes, whiskers, outliers and hover | `tests/components/tst_box_plot_chart.cpp` | Charts |
+| `HeatmapChart` | `heatmap_chart.h` | Themed matrix cells, empty hatching, hover highlight | `tests/components/tst_heatmap_chart.cpp` | Charts |
+| `RadarChart` | `radar_chart.h` | Polar axes with polygon series and range clamping | `tests/components/tst_radar_chart.cpp` | Charts |
+| `FunnelChart` | `funnel_chart.h` | Stages as trapezoids with labels and percentages | `tests/components/tst_funnel_chart.cpp` | Charts |
+
 ## Conventions worth knowing
 
 - A component implements `measureOverride()` and `paintContent()`; `paintEvent()`

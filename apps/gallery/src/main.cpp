@@ -36,11 +36,19 @@
 #include <md/components/navigation_bar.h>
 #include <md/components/search_bar.h>
 #include <md/components/switch.h>
+#include <md/components/bar_chart.h>
+#include <md/components/box_plot_chart.h>
 #include <md/components/calendar.h>
+#include <md/components/canvas.h>
 #include <md/components/card.h>
 #include <md/components/carousel.h>
 #include <md/components/cascader.h>
+#include <md/components/chart_common.h>
 #include <md/components/checkbox.h>
+#include <md/components/clock.h>
+#include <md/components/context1d.h>
+#include <md/components/context2d.h>
+#include <md/components/context3d.h>
 #include <md/components/date_picker.h>
 #include <md/components/datetime_picker.h>
 #include <md/components/drawer.h>
@@ -48,13 +56,18 @@
 #include <md/components/datetime_picker.h>
 #include <md/components/dialog.h>
 #include <md/components/form.h>
+#include <md/components/funnel_chart.h>
 #include <md/components/guide.h>
+#include <md/components/heatmap_chart.h>
+#include <md/components/histogram_chart.h>
 #include <md/components/image.h>
 #include <md/components/input.h>
 #include <md/components/language.h>
+#include <md/components/line_chart.h>
 #include <md/components/link.h>
 #include <md/components/list.h>
 #include <md/components/marquee.h>
+#include <md/components/math_coordination.h>
 #include <md/components/menu.h>
 #include <md/components/menu_group.h>
 #include <md/components/menu_item.h>
@@ -65,12 +78,17 @@
 #include <md/components/page.h>
 #include <md/components/pager.h>
 #include <md/components/pagination.h>
+#include <md/components/pie_chart.h>
 #include <md/components/popup.h>
 #include <md/components/progress.h>
+#include <md/components/radar_chart.h>
 #include <md/components/radio.h>
 #include <md/components/rate.h>
 #include <md/components/recycler.h>
 #include <md/components/ring.h>
+#include <md/components/scatter_chart.h>
+#include <md/components/schedule.h>
+#include <md/components/scheduler.h>
 #include <md/components/scrollbar.h>
 #include <md/components/seekbar.h>
 #include <md/components/skeleton.h>
@@ -106,6 +124,7 @@
 #include <QApplication>
 #include <QBuffer>
 #include <QDate>
+#include <QDateTime>
 #include <QDir>
 #include <QEvent>
 #include <QEventLoop>
@@ -3764,6 +3783,449 @@ QWidget* additionsPage(const Theme& theme)
     return page;
 }
 
+// The charts page: one card for the Canvas, one for the coordinate transform,
+// one per chart, then the Clock, Schedule and Scheduler. Every sample is a
+// table literal, so the page paints the same image on every run; the Canvas
+// keeps one scene per context and the Scheduler owns a queue instead of
+// borrowing TaskQueue::main().
+QWidget* chartsPage(const Theme& theme)
+{
+    auto* page = new Page(theme);
+
+    page->addTitle(QStringLiteral("Charts"));
+    page->addLead(QStringLiteral(
+        "The visualisation stack: a Canvas that switches between the three drawing "
+        "contexts, the shared MathematicsCoordination transform, and one card per chart — "
+        "line, scatter, pie, bar, histogram, box, heatmap, radar and funnel. The Clock, "
+        "Schedule and Scheduler close the page with the new time components."));
+
+    const QSize chartSize(qRound(theme.density().dp(320.0)),
+                          qRound(theme.density().dp(200.0)));
+    const auto fit = [chartSize](QWidget* widget) { widget->setFixedSize(chartSize); };
+
+    // The cards share two data builders: `values` turns a table of samples into
+    // x = 1..n points and `series` names them. Nothing here is random, so two
+    // runs produce the same charts.
+    const auto values = [](std::initializer_list<qreal> samples) {
+        QVector<QPointF> points;
+        qreal x = 1.0;
+        for (const qreal sample : samples)
+            points.append(QPointF(x++, sample));
+        return points;
+    };
+    const auto series = [](const QString& name, const QVector<QPointF>& points) {
+        md::ChartSeries result;
+        result.name = name;
+        result.points = points;
+        return result;
+    };
+
+    // ---- Canvas ----------------------------------------------------------
+    auto* canvas = new md::Canvas;
+    canvas->setFixedSize(chartSize);
+    canvas->setBackground(theme.colours().surfaceContainerLowest);
+
+    canvas->context1d()->setRange(0.0, 100.0);
+    canvas->context1d()->setValues(
+        {18.0, 34.0, 29.0, 47.0, 42.0, 63.0, 58.0, 74.0});
+    canvas->context1d()->setTicks(4);
+
+    md::Context2D* two = canvas->context2d();
+    two->setTransform(theme.density().dp(1.0), theme.density().dp(1.0));
+    two->setPen(theme.colours().primary);
+    two->setBrush(theme.colours().primaryContainer);
+    two->drawRoundedRect(QRectF(20.0, 20.0, 128.0, 72.0), 12.0, 12.0);
+    two->setBrush(theme.colours().secondaryContainer);
+    two->drawEllipse(QPointF(96.0, 144.0), 52.0, 32.0);
+    two->setBrush(theme.colours().tertiaryContainer);
+    two->drawRect(QRectF(190.0, 20.0, 44.0, 44.0));
+    two->setPen(theme.colours().secondary);
+    two->drawLine(QPointF(184.0, 112.0), QPointF(184.0, 176.0));
+    two->drawLine(QPointF(184.0, 176.0), QPointF(300.0, 176.0));
+    two->setPen(theme.colours().tertiary);
+    two->drawArc(QRectF(206.0, 92.0, 82.0, 82.0), 30 * 16, 240 * 16);
+    two->setPen(theme.colours().onSurfaceVariant);
+    two->drawText(QRectF(188.0, 70.0, 120.0, 18.0),
+                  static_cast<int>(Qt::AlignLeft | Qt::AlignVCenter),
+                  QStringLiteral("context2d()"));
+
+    md::Context3D* three = canvas->context3d();
+    // The gallery always shows the software path: no OpenGL backend is
+    // requested, so the page also works on a machine without a GL context.
+    three->setBackend(md::Context3D::Backend::Software);
+    three->setCamera(QVector3D(2.6f, 2.0f, 4.4f), QVector3D(0.0f, 0.0f, 0.0f));
+    three->perspective(45.0, 0.1, 100.0);
+    three->setLineWidth(1.5);
+    const QVector3D cube[8] = {
+        QVector3D(-1.0f, -1.0f, -1.0f), QVector3D(1.0f, -1.0f, -1.0f),
+        QVector3D(1.0f, 1.0f, -1.0f),   QVector3D(-1.0f, 1.0f, -1.0f),
+        QVector3D(-1.0f, -1.0f, 1.0f),  QVector3D(1.0f, -1.0f, 1.0f),
+        QVector3D(1.0f, 1.0f, 1.0f),    QVector3D(-1.0f, 1.0f, 1.0f),
+    };
+    const int edges[12][2] = {
+        {0, 1}, {1, 2}, {2, 3}, {3, 0},
+        {4, 5}, {5, 6}, {6, 7}, {7, 4},
+        {0, 4}, {1, 5}, {2, 6}, {3, 7},
+    };
+    for (const auto& edge : edges)
+        three->line3D(cube[edge[0]], cube[edge[1]], theme.colours().primary);
+    three->points3D(QVector<QVector3D>(cube, cube + 8), theme.colours().tertiary);
+    canvas->requestDraw();
+
+    auto* mode = new md::DropDown;
+    mode->addItems({QStringLiteral("OneD"), QStringLiteral("TwoD"),
+                    QStringLiteral("ThreeD")});
+    mode->setCurrentIndex(0);
+    mode->setFixedSize(qRound(theme.density().dp(160.0)),
+                       qRound(theme.density().dp(56.0)));
+
+    auto* canvasNote = new md::Text(
+        QStringLiteral("OneD: setValues() — the scalar strip"));
+    canvasNote->setRole(md::Text::TextRole::Caption);
+    QObject::connect(mode, &md::DropDown::currentIndexChanged, canvas,
+                     [canvas, canvasNote](int index) {
+                         switch (index) {
+                         case 1:
+                             canvas->setMode(md::Canvas::Mode::TwoD);
+                             canvasNote->setText(QStringLiteral(
+                                 "TwoD: retained rectangles, ellipses, lines, an arc and text"));
+                             break;
+                         case 2:
+                             canvas->setMode(md::Canvas::Mode::ThreeD);
+                             canvasNote->setText(QStringLiteral(
+                                 "ThreeD: a software-projected cube — no OpenGL requested"));
+                             break;
+                         default:
+                             canvas->setMode(md::Canvas::Mode::OneD);
+                             canvasNote->setText(QStringLiteral(
+                                 "OneD: setValues() — the scalar strip"));
+                             break;
+                         }
+                     });
+
+    auto* canvasColumn = new QWidget;
+    auto* canvasLayout = new QVBoxLayout(canvasColumn);
+    canvasLayout->setContentsMargins(0, 0, 0, 0);
+    canvasLayout->setSpacing(12);
+    canvasLayout->addWidget(mode, 0, Qt::AlignLeft);
+    canvasLayout->addWidget(canvasNote, 0, Qt::AlignLeft);
+    canvasLayout->addWidget(canvas, 0, Qt::AlignLeft);
+    page->addCard(QStringLiteral("Canvas"),
+                  QStringLiteral("One View, three retained contexts: the menu flips OneD, "
+                                 "TwoD and ThreeD, and switching modes preserves each scene."),
+                  canvasColumn);
+
+    // ---- Coordinate fit --------------------------------------------------
+    auto* coordination = new md::MathematicsCoordination;
+    coordination->setDataBounds(QPointF(0.0, 0.0), QPointF(12.0, 80.0));
+    coordination->setXAxisLabel(QStringLiteral("sample"));
+    coordination->setYAxisLabel(QStringLiteral("value"));
+    coordination->setTickCount(6);
+    fit(coordination);
+
+    auto* zoom = new md::Button(QStringLiteral("Zoom 1.25x"));
+    zoom->setVariant(md::Button::ButtonVariant::FilledTonal);
+    auto* pan = new md::Button(QStringLiteral("Pan +24 px"));
+    pan->setVariant(md::Button::ButtonVariant::Outlined);
+    QObject::connect(zoom, &md::Button::clicked, coordination, [coordination] {
+        coordination->zoomAt(coordination->plotArea().center(), 1.25);
+    });
+    QObject::connect(pan, &md::Button::clicked, coordination, [coordination] {
+        coordination->pan(QPointF(24.0, 0.0));
+    });
+
+    auto* gestureNote = new md::Text(QStringLiteral(
+        "Gesture: pinch maps to zoomAt(centre, 1.25), drag maps to pan(+24 px); both stop "
+        "auto-fit and move the visible bounds."));
+    gestureNote->setRole(md::Text::TextRole::Caption);
+    gestureNote->setWordWrap(true);
+
+    auto* coordinationColumn = new QWidget;
+    auto* coordinationLayout = new QVBoxLayout(coordinationColumn);
+    coordinationLayout->setContentsMargins(0, 0, 0, 0);
+    coordinationLayout->setSpacing(12);
+    coordinationLayout->addWidget(row({zoom, pan}));
+    coordinationLayout->addWidget(coordination, 0, Qt::AlignLeft);
+    coordinationLayout->addWidget(gestureNote);
+    page->addCard(QStringLiteral("Coordinate fit"),
+                  QStringLiteral("The shared data-to-pixel transform: the frame re-ticks as "
+                                 "the visible range changes."),
+                  coordinationColumn);
+
+    // ---- Line ------------------------------------------------------------
+    auto* line = new md::LineChart;
+    line->setSeries({series(QStringLiteral("Revenue"),
+                            values({18.0, 24.0, 21.0, 32.0, 29.0, 41.0, 38.0, 47.0})),
+                     series(QStringLiteral("Costs"),
+                            values({12.0, 15.0, 14.0, 19.0, 22.0, 20.0, 25.0, 27.0}))});
+    line->setSmooth(true);
+    line->setShowMarkers(true);
+    fit(line);
+    page->addCard(QStringLiteral("Line"),
+                  QStringLiteral("Two smooth series over eight samples, with markers; the "
+                                 "base auto-fits the union of both ranges."),
+                  line);
+
+    // ---- Scatter ---------------------------------------------------------
+    auto* scatter = new md::ScatterChart;
+    scatter->setPointSize(8.0);
+    scatter->setShape(md::ScatterChart::PointShape::Circle);
+    scatter->setSeries({series(QStringLiteral("Sensor A"),
+                               values({22.0, 35.0, 29.0, 48.0, 44.0, 63.0, 57.0, 71.0})),
+                        series(QStringLiteral("Sensor B"),
+                               values({12.0, 18.0, 24.0, 20.0, 36.0, 31.0, 45.0, 40.0}))});
+    fit(scatter);
+    page->addCard(QStringLiteral("Scatter"),
+                  QStringLiteral("Two point clouds; hovering highlights the nearest sample and "
+                                 "leaving clears the halo."),
+                  scatter);
+
+    // ---- Pie -------------------------------------------------------------
+    const auto slice = [](const QString& name, qreal value) {
+        md::ChartSeries item;
+        item.name = name;
+        item.points.append(QPointF(0.0, value));
+        return item;
+    };
+    auto* pie = new md::PieChart;
+    pie->setSeries({slice(QStringLiteral("Design"), 34.0),
+                    slice(QStringLiteral("Build"), 26.0),
+                    slice(QStringLiteral("Test"), 20.0),
+                    slice(QStringLiteral("Docs"), 12.0),
+                    slice(QStringLiteral("Ops"), 8.0)});
+    pie->setSliceGap(2.0);
+    pie->setSelectedSlice(0);
+    fit(pie);
+    page->addCard(QStringLiteral("Pie"),
+                  QStringLiteral("One series per slice; the selected slice is exploded and "
+                                 "each share above 5 % is labelled."),
+                  pie);
+
+    // ---- Bar -------------------------------------------------------------
+    auto* bar = new md::BarChart;
+    const QVector<QColor> barPalette = bar->chartPalette();
+    md::ChartSeries north = series(QStringLiteral("North"),
+                                   values({42.0, 58.0, 51.0, 67.0}));
+    north.colour = barPalette.value(0);
+    md::ChartSeries south = series(QStringLiteral("South"),
+                                   values({36.0, 44.0, 61.0, 55.0}));
+    south.colour = barPalette.value(1);
+    bar->setSeries({north, south});
+    bar->setShowValues(true);
+    bar->setGroupGap(0.3);
+    fit(bar);
+    page->addCard(QStringLiteral("Bar"),
+                  QStringLiteral("Two categories of four grouped bars, grown from a zero "
+                                 "baseline with the values painted inside."),
+                  bar);
+
+    // ---- Histogram -------------------------------------------------------
+    auto* histogram = new md::HistogramChart;
+    histogram->setSamples({42.0, 45.0, 47.0, 48.0, 49.0, 50.0, 50.0, 51.0,
+                           52.0, 52.0, 53.0, 53.0, 54.0, 54.0, 54.0, 55.0,
+                           55.0, 56.0, 56.0, 57.0, 57.0, 58.0, 58.0, 59.0,
+                           59.0, 60.0, 61.0, 61.0, 62.0, 63.0, 64.0, 65.0,
+                           67.0, 68.0, 70.0, 72.0, 74.0, 76.0, 79.0, 84.0});
+    histogram->setBinCount(8);
+    histogram->setBinMethod(md::HistogramChart::BinMethod::Sturges);
+    fit(histogram);
+    page->addCard(QStringLiteral("Histogram"),
+                  QStringLiteral("One pooled distribution in eight Sturges bins; the x axis "
+                                 "is the sample scale, not the bin index."),
+                  histogram);
+
+    // ---- Box -------------------------------------------------------------
+    auto* box = new md::BoxPlotChart;
+    box->setSeries({series(QStringLiteral("Morning"),
+                           values({12.0, 16.0, 18.0, 22.0, 25.0, 28.0, 31.0, 35.0,
+                                   41.0, 58.0})),
+                    series(QStringLiteral("Afternoon"),
+                           values({20.0, 23.0, 25.0, 27.0, 29.0, 31.0, 33.0, 36.0,
+                                   39.0, 44.0}))});
+    box->setShowOutliers(true);
+    fit(box);
+    page->addCard(QStringLiteral("Box"),
+                  QStringLiteral("Two five-number summaries with type-7 quartiles; the 58 in "
+                                 "the morning series is beyond the 1.5 IQR fence."),
+                  box);
+
+    // ---- Heatmap ---------------------------------------------------------
+    auto* heatmap = new md::HeatmapChart;
+    heatmap->setRowLabels({QStringLiteral("Mon"), QStringLiteral("Tue"),
+                           QStringLiteral("Wed"), QStringLiteral("Thu")});
+    heatmap->setColumnLabels({QStringLiteral("08"), QStringLiteral("10"),
+                              QStringLiteral("12"), QStringLiteral("14"),
+                              QStringLiteral("16"), QStringLiteral("18")});
+    heatmap->setRows(4);
+    heatmap->setColumns(6);
+    for (int row = 0; row < 4; ++row) {
+        for (int column = 0; column < 6; ++column)
+            heatmap->setValue(row, column, qreal(20 + (row * 13 + column * 7) % 60));
+    }
+    heatmap->setValue(2, 5, qQNaN());
+    heatmap->setShowValues(true);
+    fit(heatmap);
+    page->addCard(QStringLiteral("Heatmap"),
+                  QStringLiteral("A 4x6 categorical matrix over the theme's surface-to-primary "
+                                 "ramp; the NaN cell is hatched, not drawn as zero."),
+                  heatmap);
+
+    // ---- Radar -----------------------------------------------------------
+    auto* radar = new md::RadarChart;
+    radar->setAxes({QStringLiteral("Speed"), QStringLiteral("Power"),
+                    QStringLiteral("Range"), QStringLiteral("Accuracy"),
+                    QStringLiteral("Handling")});
+    radar->setRange(0.0, 100.0);
+    radar->setRingCount(4);
+    radar->setFillOpacity(0.18);
+    radar->setSeries({series(QStringLiteral("Alpha"),
+                             values({82.0, 64.0, 90.0, 71.0, 76.0})),
+                      series(QStringLiteral("Beta"),
+                             values({61.0, 86.0, 68.0, 92.0, 63.0}))});
+    fit(radar);
+    page->addCard(QStringLiteral("Radar"),
+                  QStringLiteral("Two normalised polygons on five axes, with all fills painted "
+                                 "before any outline."),
+                  radar);
+
+    // ---- Funnel ----------------------------------------------------------
+    auto* funnel = new md::FunnelChart;
+    funnel->setStageLabels({QStringLiteral("Visited"), QStringLiteral("Signed up"),
+                            QStringLiteral("Trial"), QStringLiteral("Paid"),
+                            QStringLiteral("Renewed")});
+    funnel->setSeries({series(QString(), values({1200.0, 880.0, 620.0, 410.0, 240.0}))});
+    funnel->setGap(4.0);
+    funnel->setShowPercentages(true);
+    fit(funnel);
+    page->addCard(QStringLiteral("Funnel"),
+                  QStringLiteral("One stage series; every stage is a share of the first value "
+                                 "and the last stage tapers to a point."),
+                  funnel);
+
+    // ---- Clock -----------------------------------------------------------
+    auto* clockView = new md::Clock;
+    clockView->setDisplay(md::Clock::Display::Both);
+    clockView->setUse24Hour(true);
+    clockView->setShowSeconds(true);
+    clockView->setRunning(true);
+    clockView->setFixedSize(chartSize);
+
+    auto* digital = new md::Switch;
+    auto* clockNote = new md::Text(QStringLiteral(
+        "Both: the analog dial and the 24-hour read-out, ticking once a second."));
+    clockNote->setRole(md::Text::TextRole::Caption);
+    clockNote->setWordWrap(true);
+    QObject::connect(digital, &md::Switch::toggled, clockView,
+                     [clockView, clockNote](bool on) {
+                         clockView->setDisplay(on ? md::Clock::Display::Digital
+                                                  : md::Clock::Display::Analog);
+                         clockNote->setText(on ? QStringLiteral("Digital: setDisplay(Digital)")
+                                               : QStringLiteral("Analog: setDisplay(Analog)"));
+                     });
+
+    auto* clockColumn = new QWidget;
+    auto* clockLayout = new QVBoxLayout(clockColumn);
+    clockLayout->setContentsMargins(0, 0, 0, 0);
+    clockLayout->setSpacing(12);
+    clockLayout->addWidget(clockView, 0, Qt::AlignLeft);
+    clockLayout->addWidget(
+        row({new md::Text(QStringLiteral("Digital read-out")), digital}));
+    clockLayout->addWidget(clockNote, 0, Qt::AlignLeft);
+    page->addCard(QStringLiteral("Clock"),
+                  QStringLiteral("Both faces, 24-hour and running; the switch collapses the "
+                                 "clock to one face with setDisplay()."),
+                  clockColumn);
+
+    // ---- Schedule --------------------------------------------------------
+    auto* schedule = new md::Schedule;
+    schedule->setMode(md::Schedule::Mode::Week);
+    const QDate weekStart(2026, 11, 9);
+    schedule->setDate(weekStart);
+    schedule->setDayRange(QTime(9, 0), QTime(18, 0));
+    schedule->setNowLineVisible(false);
+    schedule->setEditable(true);
+
+    const auto event = [weekStart](const QString& id, const QString& title, int day,
+                                   const QTime& start, const QTime& end) {
+        md::ScheduleEvent entry;
+        entry.id = id;
+        entry.title = title;
+        entry.start = QDateTime(weekStart.addDays(day), start);
+        entry.end = QDateTime(weekStart.addDays(day), end);
+        return entry;
+    };
+    schedule->setEvents({
+        event(QStringLiteral("kickoff"), QStringLiteral("Sprint kickoff"), 0,
+              QTime(9, 30), QTime(10, 30)),
+        event(QStringLiteral("design"), QStringLiteral("Design review"), 1,
+              QTime(11, 0), QTime(12, 0)),
+        event(QStringLiteral("build"), QStringLiteral("Implementation"), 2,
+              QTime(13, 0), QTime(14, 30)),
+        event(QStringLiteral("demo"), QStringLiteral("Demo"), 3,
+              QTime(15, 0), QTime(16, 0)),
+        event(QStringLiteral("retro"), QStringLiteral("Retrospective"), 4,
+              QTime(16, 0), QTime(17, 0)),
+    });
+    page->addCard(QStringLiteral("Schedule"),
+                  QStringLiteral("A week of five events in an editable agenda: drag an event "
+                                 "vertically to move it in 15-minute snaps, or use Alt+arrow "
+                                 "keys."),
+                  schedule);
+
+    // ---- Scheduler -------------------------------------------------------
+    // The queue belongs to this page, not to main(): it is destroyed with the
+    // page and its pending counts never leak into TaskQueue::main().
+    auto* queue = new md::schedule::TaskQueue(page);
+    auto* scheduler = new md::Scheduler;
+    scheduler->setQueue(queue);
+    scheduler->setRefreshInterval(150);
+
+    auto* postTasks = new md::Button(QStringLiteral("Post 5 tasks"));
+    postTasks->setVariant(md::Button::ButtonVariant::FilledTonal);
+    auto* queueNote = new md::Text(
+        QStringLiteral("queue: idle — no pending tasks"));
+    queueNote->setRole(md::Text::TextRole::Caption);
+    queueNote->setWordWrap(true);
+    QObject::connect(postTasks, &md::Button::clicked, page,
+                     [queue, scheduler, queueNote] {
+                         const md::schedule::Priority priorities[] = {
+                             md::schedule::Priority::UserInput,
+                             md::schedule::Priority::UiUpdate,
+                             md::schedule::Priority::UiEvent,
+                             md::schedule::Priority::Background,
+                             md::schedule::Priority::Idle,
+                         };
+                         for (int index = 0; index < 5; ++index) {
+                             queue->postCoalesced(priorities[index], quint64(index + 1), [] {
+                                 std::this_thread::sleep_for(
+                                     std::chrono::milliseconds(5));
+                             });
+                         }
+                         // Sample the queue before the event loop can drain it,
+                         // so the lane counts describe the five new tasks.
+                         scheduler->refresh();
+                         queueNote->setText(
+                             QStringLiteral("queue: %1 pending across five priorities")
+                                 .arg(queue->pending()));
+                     });
+
+    auto* schedulerColumn = new QWidget;
+    auto* schedulerLayout = new QVBoxLayout(schedulerColumn);
+    schedulerLayout->setContentsMargins(0, 0, 0, 0);
+    schedulerLayout->setSpacing(12);
+    schedulerLayout->addWidget(row({postTasks}));
+    schedulerLayout->addWidget(scheduler, 0, Qt::AlignLeft);
+    schedulerLayout->addWidget(queueNote);
+    page->addCard(QStringLiteral("Scheduler"),
+                  QStringLiteral("A panel over a dedicated queue owned by this page, not "
+                                 "TaskQueue::main(); Post 5 tasks posts one coalesced task per "
+                                 "priority and the lanes show the pending share."),
+                  schedulerColumn);
+
+    page->addStretch();
+    return page;
+}
+
 } // namespace
 
 // The window owns the page registry so that --screenshot can walk it without a
@@ -4004,6 +4466,9 @@ private:
             {QStringLiteral("Additions"),
              QStringLiteral("Switch, chips, actions, search, sheets"),
              &additionsPage},
+            {QStringLiteral("Charts"),
+             QStringLiteral("Canvas, charts and time"),
+             &chartsPage},
         };
 
         auto* root = new md::Constraint;
