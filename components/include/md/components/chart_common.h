@@ -137,6 +137,18 @@ struct ChartSeries
 // is available to them through the public API or the protected hooks below.
 // The ChartAnimation::Driver base is private: it is how ChartAnimation asks the
 // chart to start or stop the run, not part of the chart's public surface.
+// Antialiasing strategy for the data marks. Qt's raster engine exposes only an
+// on/off antialiasing switch, so the supersampled modes are implemented by the
+// base: the plot is rendered into an offscreen image at Nx and blitted down with
+// a smooth transform. That trades fill rate for edge quality, which is why the
+// default is the cheap grey raster and the caller opts into supersampling.
+enum class ChartAntialiasing {
+    None,            // Aliased edges; cheapest, useful for dense heat maps.
+    Grayscale,       // Qt's raster antialiasing; the default.
+    Supersample2x,   // 2x2 supersampling, downsampled on blit.
+    Supersample4x,   // 4x4 supersampling, the highest quality offered.
+};
+
 class ChartBase : public View, private ChartAnimation::Driver
 {
     Q_OBJECT
@@ -195,6 +207,11 @@ public:
     // in flight is stopped and settled. Turning it back on does not replay a
     // reveal that already happened.
     void setAnimated(bool animated);
+
+    // How the data marks are antialiased. Changing it invalidates the plot (not
+    // the cached furniture, which never uses the supersampled path) and repaints.
+    void setAntialiasing(ChartAntialiasing mode);
+    [[nodiscard]] ChartAntialiasing antialiasing() const noexcept;
     [[nodiscard]] bool isAnimated() const noexcept;
 
     // -- Paint caches -----------------------------------------------------
@@ -304,6 +321,10 @@ protected:
     // timing: the progress overload below fades it in and calls it. The base
     // implementation paints nothing, so a chart must implement this overload or
     // the progress overload.
+private:
+    ChartAntialiasing antialiasing_ = ChartAntialiasing::Grayscale;
+
+public:
     virtual void paintPlot(QPainter& painter, const QRectF& plot);
 
     // Paints the data marks at `progress` (0..1, already eased). paintContent()

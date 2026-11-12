@@ -920,6 +920,23 @@ void ChartBase::measureOverride(MeasureSpec width, MeasureSpec height)
     }
 }
 
+void ChartBase::setAntialiasing(ChartAntialiasing mode)
+{
+    if (antialiasing_ == mode)
+        return;
+
+    antialiasing_ = mode;
+    // Only the plot pass changes: the cached furniture is painted with
+    // antialiasing off and is not supersampled either way.
+    invalidateChartCache();
+    update();
+}
+
+ChartAntialiasing ChartBase::antialiasing() const noexcept
+{
+    return antialiasing_;
+}
+
 void ChartBase::paintContent(QPainter& painter, const QRectF& content)
 {
     painter.save();
@@ -948,12 +965,45 @@ void ChartBase::paintContent(QPainter& painter, const QRectF& content)
         // 3. The dynamic plot. Curves want antialiasing; the cached layer above
         //    does not pay for it again.
         if (!plot.isEmpty()) {
-            painter.setRenderHint(QPainter::Antialiasing, true);
+            const auto drawMarks = [&](QPainter& target) {
+                if (hasData())
+                    paintPlot(target, plot, animation_.progress());
+                else
+                    paintEmptyState(target, plot);
+            };
 
-            if (hasData())
-                paintPlot(painter, plot, animation_.progress());
-            else
-                paintEmptyState(painter, plot);
+            const int factor = antialiasing_ == ChartAntialiasing::Supersample2x ? 2
+                             : antialiasing_ == ChartAntialiasing::Supersample4x ? 4
+                                                                                 : 0;
+
+            if (factor == 0) {
+                painter.setRenderHint(QPainter::Antialiasing,
+                                      antialiasing_ != ChartAntialiasing::None);
+                drawMarks(painter);
+            } else {
+                const qreal ratio = devicePixelRatioF();
+                const QSize pixelSize = (plot.size() * ratio * factor).toSize();
+                if (pixelSize.isEmpty() || pixelSize.width() > 16384
+                    || pixelSize.height() > 16384) {
+                    // Beyond the raster limit supersampling would allocate an
+                    // image the engine cannot hold; fall back to the grey raster.
+                    painter.setRenderHint(QPainter::Antialiasing, true);
+                    drawMarks(painter);
+                } else {
+                    QImage buffer(pixelSize, QImage::Format_ARGB32_Premultiplied);
+                    buffer.setDevicePixelRatio(ratio * factor);
+                    buffer.fill(Qt::transparent);
+                    {
+                        QPainter offscreen(&buffer);
+                        offscreen.setRenderHint(QPainter::Antialiasing, true);
+                        offscreen.setRenderHint(QPainter::SmoothPixmapTransform, true);
+                        offscreen.translate(-plot.topLeft());
+                        drawMarks(offscreen);
+                    }
+                    painter.setRenderHint(QPainter::SmoothPixmapTransform, true);
+                    painter.drawImage(plot.topLeft(), buffer);
+                }
+            }
         }
     } catch (const std::exception& error) {
         qWarning("md::ChartBase::paintContent failed: %s", error.what());
