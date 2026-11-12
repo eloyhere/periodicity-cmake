@@ -45,6 +45,7 @@ protected:
     void paintContent(QPainter& painter, const QRectF& content) override;
     void showEvent(QShowEvent* event) override;
     void hideEvent(QHideEvent* event) override;
+    void onThemeChanged() override;
     [[nodiscard]] bool focusable() const override;
 
 private:

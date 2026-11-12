@@ -63,6 +63,7 @@ private slots:
     void disabledPaintsNothing();
     void paintClipsToBounds();
     void themeChangeUpdatesContentColour();
+    void invalidContentColourUsesThemeDefault();
     void pointerMovedDoesNotAnimate();
     void repaintRequestedTracksFrames();
 };
@@ -196,6 +197,39 @@ void TestRipple::themeChangeUpdatesContentColour()
 
     QVERIFY(qAbs(lightPixel.red() - darkPixel.red()) > 20
             || qAbs(lightPixel.blue() - darkPixel.blue()) > 20);
+}
+
+void TestRipple::invalidContentColourUsesThemeDefault()
+{
+    const Theme theme = Theme::baselineLight();
+    RippleController controller;
+    controller.setTheme(theme);
+    controller.setBounds(QRectF(0, 0, 200, 200));
+    controller.setSpec(slowSpec(theme, 1000, 1000));
+    controller.setContentColour(Qt::red);
+    controller.setContentColour(QColor());
+    controller.pointerPressed(QPointF(100, 100));
+    QTest::qWait(500);
+
+    const QColor pixel = render(controller).pixelColor(100, 100);
+    const QColor expected = theme.colours().onSurface;
+    QVERIFY(pixel.alpha() > 0);
+
+    // The ripple is blended at the state-layer alpha into a premultiplied image,
+    // so unpremultiplying rounds the pixel to a nearby colour instead of the
+    // exact token. The tolerance keeps the assertion about the *fallback* — the
+    // explicit red that was set before must be gone — without depending on that
+    // rounding. A wrong fallback (red, or an invalid colour left in place) is
+    // far outside the tolerance.
+    constexpr int kRoundingTolerance = 8;
+    QVERIFY2(qAbs(pixel.red() - expected.red()) <= kRoundingTolerance,
+             qPrintable(QStringLiteral("red %1 vs %2").arg(pixel.red()).arg(expected.red())));
+    QVERIFY2(qAbs(pixel.green() - expected.green()) <= kRoundingTolerance,
+             qPrintable(QStringLiteral("green %1 vs %2")
+                            .arg(pixel.green())
+                            .arg(expected.green())));
+    QVERIFY2(qAbs(pixel.blue() - expected.blue()) <= kRoundingTolerance,
+             qPrintable(QStringLiteral("blue %1 vs %2").arg(pixel.blue()).arg(expected.blue())));
 }
 
 void TestRipple::pointerMovedDoesNotAnimate()

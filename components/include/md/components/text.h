@@ -65,6 +65,7 @@ public:
     [[nodiscard]] QColor colour() const;
 
 protected:
+    void onStoreChanged(Store* store, const QString& key, const QVariant& value) override;
     void measureOverride(MeasureSpec width, MeasureSpec height) override;
     void paintContent(QPainter& painter, const QRectF& content) override;
     [[nodiscard]] bool focusable() const override;

@@ -241,6 +241,8 @@ These are **state-layer** opacities, not component colours: a widget never hard-
                     ├──────────────────────────────┤
   L1  tokens        │ Colour, Type, Shape, Motion  │
                     ├──────────────────────────────┤
+  L1p pool          │ Pools, threads, IO, IPC      │
+                    ├──────────────────────────────┤
   L0  core          │ Units, geometry, state flags │
                     └──────────────────────────────┘
                          Qt 6 Core / Gui / Widgets
@@ -252,6 +254,7 @@ These are **state-layer** opacities, not component colours: a widget never hard-
 | --- | --- | --- |
 | L0 `core` | Density, `MeasureSpec`, `ViewStates`, geometry helpers, logging categories | Include `QWidget`, `QPainter` or any token type |
 | L1 `schedule` | Task priority queue: ordering, coalescing, budgeted flushes | Know about widgets, painting or tokens |
+| L1p `pool` | Object pools, thread pool, ring buffers, IO thread, cross-thread mailbox, same-machine process IPC | Include `QtWidgets`, a token type or any widget |
 | L1 `tokens` | Immutable colour scheme, type scale, shape scale, elevation scale, motion specs, state opacities | Know about widgets, painting or Qt Widgets |
 | L2 `theme` | The token bundle, scoped resolution, light/dark switching, `QPalette` bridge | Paint anything |
 | L3 `event` | Event values, dispatch chain, capture/intercept/bubble, gesture recognition | Know about widgets, painting or tokens |
@@ -773,6 +776,50 @@ Rules:
    recurses into the drain loop.
 5. **One queue per thread.** Widgets use `TaskQueue::main()`; workers may own their own.
 
+### 5.13 `pool` — object storage, threads, buffers and process channels
+
+The widget path is single-threaded; the work feeding it is not. This layer is the headless set
+of primitives that makes off-thread work possible without inventing a threading model per
+feature, and it recycles storage instead of allocating per use. It depends on `core` only: the
+`ObjectPool` that the thread pool recycles its task nodes from lives in the same layer.
+
+```cpp
+md::pool::ObjectPool<Node> nodes;                        // storage recycled, T fresh
+md::pool::ThreadPool pool({.workers = 4});
+
+pool.post([]{ /* off the paint thread */ });
+auto future = pool.submit([] { return 42; });
+
+md::pool::SpscRingBuffer<std::uint64_t> ring(8192);      // lock-free, two threads
+md::pool::Channel<Job> channel(64);                      // closeable, N producers
+md::pool::IoThread io;                                   // deadlines, not frames
+io.postAfter(250ms, task);
+
+mailbox.post([this] { label->setText(...); });           // worker -> UI thread
+```
+
+Rules:
+
+1. **The UI thread never blocks on work.** `post()` takes one mutex and pushes one pointer; a
+   full queue rejects and is counted rather than growing without bound.
+2. **A pool recycles storage, not lifetime.** `ObjectPool::create()` constructs a fresh `T`;
+   `destroy()` runs its destructor and returns the block. Nothing may be live when the pool dies.
+3. **Every ring has one producer and one consumer.** `SpscRingBuffer` publishes each cursor with
+   a release store; a full ring drops and counts, it never overwrites.
+4. **Close is the termination signal.** `Channel::close()` wakes every waiter, fails further
+   sends and lets receivers drain what is already queued.
+5. **A timer is measured from when it became due.** `IoThread` sleeps until the earliest
+   deadline, so an idle IO thread costs nothing and a late task is visible in the statistics.
+6. **A worker returns through the mailbox.** It posts a closure, not a widget pointer; the
+   wake-up is coalesced, so a burst costs one event-loop turn.
+7. **Both IPC transports frame their own messages.** Pipes carry a 4-byte length and a 1 MiB
+   cap; the shared ring stores whole frames behind two atomic cursors, so a partial message is
+   never observable.
+
+The gallery's **Pool** page drives all of it live: submit jobs, churn an object pool, start
+the ring and channel pairs, read a file on the IO thread, and spawn `periodicity_ipc_echo` to
+trade PING/PONG over a pipe while it streams TICK frames through shared memory.
+
 ---
 
 ## 6. Core abstractions in detail
@@ -1046,6 +1093,7 @@ Each module follows the same internal shape:
 | Target | Type | Links |
 | --- | --- | --- |
 | `periodicity::core` | STATIC | `Qt6::Core`, `Qt6::Gui` |
+| `periodicity::pool` | STATIC | `periodicity::core`, `Qt6::Core`, `Threads::Threads` |
 | `periodicity::schedule` | STATIC | `periodicity::core`, `Qt6::Core` |
 | `periodicity::tokens` | STATIC | `periodicity::core` |
 | `periodicity::theme` | STATIC | `periodicity::core`, `periodicity::tokens` |
@@ -1059,6 +1107,7 @@ Each module follows the same internal shape:
 | `periodicity::components` | STATIC | all of the above |
 | `periodicity::periodicity` | INTERFACE | `periodicity::components` (umbrella) |
 | `periodicity::gallery` | EXECUTABLE | umbrella |
+| `periodicity_ipc_echo` | EXECUTABLE | `periodicity::pool`, `Qt6::Core` |
 
 Every target sets `target_compile_features(cxx_std_20)` and `target_include_directories` with `$<BUILD_INTERFACE:...>` / `$<INSTALL_INTERFACE:...>`. Implementation-only dependencies are `PRIVATE`; this is what makes the dependency matrix enforceable.
 
@@ -1096,6 +1145,10 @@ Rows are consumers; columns are dependencies. A tick means the include and the l
 | **layout** | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | — | |
 | **components** | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | — |
 
+`structure`, `store` and `pool` are headless side layers, left out of the matrix for width:
+`structure` and `pool` depend on `core` only, and none of them may include a token, a widget or
+a painted surface.
+
 ### 13.2 Forbidden dependencies
 
 | Forbidden | Why |
@@ -1103,6 +1156,7 @@ Rows are consumers; columns are dependencies. A tick means the include and the l
 | `tokens` → `QWidget`, `QPainter` | Tokens must remain usable headlessly and in tools. |
 | `view` → `components` | A base class that knows its subclasses cannot be extended without modification. |
 | `event` → `QWidget`, `QPainter` | Dispatch must stay usable by tests and tools without a widget tree. |
+| `pool` → `QWidget`, `QPainter`, `QtWidgets` | A worker must never touch a widget, and the layer must stay usable by headless tools and tests. |
 | `drawable` → `view` | Drawables are geometry-agnostic painting primitives. |
 | Any module → `apps/`, `tests/` | Applications and tests are leaves. |
 | Public headers → `detail/` headers | `detail/` is an implementation detail with no stability guarantee. |

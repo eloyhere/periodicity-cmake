@@ -41,3 +41,46 @@ function(periodicity_add_module name)
       -Wall -Wextra -Wpedantic)
   endif()
 endfunction()
+
+# Makes an executable runnable straight from a developer build tree on Windows.
+#
+# A build tree does not put Qt's DLLs beside the executable, and Visual Studio
+# starts a run with the IDE's environment rather than the shell's. Two things
+# fix that together:
+#
+#   * windeployqt copies the Qt runtime (and the platform plugin) next to the
+#     executable after every build, so F5, Ctrl+F5, Explorer and a plain shell
+#     all find it;
+#   * VS_DEBUGGER_ENVIRONMENT points the debugger at the same Qt, which covers
+#     the first run, before the post-build step has produced the DLLs.
+#
+# Call it once per executable target: periodicity_deploy_qt_runtime(<target>).
+function(periodicity_deploy_qt_runtime target)
+  if(NOT WIN32)
+    return()
+  endif()
+
+  get_target_property(_qmake_location Qt6::qmake IMPORTED_LOCATION)
+  if(NOT _qmake_location)
+    return()
+  endif()
+
+  get_filename_component(_qt_bin "${_qmake_location}" DIRECTORY)
+  set(_windeployqt "${_qt_bin}/windeployqt.exe")
+
+  if(EXISTS "${_windeployqt}")
+    add_custom_command(TARGET ${target} POST_BUILD
+      COMMAND "${_windeployqt}"
+              --no-translations
+              --no-compiler-runtime
+              --no-system-d3d-compiler
+              --no-opengl-sw
+              "$<TARGET_FILE:${target}>"
+      COMMENT "Deploying the Qt runtime beside $<TARGET_FILE_NAME:${target}>"
+      VERBATIM)
+  endif()
+
+  set_target_properties(${target} PROPERTIES
+    VS_DEBUGGER_ENVIRONMENT "PATH=${_qt_bin};%PATH%"
+    VS_DEBUGGER_WORKING_DIRECTORY "$<TARGET_FILE_DIR:${target}>")
+endfunction()

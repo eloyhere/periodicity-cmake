@@ -128,6 +128,11 @@ void Progress::startAnimation()
     if (!indeterminate_)
         return;
 
+    // Whatever the theme says, the previous run is over. Stopping first also
+    // covers the reduced-motion branch below, which must cancel a loop that
+    // was started before the theme changed.
+    animator_.stop();
+
     const MotionSpec spec = Theme::forWidget(this).motion().level(MotionLevel::Level3);
     if (spec.duration.count() <= 0) {
         // Reduced motion: a static trimmed phase instead of a busy loop.
@@ -136,9 +141,8 @@ void Progress::startAnimation()
         return;
     }
 
-    // stop() clears the running flag, so the restart starts from a phase of
-    // zero rather than resuming at the finished value of 1.0.
-    animator_.stop();
+    // The stop above means the restart begins at a phase of zero rather than
+    // resuming at the finished value of 1.0.
     animator_.start(spec, [this](qreal value) {
         phase_ = value;
         requestUpdate();
@@ -163,6 +167,16 @@ void Progress::hideEvent(QHideEvent* event)
     stopAnimation();
 
     QWidget::hideEvent(event);
+}
+
+void Progress::onThemeChanged()
+{
+    if (!indeterminate_ || !isVisible())
+        return;
+
+    // The new theme may have switched reduced motion on (the loop has to stop)
+    // or off (the loop has to start). startAnimation() handles both.
+    startAnimation();
 }
 
 void Progress::measureOverride(MeasureSpec width, MeasureSpec height)

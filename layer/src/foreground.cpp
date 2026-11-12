@@ -58,6 +58,11 @@ void StateOverlayLayer::paint(QPainter& painter, const QRectF& bounds,
     painter.restore();
 }
 
+FocusRingLayer::FocusRingLayer(Placement placement) noexcept
+    : placement_(placement)
+{
+}
+
 void FocusRingLayer::paint(QPainter& painter, const QRectF& bounds,
                            const SurfaceContext& context) const
 {
@@ -68,15 +73,19 @@ void FocusRingLayer::paint(QPainter& painter, const QRectF& bounds,
         return;
 
     const Density& density = context.theme.density();
-    const qreal offset = density.dp(2.0);
     const qreal width = density.dp(2.0);
     if (width <= 0.0)
         return;
 
-    // The ring path is the shape grown by 2 dp; the pen is centred on it, so
-    // the visible band spans 1..3 dp outside the surface. The surface itself
-    // is left untouched.
-    const QRectF ringBounds = bounds.adjusted(-offset, -offset, offset, offset);
+    // The pen is centred on the path, so the stroke spans half its width on
+    // either side. An outside ring keeps the token geometry (a 2 dp band
+    // starting 1 dp outside the shape). An inside ring moves the path inwards
+    // by half the stroke, which puts the whole band inside the shape's edge:
+    // a widget's painter is clipped to the widget rectangle, and an outside
+    // ring would otherwise leave only the bits of its rounded-corner arcs that
+    // fall back inside the widget — the corner-dot and clipped-arc artefacts.
+    const qreal inset = placement_ == Placement::Outside ? -density.dp(2.0) : width / 2.0;
+    const QRectF ringBounds = bounds.adjusted(inset, inset, -inset, -inset);
     const QPainterPath path = context.shape.path(ringBounds);
     if (path.isEmpty())
         return;

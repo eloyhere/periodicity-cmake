@@ -1,4 +1,4 @@
-// Periodicity — the component kernel (framework.md §5.7, §6, §7).
+// Periodicity �?the component kernel (framework.md §5.7, §6, §7).
 //
 // View is where Qt stops and the framework starts. Qt's geometry questions are
 // answered by the measure contract, Qt's events are converted into md::Events
@@ -8,7 +8,7 @@
 //
 // The Qt event handlers accept their event after dispatch. Qt would otherwise
 // keep propagating a press to the parent widget, and the same press would reach
-// the framework twice — once through the child's EventTarget chain and once
+// the framework twice �?once through the child's EventTarget chain and once
 // through Qt's own parent chain.
 
 #include <md/view/view.h>
@@ -19,7 +19,9 @@
 #include <md/event/qt_bridge.h>
 #include <md/layer/surface_context.h>
 #include <md/schedule/task_queue.h>
+#include <md/store/store.h>
 #include <md/theme/theme.h>
+#include <md/theme/theme_scope.h>
 
 #include <QEnterEvent>
 #include <QFocusEvent>
@@ -77,15 +79,17 @@ View::View(QWidget* parent)
     , ripple_(this)
     , updateKey_(allocateUpdateKey())
 {
-    // The state overlay and the outline are context-driven and stateless, so
-    // they can be built once. The focus ring stays out of the stack: it paints
-    // last, above the ripple, and only on the paint path that checks both
-    // focusable() and hasFocus().
+    // The state overlay is context-driven and stateless, so it can be built
+    // once. The focus ring stays out of the stack: it paints last, above the
+    // ripple, and only on the paint path that checks both focusable() and
+    // hasFocus(). The contour is not part of the default pipeline: Material
+    // outlines only the surfaces that ask for one (an Outlined button, a card),
+    // and a 1 dp ring around every label is noise. Components draw their own
+    // contour; OutlineLayer stays available for a surface that wants it.
     foreground_.add(std::make_unique<layer::StateOverlayLayer>());
-    foreground_.add(std::make_unique<layer::OutlineLayer>());
 
     syncRippleAppearance();
-    ripple_.setEnabled(isEnabled());
+    ripple_.setEnabled(isEnabled() && focusPolicy() != Qt::NoFocus);
     updateRippleGeometry();
 
     connect(&ripple_, &ripple::RippleController::repaintRequested, this,
@@ -249,13 +253,21 @@ QPointF View::mapPointFrom(const EventTarget& source, const QPointF& point) cons
 
     // The visual tree is the widget tree, so Qt's own conversion is the
     // authoritative mapping; it accounts for the scroll offset of every
-    // ancestor and for the device pixel ratio. mapFrom() is the direction the
-    // contract needs: a point in the source's system, expressed here.
+    // ancestor and for the device pixel ratio. Direction matters: mapFrom()
+    // only accepts an ancestor of this widget, so a point coming from a child
+    // (the normal case while an event bubbles) goes through the child's
+    // mapTo(). Mapping between unrelated trees has no meaning and is a no-op.
     const auto* sourceView = dynamic_cast<const View*>(&source);
     if (sourceView == nullptr)
         return point;
 
-    return mapFrom(sourceView, point);
+    if (sourceView->isAncestorOf(this))
+        return mapFrom(sourceView, point);
+
+    if (isAncestorOf(sourceView))
+        return sourceView->mapTo(this, point);
+
+    return point;
 }
 
 bool View::onEvent(Event& event)
@@ -269,12 +281,19 @@ bool View::onEvent(Event& event)
     if (!isEnabled())
         return false;
 
+    // Only a focusable control carries the pointer ripple; a passive surface
+    // (card, banner, page) still gets the static state overlay, but no animated
+    // ripple on hover or press.
+    ripple_.setEnabled(interactionFeedbackEnabled_ && focusPolicy() != Qt::NoFocus);
+
+    bool handled = false;
     switch (event.type()) {
     case EventType::PointerEnter:
         if (auto* pointer = dynamic_cast<PointerEvent*>(&event)) {
             lastPointerPosition_ = pointer->localPosition();
             setState(ViewState::Hovered, true);
             ripple_.pointerEntered(pointer->localPosition());
+            handled = true;
         }
         break;
 
@@ -283,6 +302,7 @@ bool View::onEvent(Event& event)
         setState(ViewState::Hovered, false);
         setState(ViewState::Dragged, false);
         ripple_.pointerLeft();
+        handled = true;
         break;
 
     case EventType::PointerDown:
@@ -291,6 +311,7 @@ bool View::onEvent(Event& event)
             if (pointer->button() == Qt::LeftButton) {
                 setState(ViewState::Pressed, true);
                 ripple_.pointerPressed(pointer->localPosition());
+                handled = true;
             }
         }
         break;
@@ -298,32 +319,41 @@ bool View::onEvent(Event& event)
     case EventType::PointerUp:
         setState(ViewState::Pressed, false);
         ripple_.pointerReleased(lastPointerPosition_);
+        handled = true;
         break;
 
     case EventType::PointerMove:
         if (auto* pointer = dynamic_cast<PointerEvent*>(&event)) {
             lastPointerPosition_ = pointer->localPosition();
             ripple_.pointerMoved(pointer->localPosition());
+            handled = true;
         }
         break;
 
     case EventType::KeyDown:
         if (auto* key = dynamic_cast<KeyEvent*>(&event)) {
-            if (isActivationKey(key->key()))
+            if (isActivationKey(key->key())) {
                 setState(ViewState::Pressed, true);
+                handled = true;
+            }
         }
         break;
 
     case EventType::KeyUp:
-        setState(ViewState::Pressed, false);
+        if (auto* key = dynamic_cast<KeyEvent*>(&event); key && isActivationKey(key->key())) {
+            setState(ViewState::Pressed, false);
+            handled = true;
+        }
         break;
 
     case EventType::FocusIn:
         setState(ViewState::Focused, focusable());
+        handled = true;
         break;
 
     case EventType::FocusOut:
         setState(ViewState::Focused, false);
+        handled = true;
         break;
 
     case EventType::Wheel:
@@ -331,8 +361,9 @@ bool View::onEvent(Event& event)
         break;
     }
 
-    event.accept();
-    return true;
+    if (handled)
+        event.accept();
+    return handled;
 }
 
 bool View::onInterceptEvent(Event&)
@@ -370,16 +401,23 @@ void View::paintEvent(QPaintEvent*)
     paintChildren(painter);
 
     // 5. The state overlay and the outline.
-    foreground_.paint(painter, content, context);
+    if (interactionFeedbackEnabled_)
+        foreground_.paint(painter, content, context);
 
     // 6. Pointer feedback.
-    ripple_.paint(painter);
+    if (interactionFeedbackEnabled_)
+        ripple_.paint(painter);
 
     // 7. The focus ring last, so neither the state layer nor a ripple can
     //    obscure the keyboard indicator. FocusRingLayer itself checks the
     //    Focused bit; the extra focusable() guard keeps a state flag set by
-    //    hand on a non-interactive view from drawing a ring.
-    if (hasFocus() && focusable())
+    //    hand on a non-interactive view from drawing a ring. The ring is
+    //    painted inside `content` (the layer's Inside placement): Qt clips a
+    //    widget's painter to the widget rectangle, so a ring stroked outside
+    //    the bounds would show up only as fragments of its corner arcs. It is
+    //    a keyboard indicator (M3): a focus gained by a mouse press uses the
+    //    state layer alone, so clicking a component never draws an outline.
+    if (hasFocus() && focusable() && keyboardFocus_)
         focusRing_.paint(painter, content, context);
 }
 
@@ -387,6 +425,13 @@ void View::resizeEvent(QResizeEvent* event)
 {
     QWidget::resizeEvent(event);
     updateRippleGeometry();
+
+    // A view can receive a new rectangle from Qt (a QLayout, a QSplitter, or a
+    // plain resize) as well as from View::arrange(). The content has to follow
+    // both paths: without this, a ViewGroup placed in an ordinary Qt layout
+    // would never place its children, because only the framework's own
+    // arrange() entry point used to reach arrangeOverride().
+    arrangeOverride(contentRect());
 }
 
 void View::enterEvent(QEnterEvent* event)
@@ -481,6 +526,12 @@ void View::focusInEvent(QFocusEvent* event)
 {
     QWidget::focusInEvent(event);
 
+    // M3: the focus ring is a keyboard indicator. A focus that arrived from a
+    // mouse press or a popup keeps the state layer as its only feedback, so a
+    // click never draws an outline around the component.
+    keyboardFocus_ = event->reason() != Qt::MouseFocusReason
+        && event->reason() != Qt::PopupFocusReason;
+
     FocusEvent focusEvent(true);
     EventDispatcher::dispatch(focusEvent, *this);
     event->accept();
@@ -489,6 +540,8 @@ void View::focusInEvent(QFocusEvent* event)
 void View::focusOutEvent(QFocusEvent* event)
 {
     QWidget::focusOutEvent(event);
+
+    keyboardFocus_ = false;
 
     FocusEvent focusEvent(false);
     EventDispatcher::dispatch(focusEvent, *this);
@@ -513,7 +566,8 @@ void View::changeEvent(QEvent* event)
             state_.setFlag(ViewState::Dragged, false);
         }
 
-        ripple_.setEnabled(on);
+        ripple_.setEnabled(on && interactionFeedbackEnabled_
+                           && focusPolicy() != Qt::NoFocus);
         onEnabledChanged(on);
         requestUpdate();
         break;
@@ -626,6 +680,105 @@ void View::dispatchPointer(EventType type, const QPointF& local, const QPointF& 
 {
     PointerEvent event(type, local, global, button, buttons, modifiers, timestamp);
     EventDispatcher::dispatch(event, *this);
+}
+
+// ---------------------------------------------------------------------------
+// Store bindings
+// ---------------------------------------------------------------------------
+
+void View::bindStore(Store* store)
+{
+    if (store == nullptr)
+        return;
+
+    for (const QPointer<Store>& bound : stores_) {
+        if (bound == store)
+            return;
+    }
+
+    stores_.append(store);
+
+    connect(store, &Store::valueChanged, this,
+            [this, store](const QString& key, const QVariant& value) {
+                onStoreChanged(store, key, value);
+                emit storeChanged(key, value);
+            });
+
+    // Apply the values the store already carries, without re-emitting one
+    // storeChanged per key: the binding itself is the notification.
+    const QVariantMap values = store->values();
+    for (auto it = values.constBegin(); it != values.constEnd(); ++it)
+        onStoreChanged(store, it.key(), it.value());
+
+    emit storeBindingChanged();
+}
+
+void View::bindStore(const QString& storeId)
+{
+    bindStore(Store::open(storeId));
+}
+
+void View::unbindStore(Store* store)
+{
+    for (int index = static_cast<int>(stores_.size()) - 1; index >= 0; --index) {
+        Store* bound = stores_.at(index).data();
+        if (store != nullptr && bound != store)
+            continue;
+        if (bound != nullptr)
+            disconnect(bound, nullptr, this, nullptr);
+        stores_.removeAt(index);
+    }
+    emit storeBindingChanged();
+}
+
+void View::unbindAllStores()
+{
+    unbindStore(nullptr);
+}
+
+QList<Store*> View::boundStores() const
+{
+    QList<Store*> result;
+    for (const QPointer<Store>& store : stores_) {
+        if (store != nullptr)
+            result.append(store.data());
+    }
+    return result;
+}
+
+QString View::localized(const QString& key, const QString& fallback) const
+{
+    if (Store* language = Store::find(QStringLiteral("md.language")); language != nullptr) {
+        const QVariantMap strings =
+            language->value(QStringLiteral("strings")).toMap();
+        const auto it = strings.constFind(key);
+        if (it != strings.constEnd() && !it.value().toString().isEmpty())
+            return it.value().toString();
+    }
+    return fallback;
+}
+
+void View::setInteractionFeedbackEnabled(bool enabled)
+{
+    if (interactionFeedbackEnabled_ == enabled)
+        return;
+
+    interactionFeedbackEnabled_ = enabled;
+    ripple_.setEnabled(enabled);
+    requestUpdate();
+}
+
+bool View::isInteractionFeedbackEnabled() const noexcept
+{
+    return interactionFeedbackEnabled_;
+}
+
+void View::onStoreChanged(Store* store, const QString& key, const QVariant& value)
+{
+    Q_UNUSED(store);
+
+    if (key == QStringLiteral("theme") && value.canConvert<Theme>())
+        ThemeScope::install(this, value.value<Theme>());
 }
 
 } // namespace md

@@ -55,7 +55,7 @@ public:
     void setIcon(const QIcon& icon);
     [[nodiscard]] QIcon icon() const;
 
-    // The icon box, in dp. M3's button icon is 18 dp.
+    // The icon box, in dp. M3's standard button icon is 20 dp.
     void setIconSize(qreal dp);
     [[nodiscard]] qreal iconSize() const noexcept;
 
@@ -80,7 +80,7 @@ private:
     QString text_;
     ButtonVariant variant_ = ButtonVariant::Filled;
     drawable::IconDrawable iconDrawable_;
-    qreal iconSizeDp_ = 18.0;
+    qreal iconSizeDp_ = 20.0;
     bool pressedInside_ = false;
 };
 

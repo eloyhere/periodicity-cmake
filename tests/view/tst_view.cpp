@@ -25,6 +25,7 @@
 #include <md/core/view_state.h>
 #include <md/event/event.h>
 #include <md/event/pointer_event.h>
+#include <md/event/wheel_event.h>
 #include <md/schedule/task_queue.h>
 #include <md/theme/theme.h>
 #include <md/tokens/color_scheme.h>
@@ -171,11 +172,13 @@ private slots:
 
     void pointerStateTransitions();
     void keyboardActivation();
+    void unhandledFrameworkEventsRemainIgnored();
     void updateRequestsCoalesce();
     void disabledViewIgnoresInput();
     void rippleDarkensSurface();
 
     void groupArrangesChildren();
+    void groupTransferRemovesOldMembership();
     void groupPaintsSecondChildOverFirst();
     void parentTargetAndPointMapping();
 };
@@ -372,6 +375,23 @@ void TestView::keyboardActivation()
     QVERIFY(!view.state().testFlag(md::ViewState::Pressed));
 }
 
+void TestView::unhandledFrameworkEventsRemainIgnored()
+{
+    BoxView view;
+    md::Event none(md::EventType::None);
+    QVERIFY(!view.onEvent(none));
+    QVERIFY(!none.isAccepted());
+
+    md::WheelEvent wheel(QPoint(0, 120), QPoint(), QPointF(), Qt::NoModifier);
+    QVERIFY(!view.onEvent(wheel));
+    QVERIFY(!wheel.isAccepted());
+
+    QKeyEvent letter(QEvent::KeyPress, Qt::Key_A, Qt::NoModifier);
+    QApplication::sendEvent(&view, &letter);
+    QVERIFY(!letter.isAccepted());
+    QVERIFY(!view.state().testFlag(md::ViewState::Pressed));
+}
+
 void TestView::updateRequestsCoalesce()
 {
     md::schedule::TaskQueue& queue = md::schedule::TaskQueue::main();
@@ -470,6 +490,19 @@ void TestView::groupArrangesChildren()
     group.removeView(&second);
     QCOMPARE(group.views().size(), qsizetype(1));
     QVERIFY(second.parentWidget() == nullptr);
+}
+
+void TestView::groupTransferRemovesOldMembership()
+{
+    BoxGroup first;
+    BoxGroup second;
+    BoxView child;
+    first.addView(&child);
+    second.addView(&child);
+
+    QVERIFY(first.views().isEmpty());
+    QCOMPARE(second.views(), QList<md::View*>({&child}));
+    QCOMPARE(child.parentWidget(), static_cast<QWidget*>(&second));
 }
 
 void TestView::groupPaintsSecondChildOverFirst()

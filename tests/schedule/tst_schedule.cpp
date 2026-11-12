@@ -151,6 +151,7 @@ void TestTaskQueue::pendingCountsIgnoreRetiredEntries()
     QCOMPARE(queue.pending(Priority::UserInput), 2);
     QCOMPARE(queue.pending(Priority::UiUpdate), 1);
     QCOMPARE(queue.pending(Priority::Idle), 1);
+    QCOMPARE(queue.pending(), 4);
     QVERIFY(!queue.isEmpty());
 }
 

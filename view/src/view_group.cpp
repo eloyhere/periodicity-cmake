@@ -45,6 +45,10 @@ void ViewGroup::addView(View* view)
     if (std::find(views_.begin(), views_.end(), view) != views_.end())
         return;
 
+    // Transfer group-level membership before Qt reparents the widget.
+    if (auto* oldGroup = qobject_cast<ViewGroup*>(view->parentWidget()))
+        oldGroup->removeView(view);
+
     view->setParent(this);
     views_.push_back(view);
 

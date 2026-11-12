@@ -10,7 +10,7 @@
             "installDir": "${sourceDir}/out/install/${presetName}",
             "cacheVariables": {
                 "CMAKE_CXX_COMPILER": "cl.exe",
-                "CMAKE_PREFIX_PATH": "R:/Qt/6.8.3/msvc2022_64",
+                "CMAKE_PREFIX_PATH": "D:/Qt/6.8.3/msvc2022_64",
                 "CMAKE_EXPORT_COMPILE_COMMANDS": "ON"
             },
             "condition": {
@@ -34,6 +34,42 @@
             "cacheVariables": {
                 "CMAKE_BUILD_TYPE": "Release"
             }
+        },
+        {
+            "name": "vs2026",
+            "displayName": "Visual Studio 2026 (x64 solution)",
+            "description": "Generates Periodicity.sln for Visual Studio 2026 / MSVC v180; F5 runs periodicity_demo.",
+            "generator": "Visual Studio 18 2026",
+            "architecture": { "value": "x64", "strategy": "set" },
+            "binaryDir": "${sourceDir}/out/build/vs2026",
+            "installDir": "${sourceDir}/out/install/vs2026",
+            "cacheVariables": {
+                "CMAKE_PREFIX_PATH": "D:/Qt/6.8.3/msvc2022_64",
+                "CMAKE_EXPORT_COMPILE_COMMANDS": "ON"
+            },
+            "condition": {
+                "type": "equals",
+                "lhs": "${hostSystemName}",
+                "rhs": "Windows"
+            }
+        },
+        {
+            "name": "vs2022",
+            "displayName": "Visual Studio 2022 (x64 solution)",
+            "description": "Generates Periodicity.sln for Visual Studio 2022 / MSVC v143; F5 runs periodicity_demo.",
+            "generator": "Visual Studio 17 2022",
+            "architecture": { "value": "x64", "strategy": "set" },
+            "binaryDir": "${sourceDir}/out/build/vs2022",
+            "installDir": "${sourceDir}/out/install/vs2022",
+            "cacheVariables": {
+                "CMAKE_PREFIX_PATH": "D:/Qt/6.8.3/msvc2022_64",
+                "CMAKE_EXPORT_COMPILE_COMMANDS": "ON"
+            },
+            "condition": {
+                "type": "equals",
+                "lhs": "${hostSystemName}",
+                "rhs": "Windows"
+            }
         }
     ],
     "buildPresets": [
@@ -44,6 +80,40 @@
         {
             "name": "x64-release",
             "configurePreset": "x64-release"
+        },
+        {
+            "name": "vs2026-debug",
+            "displayName": "Visual Studio 2026 Debug (demo)",
+            "configurePreset": "vs2026",
+            "configuration": "Debug",
+            "targets": [ "periodicity_demo" ]
+        },
+        {
+            "name": "vs2026-release",
+            "displayName": "Visual Studio 2026 Release (demo)",
+            "configurePreset": "vs2026",
+            "configuration": "Release",
+            "targets": [ "periodicity_demo" ]
+        },
+        {
+            "name": "vs2026-all-debug",
+            "displayName": "Visual Studio 2026 Debug (all targets)",
+            "configurePreset": "vs2026",
+            "configuration": "Debug"
+        },
+        {
+            "name": "vs2022-debug",
+            "displayName": "Visual Studio 2022 Debug (demo)",
+            "configurePreset": "vs2022",
+            "configuration": "Debug",
+            "targets": [ "periodicity_demo" ]
+        },
+        {
+            "name": "vs2022-release",
+            "displayName": "Visual Studio 2022 Release (demo)",
+            "configurePreset": "vs2022",
+            "configuration": "Release",
+            "targets": [ "periodicity_demo" ]
         }
     ],
     "testPresets": [
@@ -55,6 +125,27 @@
         {
             "name": "x64-release",
             "configurePreset": "x64-release",
+            "output": { "outputOnFailure": true }
+        },
+        {
+            "name": "vs2026-debug",
+            "displayName": "Visual Studio 2026 Debug",
+            "configurePreset": "vs2026",
+            "configuration": "Debug",
+            "output": { "outputOnFailure": true }
+        },
+        {
+            "name": "vs2026-release",
+            "displayName": "Visual Studio 2026 Release",
+            "configurePreset": "vs2026",
+            "configuration": "Release",
+            "output": { "outputOnFailure": true }
+        },
+        {
+            "name": "vs2022-debug",
+            "displayName": "Visual Studio 2022 Debug",
+            "configurePreset": "vs2022",
+            "configuration": "Debug",
             "output": { "outputOnFailure": true }
         }
     ]

@@ -11,8 +11,10 @@
 //   StateOverlayLayer  content colour at the state-layer opacity, clipped to
 //                      the shape; nothing when the state has no interaction
 //                      flag or the component is disabled.
-//   FocusRingLayer     a 2 dp secondary outline 2 dp outside the shape when
-//                      Focused is set; nothing otherwise.
+//   FocusRingLayer     a 2 dp secondary outline hugging the shape when
+//                      Focused is set; nothing otherwise. Widgets use the
+//                      inside placement, because a widget's painter is clipped
+//                      to its own rectangle.
 //   OutlineLayer       the 1 dp outlineVariant contour, inset so the stroke
 //                      lies inside the bounds; used by outlined surfaces.
 
@@ -47,14 +49,32 @@ public:
 };
 
 // The keyboard focus indicator: a 2 dp outline in the theme's secondary role,
-// stroked along a path 2 dp outside the shape. Drawn only when Focused is set.
-// The offset and the width are scaled by the theme's Density, so a zoomed
-// application keeps the ring proportionate.
+// drawn only when Focused is set. Width and placement are scaled by the theme's
+// Density, so a zoomed application keeps the ring proportionate.
+//
+// Placement is a painting-device property, not a style choice:
+//
+//   Outside  the token geometry, 2 dp outside the shape. It is only visible on
+//            a device that is not clipped to the widget rectangle — an
+//            offscreen image or a layer test. Keep it as the default so the
+//            token geometry stays inspectable on its own.
+//   Inside   the 2 dp band lies entirely inside the shape's edge. This is what
+//            a QWidget must use: a widget's painter is clipped to the widget
+//            rectangle, so an outside ring leaves only the fragments of its
+//            rounded-corner arcs that dip back inside — the 1 px "corner dots"
+//            (and, on a pill, the clipped arcs that read as a broken outline).
 class FocusRingLayer final : public ForegroundLayer
 {
 public:
+    enum class Placement { Outside, Inside };
+
+    explicit FocusRingLayer(Placement placement = Placement::Outside) noexcept;
+
     void paint(QPainter& painter, const QRectF& bounds,
                const SurfaceContext& context) const override;
+
+private:
+    Placement placement_ = Placement::Outside;
 };
 
 // The contour of an outlined surface: 1 dp of outlineVariant along the shape,

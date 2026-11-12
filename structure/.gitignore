@@ -1,0 +1,2 @@
+# Standalone verification build tree (see CMakeLists.txt for the commands).
+.build/

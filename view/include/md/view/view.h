@@ -13,9 +13,10 @@
 //   2. the background, clipped to the shape;
 //   3. paintContent(), the component's own drawing;
 //   4. paintChildren(), the ViewGroup hook (a plain View has none);
-//   5. the foreground stack — the state overlay and the outline;
+//   5. the foreground stack — the state overlay;
 //   6. the ripple;
-//   7. the focus ring, when the view is focusable and actually focused.
+//   7. the focus ring, when the view is focusable, actually focused, and the
+//      focus was established by the keyboard (M3).
 //
 // Input arrives twice. Qt's event handlers convert a Qt event with
 // md/event/qt_bridge.h and dispatch it through the EventDispatcher; onEvent()
@@ -39,20 +40,26 @@
 #include <md/view/lifecycle.h>
 
 #include <QColor>
+#include <QList>
 #include <QPointF>
+#include <QPointer>
 #include <QRect>
 #include <QRectF>
 #include <QSizeF>
+#include <QVariant>
 #include <QWidget>
 #include <Qt>
 
 #include <chrono>
+#include <memory>
 
 class QPainter;
 class QShowEvent;
 class QHideEvent;
 
 namespace md {
+
+class Store;
 
 // The kernel every component inherits from.
 //
@@ -95,6 +102,13 @@ public:
     // when the view is disabled.
     void setState(ViewState flag, bool on);
 
+    // The state overlay and the ripple are the right feedback for a button; a
+    // scrollbar wants only its thumb colour change, so it turns the shared
+    // interaction layers off instead of letting a full-width ripple wash over
+    // the track.
+    void setInteractionFeedbackEnabled(bool enabled);
+    [[nodiscard]] bool isInteractionFeedbackEnabled() const noexcept;
+
     void setElevation(Elevation level);
     [[nodiscard]] Elevation elevation() const noexcept;
 
@@ -129,7 +143,31 @@ public:
     bool onEvent(Event& event) override;
     bool onInterceptEvent(Event& event) override;
 
+    // Store bindings ------------------------------------------------------
+    // A view may bind any number of named stores. Every value change is
+    // delivered to onStoreChanged() (which applies the framework's own keys:
+    // "theme", "font.family" and "font.scale") and re-emitted as
+    // storeChanged() for the host. Connections are dropped with the view.
+    void bindStore(Store* store);
+    void bindStore(const QString& storeId);
+    void unbindStore(Store* store = nullptr);
+    void unbindAllStores();
+    [[nodiscard]] QList<Store*> boundStores() const;
+
+    // A localized string for this widget. The framework reads the "strings"
+    // map of the "md.language" store; without a Language container (or a key)
+    // the fallback is returned unchanged, so components stay usable standalone.
+    [[nodiscard]] QString localized(const QString& key, const QString& fallback) const;
+
+signals:
+    void storeChanged(const QString& key, const QVariant& value);
+    void storeBindingChanged();
+
 protected:
+    // The framework applies "theme" by installing a ThemeScope on this view;
+    // subclasses may extend it (Text applies the font keys, for example).
+    virtual void onStoreChanged(Store* store, const QString& key, const QVariant& value);
+
     // The whole pipeline. final because a component must not be able to skip
     // the state layer, the focus ring or the shadow (framework.md §5.7).
     void paintEvent(QPaintEvent* event) final;
@@ -195,6 +233,9 @@ protected:
     void requestUpdate();
 
 private:
+    bool interactionFeedbackEnabled_ = true;
+    QList<QPointer<Store>> stores_;
+
     // Re-publishes the widget rectangle and the resolved corner radius to the
     // ripple controller. Called on resize, when the shape changes and before
     // painting.
@@ -224,9 +265,17 @@ private:
     // local position when Qt's leave event carries none.
     QPointF lastPointerPosition_;
 
+    // True when the current focus came from the keyboard (Tab, a shortcut, a
+    // programmatic focus), false when a mouse press or a popup established it.
+    // The focus ring is a keyboard indicator; the state layer covers the rest.
+    bool keyboardFocus_ = false;
+
     layer::BackgroundLayer backgroundLayer_;
     layer::ElevationLayer elevationLayer_;
-    layer::FocusRingLayer focusRing_;
+    // A widget's painter is clipped to the widget rectangle, so the ring is
+    // painted inside the bounds: an outside ring would survive only as corner
+    // fragments (the "corner dot" artefact).
+    layer::FocusRingLayer focusRing_{layer::FocusRingLayer::Placement::Inside};
     layer::LayerStack foreground_;
 
     ripple::RippleController ripple_;

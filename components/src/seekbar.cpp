@@ -209,8 +209,11 @@ void SeekBar::paintContent(QPainter& painter, const QRectF& content)
     const qreal fraction = range > 0.0 ? (value_ - minimum_) / range : 0.0;
     const qreal thumbX = trackStart + fraction * (trackEnd - trackStart);
 
+    // M3 slider colour roles: active track and handle are primary, the inactive
+    // track is secondaryContainer (not a surface container), and the stop
+    // markers are onSecondaryContainer.
     const QColor inactive = enabled
-        ? colours.surfaceContainerHighest
+        ? colours.secondaryContainer
         : withAlpha(colours.onSurface, kDisabledContainerOpacity);
     const QColor active = enabled
         ? colours.primary
@@ -236,7 +239,7 @@ void SeekBar::paintContent(QPainter& painter, const QRectF& content)
         const qreal steps = range / step_;
         if (steps <= kMaxTicks) {
             const int tickCount = static_cast<int>(std::floor(steps)) + 1;
-            painter.setBrush(enabled ? colours.onSurfaceVariant : inactive);
+            painter.setBrush(enabled ? colours.onSecondaryContainer : inactive);
             for (int i = 0; i < tickCount; ++i) {
                 const qreal tickValue = minimum_ + static_cast<qreal>(i) * step_;
                 const qreal tickX = trackStart

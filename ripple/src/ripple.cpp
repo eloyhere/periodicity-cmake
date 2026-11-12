@@ -273,8 +273,8 @@ public:
 
     void setContentColour(const QColor& colour)
     {
-        contentColour_ = colour;
-        contentColourExplicit_ = true;
+        contentColourExplicit_ = colour.isValid();
+        contentColour_ = contentColourExplicit_ ? colour : theme_.colours().onSurface;
         notify();
     }
 

@@ -88,8 +88,12 @@ int TaskQueue::pending(Priority priority) const noexcept
 int TaskQueue::pending() const noexcept
 {
     int count = 0;
-    for (const auto& queue : queues_)
-        count += static_cast<int>(queue.size());
+    for (const auto& queue : queues_) {
+        for (const Entry& entry : queue) {
+            if (retired_.find(entry.id) == retired_.end())
+                ++count;
+        }
+    }
     return count;
 }
 

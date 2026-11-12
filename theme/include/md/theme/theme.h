@@ -24,6 +24,7 @@
 #include <md/tokens/shape.h>
 #include <md/tokens/type_scale.h>
 
+#include <QMetaType>
 #include <QPalette>
 #include <QtGlobal>
 
@@ -34,6 +35,11 @@ namespace md {
 class Theme
 {
 public:
+    // A metatype placeholder: Q_DECLARE_METATYPE requires a default
+    // constructor, and a Store holds themes as QVariant. Components always
+    // paint from a fully built theme (baseline or withX), never from this one.
+    Theme() = default;
+
     // Every subsystem is taken by value and stored by value: a Theme owns its
     // tokens, so the caller may keep mutating the arguments afterwards.
     Theme(ColorScheme colours, TypeScale type, ShapeScale shapes, MotionScheme motion,
@@ -78,6 +84,26 @@ public:
     // installed (the application storage lives for the process).
     [[nodiscard]] static const Theme& forWidget(const QWidget* widget);
 
+    // The Android-style attribute layer. Android's view system names the
+    // palette `colorPrimary`, `colorPrimaryDark`, `colorSecondary` and
+    // `colorAccent`; these accessors expose the same attributes from the token
+    // scheme, so a host that thinks in those names does not need a second
+    // palette type.
+    //
+    // `fromColours()` builds a whole Theme from three seed colours: the
+    // on-colours, containers and neutral surfaces are derived from them, while
+    // type, shape and motion come from the baseline of the same brightness.
+    // `colour()` accepts `colorPrimary`/`colourPrimary`, `Second`/`Secondary`
+    // and `Acent`/`Accent`; an unknown attribute yields an invalid QColor.
+    [[nodiscard]] static Theme fromColours(QColor primary, QColor secondary,
+                                           QColor accent, bool dark = false);
+    [[nodiscard]] QColor colourPrimary() const;
+    [[nodiscard]] QColor colourPrimaryDark() const;
+    [[nodiscard]] QColor colourSecondary() const;
+    [[nodiscard]] QColor colourSecondaryDark() const;
+    [[nodiscard]] QColor colourAccent() const;
+    [[nodiscard]] QColor colour(const QString& attribute) const;
+
     // Replaces the application theme and posts QEvent::ThemeChange to every
     // top-level widget and its subtree, so cached paints are invalidated.
     //
@@ -101,3 +127,5 @@ private:
 };
 
 } // namespace md
+
+Q_DECLARE_METATYPE(md::Theme)

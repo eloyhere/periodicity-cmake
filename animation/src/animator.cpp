@@ -8,6 +8,7 @@
 #include <md/animation/animator.h>
 
 #include <QMetaObject>
+#include <QSignalBlocker>
 #include <QTimer>
 
 #include <algorithm>
@@ -137,10 +138,19 @@ void Animator::start(MotionSpec spec, std::function<void(qreal)> onValue)
 
 void Animator::beginRun(const MotionSpec& spec, qreal from, qint64 remainingMs)
 {
-    animation_.setEasingCurve(spec.easing.toEasingCurve());
-    animation_.setStartValue(from);
-    animation_.setEndValue(1.0);
-    animation_.setDuration(toAnimationDuration(remainingMs));
+    // QVariantAnimation re-evaluates its value from the *old* currentTime as
+    // soon as a property changes. After stop() that time is still the middle
+    // of the previous run, so each setter below would emit a stale value and
+    // the caller would see a jump before the run has begun — the delayed start
+    // path is the visible case, because there running_ is already true.
+    // Silence the reconfiguration; start() below emits the first real value.
+    {
+        const QSignalBlocker blocker(&animation_);
+        animation_.setEasingCurve(spec.easing.toEasingCurve());
+        animation_.setStartValue(from);
+        animation_.setEndValue(1.0);
+        animation_.setDuration(toAnimationDuration(remainingMs));
+    }
 
     running_ = true;
     animation_.start();

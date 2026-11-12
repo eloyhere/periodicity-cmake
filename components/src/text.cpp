@@ -9,6 +9,8 @@
 
 #include <md/components/text.h>
 
+#include <md/components/font.h>
+#include <md/store/store.h>
 #include <md/theme/theme.h>
 
 #include <QFont>
@@ -25,18 +27,60 @@ namespace md {
 
 namespace {
 
-QFont fontFor(const TextStyle& style, const Density& density)
+QFont fontFor(const TextStyle& style, const Density& density, const QWidget* context)
 {
-    QFont font(style.family);
-    font.setPixelSize(std::max(1, static_cast<int>(qRound(density.sp(style.sizeSp)))));
-    font.setWeight(static_cast<QFont::Weight>(style.weight));
-    font.setLetterSpacing(QFont::AbsoluteSpacing, density.sp(style.trackingSp));
-    return font;
+    return Font::resolve(context, style, density);
 }
 
 qreal lineHeightFor(const TextStyle& style, const Density& density)
 {
     return density.sp(style.lineHeightSp);
+}
+
+// The width of the widest hard line. QFontMetricsF::horizontalAdvance() walks a
+// string as one run, so passing a block that still contains its newlines
+// reported the *sum* of the lines instead of the longest one. sizeHint() and
+// the width the measure pass wrapped at were both wrong for any multi-line
+// string; splitting first makes the natural width the one the widest line
+// needs, which is what the paint pass lays the block out at.
+qreal naturalWidth(const QFontMetricsF& metrics, const QString& normalisedText)
+{
+    const QChar separator(QChar::LineSeparator);
+    qreal width = 0.0;
+    int start = 0;
+    for (;;) {
+        const int end = normalisedText.indexOf(separator, start);
+        const QString line = end < 0 ? normalisedText.mid(start)
+                                     : normalisedText.mid(start, end - start);
+        width = std::max(width, metrics.horizontalAdvance(line));
+        if (end < 0)
+            break;
+        start = end + 1;
+    }
+
+    return width;
+}
+
+// Horizontal alignment is logical: AlignLeft is the leading edge and mirrors in
+// a right-to-left widget. QTextLayout would otherwise interpret the flag
+// physically, so the block was drawn against the wrong edge in RTL. The
+// physical flag is paired with AlignAbsolute so the layout engine cannot mirror
+// it a second time.
+Qt::Alignment physicalHorizontalAlignment(Qt::Alignment alignment,
+                                          Qt::LayoutDirection direction)
+{
+    Qt::Alignment result = alignment & Qt::AlignHorizontal_Mask;
+
+    if (direction == Qt::RightToLeft && !alignment.testFlag(Qt::AlignAbsolute)) {
+        const bool left = result.testFlag(Qt::AlignLeft);
+        const bool right = result.testFlag(Qt::AlignRight);
+        if (left != right) {
+            result &= ~(Qt::AlignLeft | Qt::AlignRight);
+            result |= left ? Qt::AlignRight : Qt::AlignLeft;
+        }
+    }
+
+    return result | Qt::AlignAbsolute;
 }
 
 // QTextLayout is a single paragraph, so a newline has to become the Unicode
@@ -60,8 +104,12 @@ public:
 
     void run(qreal width, qreal lineHeight, Qt::Alignment alignment, bool wrap)
     {
+        // AlignAbsolute is kept: it tells the layout engine that the
+        // left/right flag is already physical, so it must not mirror it again
+        // for a right-to-left paragraph.
         QTextOption option;
-        option.setAlignment(alignment & Qt::AlignHorizontal_Mask);
+        option.setAlignment((alignment & Qt::AlignHorizontal_Mask)
+                            | (alignment & Qt::AlignAbsolute));
         option.setWrapMode(wrap ? QTextOption::WrapAtWordBoundaryOrAnywhere
                                 : QTextOption::NoWrap);
         layout_.setTextOption(option);
@@ -241,18 +289,23 @@ void Text::measureOverride(MeasureSpec width, MeasureSpec height)
 {
     const Theme& theme = Theme::forWidget(this);
     const TextStyle style = resolvedStyle();
-    const QFont font = fontFor(style, theme.density());
+    const QFont font = fontFor(style, theme.density(), this);
     const qreal lineHeight = lineHeightFor(style, theme.density());
     const QFontMetricsF metrics(font);
 
-    const QString block = normalised(text_);
-    const qreal natural = block.isEmpty() ? 0.0 : metrics.horizontalAdvance(block);
+    const qreal natural = text_.isEmpty() ? 0.0 : naturalWidth(metrics, normalised(text_));
     const qreal available = width.resolve(natural);
+    const Qt::Alignment horizontal =
+        physicalHorizontalAlignment(alignment_, layoutDirection());
 
+    // The height always comes from the block layout, not from a single line:
+    // hard line breaks break the paragraph even with word wrap off, and wrapping
+    // uses the available width (the one the parent resolved), never the
+    // single-line sizeHint width.
     qreal measuredHeight = lineHeight;
-    if (wordWrap_ && available > 0.0 && !block.isEmpty()) {
-        TextBlock layout(block, font);
-        layout.run(available, lineHeight, alignment_, true);
+    if (!text_.isEmpty() && (available > 0.0 || !wordWrap_)) {
+        TextBlock layout(text_, font);
+        layout.run(available, lineHeight, horizontal, wordWrap_);
         measuredHeight = layout.height();
     }
 
@@ -266,12 +319,14 @@ void Text::paintContent(QPainter& painter, const QRectF& content)
 
     const Theme& theme = Theme::forWidget(this);
     const TextStyle style = resolvedStyle();
-    const QFont font = fontFor(style, theme.density());
+    const QFont font = fontFor(style, theme.density(), this);
     const qreal lineHeight = lineHeightFor(style, theme.density());
     const qreal width = std::max(content.width(), qreal(1.0));
+    const Qt::Alignment horizontal =
+        physicalHorizontalAlignment(alignment_, layoutDirection());
 
     TextBlock block(text_, font);
-    block.run(width, lineHeight, alignment_, wordWrap_);
+    block.run(width, lineHeight, horizontal, wordWrap_);
 
     qreal top = content.top();
     if (alignment_.testFlag(Qt::AlignVCenter))
@@ -288,6 +343,23 @@ void Text::paintContent(QPainter& painter, const QRectF& content)
 bool Text::focusable() const
 {
     return false;
+}
+
+void Text::onStoreChanged(Store* store, const QString& key, const QVariant& value)
+{
+    View::onStoreChanged(store, key, value);
+
+    if (key != QStringLiteral("font.family") && key != QStringLiteral("font.scale"))
+        return;
+
+    const QString family = store->value(QStringLiteral("font.family")).toString();
+    const qreal scale = store->value(QStringLiteral("font.scale"), 1.0).toDouble();
+    if (Font* font = Font::find(this)) {
+        font->setFamily(family);
+        font->setScale(scale);
+    } else {
+        Font::install(this, family, scale);
+    }
 }
 
 } // namespace md

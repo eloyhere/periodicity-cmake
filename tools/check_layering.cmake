@@ -14,12 +14,15 @@ if(NOT DEFINED SOURCE_DIR)
   get_filename_component(SOURCE_DIR "${CMAKE_CURRENT_LIST_DIR}/.." ABSOLUTE)
 endif()
 
-set(MODULES core schedule tokens theme event ripple drawable layer animation view layout components)
+set(MODULES core store structure pool schedule tokens theme event ripple drawable layer animation view layout components)
 
 set(ALLOWED_core "")
+set(ALLOWED_store "core")
+set(ALLOWED_structure "core")
+set(ALLOWED_pool "core")
 set(ALLOWED_schedule "core")
 set(ALLOWED_tokens "core")
-set(ALLOWED_theme "core;tokens")
+set(ALLOWED_theme "core;tokens;store")
 set(ALLOWED_event "core")
 set(ALLOWED_ripple "core;tokens;theme")
 set(ALLOWED_drawable "core;tokens;theme")
@@ -27,7 +30,7 @@ set(ALLOWED_layer "core;tokens;theme;drawable;ripple")
 set(ALLOWED_animation "core;tokens;theme")
 set(ALLOWED_view "core;schedule;tokens;theme;event;ripple;drawable;layer;animation")
 set(ALLOWED_layout "core;schedule;tokens;theme;event;ripple;drawable;layer;animation;view")
-set(ALLOWED_components "core;schedule;tokens;theme;event;ripple;drawable;layer;animation;view;layout")
+set(ALLOWED_components "core;store;structure;schedule;tokens;theme;event;ripple;drawable;layer;animation;view;layout")
 
 set(_violations "")
 
@@ -54,7 +57,9 @@ foreach(_module IN LISTS MODULES)
     endforeach()
 
     # Headless layers must not pull in widgets.
-    if(_module STREQUAL "core" OR _module STREQUAL "tokens" OR _module STREQUAL "event")
+    if(_module STREQUAL "core" OR _module STREQUAL "structure"
+       OR _module STREQUAL "pool" OR _module STREQUAL "tokens"
+       OR _module STREQUAL "event")
       if(_content MATCHES "#include[ \t]*[<\"]QtWidgets/" OR
          _content MATCHES "#include[ \t]*[<\"]QWidget>")
         list(APPEND _violations "${_rel}: ${_module} must remain free of QtWidgets")

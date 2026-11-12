@@ -24,15 +24,17 @@ core → tokens → event → theme → animation → drawable → layer → vie
 | 0c | demo application (Element-Plus-style showcase) | `demo/**` | done |
 | 0d | schedule layer: priority queue (user input before UI) | `schedule/**`, `tests/schedule/**` | done |
 | 1 | theme + animation | `theme/**`, `animation/**`, `tests/theme/**`, `tests/animation/**` | done |
-| 2 | drawable + layer | `drawable/**`, `layer/**`, `tests/drawable/**`, `tests/layer/**` | running |
-| 3 | view kernel | `view/**`, `tests/view/**` | queued |
-| 4 | layouts | `layout/**`, `tests/layout/**` | queued |
-| 5 | basic widgets | `components/**` (see 5a) | running |
-| 6 | input widgets | `components/**` (see 6a) | queued |
-| 6b | Form + FormField | `components/**` (Form/FormField) | queued |
-| 7 | overlays and surfaces | `components/**` (see 7a) | queued |
-| 8 | RecyclerView infrastructure | `components/recycler/**` | queued |
-| 9 | gallery | `apps/gallery/**` | queued |
+| 2 | drawable + layer | `drawable/**`, `layer/**`, `tests/drawable/**`, `tests/layer/**` | done |
+| 3 | view kernel | `view/**`, `tests/view/**` | done |
+| 4 | layouts | `layout/**`, `tests/layout/**` | done |
+| 5 | basic widgets | `components/**` (see 5a) | done |
+| 6 | input widgets | `components/**` (see 6a) | done |
+| 6b | Form + FormField | `components/**` (Form/FormItem/FormRule) | done |
+| 7 | overlays and surfaces | `components/**` (see 7a) | done |
+| 8 | RecyclerView infrastructure | `components/recycler/**` | done |
+| 9 | gallery | `apps/gallery/**` | done |
+
+The component catalogue (names, layer, and test file) lives in `docs/components.md`.
 
 ## Batch 4 — layouts
 

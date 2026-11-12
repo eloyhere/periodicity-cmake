@@ -5,6 +5,10 @@
 // than by QAbstractButton: checking one radio walks the sibling list of the
 // parent widget and unchecks every Radio that shares the group id, which is
 // the smallest mechanism that still behaves like a button group.
+//
+// M3 gives a selection control a 40 dp state-layer circle, not an overlay over
+// the whole target, so the shared overlay is switched off and the circle is
+// painted under the ring. The pill shape keeps the focus ring circular.
 
 #include <md/components/radio.h>
 
@@ -27,12 +31,29 @@ constexpr qreal kDiameterDp = 20.0;
 constexpr qreal kDotDiameterDp = 10.0;
 constexpr qreal kBorderDp = 2.0;
 constexpr qreal kTouchSizeDp = 48.0;
+// M3 measurement: the radio interaction layer is a 40 dp circle.
+constexpr qreal kStateLayerDp = 40.0;
 
 QColor withAlpha(const QColor& colour, qreal alpha)
 {
     QColor result = colour;
     result.setAlphaF(static_cast<float>(std::clamp(alpha, 0.0, 1.0)));
     return result;
+}
+
+// The M3 interaction overlay: onSurface at the state-layer opacity for the
+// strongest active interaction bit. A disabled control has no layer.
+QColor stateLayerFor(const ColorScheme& colours, ViewStates state, bool enabled)
+{
+    if (!enabled)
+        return QColor(Qt::transparent);
+
+    const qreal opacity = stateLayerOpacity(
+        static_cast<ViewState>(static_cast<quint32>(state)));
+    if (opacity <= 0.0)
+        return QColor(Qt::transparent);
+
+    return withAlpha(colours.onSurface, opacity);
 }
 
 bool isActivationKey(int key) noexcept
@@ -48,6 +69,11 @@ Radio::Radio(QWidget* parent)
     setAttribute(Qt::WA_Hover, true);
     setFocusPolicy(Qt::StrongFocus);
     setBackgroundColour(QColor(Qt::transparent));
+    // A round state layer and a round focus indicator (M3).
+    setShape(Theme::forWidget(this).shapes().full);
+    // The shared overlay would fill the whole 48 dp target; the 40 dp circle is
+    // painted in paintContent(). A radio has no ripple in M3.
+    setInteractionFeedbackEnabled(false);
 }
 
 void Radio::setChecked(bool checked)
@@ -144,6 +170,18 @@ void Radio::paintContent(QPainter& painter, const QRectF& content)
 
     painter.save();
     painter.setRenderHint(QPainter::Antialiasing, true);
+
+    // The 40 dp interaction circle sits below the ring, centred on it.
+    const qreal layerSide = density.dp(kStateLayerDp);
+    const QColor layerColour = stateLayerFor(colours, state(), enabled);
+    if (layerColour.alpha() > 0) {
+        painter.setPen(Qt::NoPen);
+        painter.setBrush(layerColour);
+        painter.drawEllipse(QRectF(content.center().x() - layerSide / 2.0,
+                                   content.center().y() - layerSide / 2.0, layerSide,
+                                   layerSide));
+    }
+
     painter.setBrush(Qt::NoBrush);
     painter.setPen(QPen(contour, border, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
     painter.drawEllipse(ring);

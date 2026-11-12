@@ -104,6 +104,10 @@ void Ring::startAnimation()
     if (!indeterminate_)
         return;
 
+    // The new run replaces the old one; stopping here is also what makes the
+    // reduced-motion branch cancel a loop started under a previous theme.
+    animator_.stop();
+
     const MotionSpec spec = Theme::forWidget(this).motion().level(MotionLevel::Level3);
     if (spec.duration.count() <= 0) {
         phase_ = 0.25;
@@ -111,7 +115,6 @@ void Ring::startAnimation()
         return;
     }
 
-    animator_.stop();
     animator_.start(spec, [this](qreal value) {
         phase_ = value;
         requestUpdate();
@@ -136,6 +139,16 @@ void Ring::hideEvent(QHideEvent* event)
     stopAnimation();
 
     QWidget::hideEvent(event);
+}
+
+void Ring::onThemeChanged()
+{
+    if (!indeterminate_ || !isVisible())
+        return;
+
+    // Switching reduced motion on stops the rotation; switching it off starts
+    // it again. startAnimation() owns both halves of that decision.
+    startAnimation();
 }
 
 void Ring::measureOverride(MeasureSpec width, MeasureSpec height)

@@ -54,6 +54,7 @@ private slots:
     void progressTracksLastEmittedValue();
     void stopDoesNotEmitFinished();
     void restartContinuesFromCurrentProgress();
+    void delayedRunStartsAtItsStartValue();
     void destructorStopsWithoutFinishing();
 };
 
@@ -203,6 +204,46 @@ void TestAnimation::restartContinuesFromCurrentProgress()
         QVERIFY(secondRun[i] >= secondRun[i - 1]);
 
     QCOMPARE(secondRun.last(), 1.0);
+    QCOMPARE(animator.progress(), 1.0);
+}
+
+void TestAnimation::delayedRunStartsAtItsStartValue()
+{
+    Animator animator;
+    QSignalSpy finishedSpy(&animator, &Animator::finished);
+
+    // Stop a first run part-way. The underlying QVariantAnimation keeps the
+    // currentTime it was stopped at, which is what a retarget used to leak into
+    // the callback: the setters re-interpolate at that stale time.
+    QList<qreal> firstRun;
+    animator.start(linearSpec(300), [&](qreal value) { firstRun.append(value); });
+    QTRY_VERIFY_WITH_TIMEOUT(animator.progress() > 0.2, 2000);
+    animator.stop();
+    QVERIFY(!animator.isRunning());
+
+    MotionSpec delayed = linearSpec(120);
+    delayed.delay = std::chrono::milliseconds(80);
+
+    QList<qreal> values;
+    animator.start(delayed, [&](qreal value) { values.append(value); });
+
+    // Nothing is delivered while the delay is still running.
+    QTest::qWait(30);
+    QVERIFY(values.isEmpty());
+
+    QTRY_VERIFY_WITH_TIMEOUT(!values.isEmpty(), 3000);
+
+    // The first value is the start of the run, not an interpolation at the
+    // previous run's currentTime (which would be 0.5 or more here).
+    QVERIFY2(values.first() < 0.2,
+             qPrintable(QStringLiteral("first delayed value: %1").arg(values.first())));
+
+    for (qsizetype i = 1; i < values.size(); ++i)
+        QVERIFY(values[i] >= values[i - 1]);
+
+    QTRY_COMPARE_WITH_TIMEOUT(int(finishedSpy.count()), 1, 3000);
+    QVERIFY(!animator.isRunning());
+    QCOMPARE(values.last(), 1.0);
     QCOMPARE(animator.progress(), 1.0);
 }
 

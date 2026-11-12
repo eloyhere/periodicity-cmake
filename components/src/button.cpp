@@ -33,7 +33,10 @@ namespace {
 
 constexpr qreal kTouchHeightDp = 48.0;
 constexpr qreal kVisualHeightDp = 40.0;
-constexpr qreal kHorizontalPaddingDp = 24.0;
+// M3 Expressive small-button padding is 16 dp on both sides, whether or not the
+// button carries a leading icon (24 dp is no longer recommended); the icon and
+// the label stay 8 dp apart.
+constexpr qreal kPaddingDp = 16.0;
 constexpr qreal kIconGapDp = 8.0;
 constexpr qreal kMinWidthDp = 48.0;
 
@@ -198,14 +201,18 @@ void Button::measureOverride(MeasureSpec width, MeasureSpec height)
     const Theme& theme = Theme::forWidget(this);
     const Density& density = theme.density();
     const QFontMetricsF metrics(labelFontFor(theme));
+    const bool icon = hasIcon();
 
     qreal desired = metrics.horizontalAdvance(text_);
-    if (hasIcon()) {
+    if (icon) {
         desired += density.dp(iconSizeDp_);
         if (!text_.isEmpty())
             desired += density.dp(kIconGapDp);
     }
-    desired += density.dp(kHorizontalPaddingDp) * 2.0;
+
+    // Both sides are inset by the same 16 dp, so the group is centred in a box
+    // that is symmetric for the text-only and the icon form.
+    desired += density.dp(kPaddingDp) * 2.0;
     desired = std::max(desired, density.dp(kMinWidthDp));
 
     setMeasuredSize(QSizeF(width.resolve(desired),
@@ -254,43 +261,59 @@ void Button::paintContent(QPainter& painter, const QRectF& content)
     const QColor contentColour = contentColourFor(variant_, enabled, theme);
     const QFont font = labelFontFor(theme);
     const QFontMetricsF metrics(font);
-    const qreal padding = density.dp(kHorizontalPaddingDp);
+    const bool icon = hasIcon();
+    const bool rightToLeft = layoutDirection() == Qt::RightToLeft;
     const qreal gap = density.dp(kIconGapDp);
     const qreal iconSize = density.dp(iconSizeDp_);
-    const bool icon = hasIcon();
-    const qreal available = std::max(content.width() - padding * 2.0, qreal(0.0));
+    const qreal startPadding = density.dp(kPaddingDp);
+    const qreal endPadding = density.dp(kPaddingDp);
+
+    // The group budget is the padded content box minus the icon box: eliding
+    // against the full width let an icon button's label run underneath the
+    // icon.
+    const qreal groupAvailable =
+        std::max(qreal(0.0), visual.width() - startPadding - endPadding);
+    const qreal labelBudget = icon
+        ? std::max(qreal(0.0), groupAvailable - iconSize - gap)
+        : groupAvailable;
 
     QString label = text_;
-    if (!label.isEmpty() && available > 0.0 && metrics.horizontalAdvance(label) > available)
-        label = metrics.elidedText(label, Qt::ElideRight, available);
+    if (!label.isEmpty() && metrics.horizontalAdvance(label) > labelBudget) {
+        label = labelBudget > 0.0
+            ? metrics.elidedText(label, rightToLeft ? Qt::ElideLeft : Qt::ElideRight,
+                                 labelBudget)
+            : QString();
+    }
 
     const qreal textWidth = label.isEmpty() ? 0.0 : metrics.horizontalAdvance(label);
     qreal groupWidth = textWidth;
     if (icon)
         groupWidth += iconSize + (textWidth > 0.0 ? gap : 0.0);
 
-    // The label and icon form one group that is centred as a whole; in RTL the
-    // icon moves to the trailing side of the label.
-    const bool rtl = layoutDirection() == Qt::RightToLeft;
-    qreal x = visual.center().x() - groupWidth / 2.0;
+    // The group is centred inside the padded box, in logical order: icon
+    // first, then the label. Mirroring the finished rectangles puts the icon on
+    // the leading edge — the right one — in a right-to-left button.
+    const qreal groupLeft = startPadding + (groupAvailable - groupWidth) / 2.0;
     const qreal centreY = visual.center().y();
+    const auto mirrorX = [&](qreal logicalX, qreal width) {
+        return visual.left()
+            + (rightToLeft ? visual.width() - logicalX - width : logicalX);
+    };
 
+    qreal logicalX = groupLeft;
     QRectF iconRect;
     QRectF textRect;
 
-    if (icon && !rtl) {
-        iconRect = QRectF(x, centreY - iconSize / 2.0, iconSize, iconSize);
-        x += iconSize + (textWidth > 0.0 ? gap : 0.0);
+    if (icon) {
+        iconRect = QRectF(mirrorX(logicalX, iconSize), centreY - iconSize / 2.0, iconSize,
+                          iconSize);
+        logicalX += iconSize + (textWidth > 0.0 ? gap : 0.0);
     }
 
     if (textWidth > 0.0) {
-        textRect = QRectF(x, visual.top(), textWidth, visual.height());
-        if (rtl)
-            x += textWidth + gap;
+        textRect = QRectF(mirrorX(logicalX, textWidth), visual.top(), textWidth,
+                          visual.height());
     }
-
-    if (icon && rtl)
-        iconRect = QRectF(x, centreY - iconSize / 2.0, iconSize, iconSize);
 
     if (icon) {
         const QSizeF iconBox(iconSize, iconSize);
