@@ -61,6 +61,7 @@ if(PERIODICITY_HAS_RHI)
     BASE "${_periodicity_shader_dir}"
     FILES
       "${_periodicity_shader_dir}/rhi.vert"
+    "${_periodicity_shader_dir}/rhi2d.vert"
       "${_periodicity_shader_dir}/rhi_solid.frag"
       "${_periodicity_shader_dir}/rhi_vertex_colour.frag"
       "${_periodicity_shader_dir}/rhi_lambert.frag"

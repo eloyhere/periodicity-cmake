@@ -53,6 +53,7 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <cstddef>
 #include <cstring>
 #include <memory>
 #include <utility>
@@ -403,24 +404,34 @@ void countTriangles(const gfx::DrawCommand& command, const QRect& viewport,
 constexpr int kFloatsPerVertex = 12;
 constexpr int kVertexStride = kFloatsPerVertex * static_cast<int>(sizeof(float));
 
+// The member order is the vertex input order the shader declares: position,
+// colour, normal, uv. Keeping the physical order equal to the declared order
+// makes the attribute mapping independent of whether the backend binds an
+// attribute by its location or by its position in the layout.
 struct RhiVertex
 {
     float x = 0.0F;
     float y = 0.0F;
     float z = 0.0F;
-    float nx = 0.0F;
-    float ny = 0.0F;
-    float nz = 1.0F;
     float r = 1.0F;
     float g = 1.0F;
     float b = 1.0F;
     float a = 1.0F;
+    float nx = 0.0F;
+    float ny = 0.0F;
+    float nz = 1.0F;
     float u = 0.0F;
     float v = 0.0F;
 };
 
 static_assert(sizeof(RhiVertex) == kVertexStride,
               "RhiVertex must match the vertex input stride");
+// The attribute offsets in pipelineFor depend on these member offsets; make a
+// reordering fail to compile instead of silently misaligning the pipeline.
+static_assert(offsetof(RhiVertex, r) == 12, "colour must start at offset 12");
+static_assert(offsetof(RhiVertex, a) == 24, "colour must be four floats");
+static_assert(offsetof(RhiVertex, nx) == 28, "normal must start at offset 28");
+static_assert(offsetof(RhiVertex, u) == 40, "uv must start at offset 40");
 
 RhiVertex makeVertex2D(const QPointF& position, const QColor& colour, const QPointF& uv)
 {
@@ -607,15 +618,17 @@ QImage imageFromReadback(const QRhiReadbackResult& readback, bool yUpInFramebuff
         return QImage();
 
     QImage::Format format = QImage::Format_Invalid;
-    // EXPERIMENT (13 Nov 2026): a red rect read back as (0,0,255,255) means the
-    // attachment bytes are B,G,R,A little-endian while QRhiReadbackResult reports
-    // RGBA8. Interpreting them as RGBA turned red into blue; this maps them the
-    // way the bytes are actually laid out. Revert this hunk if the parity tests
-    // disagree.
+    // Measurement decided this, not reasoning: with the diagnostic NDC-bounds line
+    // the grow step showed x=[-1,-0.5] y=[0.5,1], i.e. the quad is a quarter of the
+    // target exactly as intended, so its centre probe falls on the background and a
+    // background of pure blue reads back as (0,0,255) - the uploaded bytes unchanged.
+    // The readback is therefore RGBA, as QRhi says, and an earlier experiment that
+    // swapped this mapping was wrong. The defect is on the write side: a red vertex
+    // colour arrives as (0,0,255).
     if (readback.format == QRhiTexture::RGBA8)
-        format = QImage::Format_ARGB32_Premultiplied;
-    else if (readback.format == QRhiTexture::BGRA8)
         format = QImage::Format_RGBA8888_Premultiplied;
+    else if (readback.format == QRhiTexture::BGRA8)
+        format = QImage::Format_ARGB32_Premultiplied;
 
     if (format == QImage::Format_Invalid)
         return QImage();
@@ -667,6 +680,7 @@ struct RhiDevice::Impl
     QByteArray customSolidFragment;
 
     QShader vertexShader;
+    QShader vertexShader2D;
     QShader solidShader;
     QShader vertexColourShader;
     QShader lambertShader;
@@ -770,12 +784,14 @@ bool RhiDevice::Impl::loadShaders()
     };
 
     vertexShader = QShader();
+    vertexShader2D = QShader();
     solidShader = QShader();
     vertexColourShader = QShader();
     lambertShader = QShader();
     unlitShader = QShader();
 
     bool ok = load(QStringLiteral("rhi.vert"), vertexShader);
+    ok = load(QStringLiteral("rhi2d.vert"), vertexShader2D) && ok;
 
     if (customSolid) {
         solidVertexOverride = QShader::fromSerialized(customSolidVertex);
@@ -1245,6 +1261,17 @@ QRhiTexture* RhiDevice::Impl::createTexture(const QImage& image, Run& run)
     upload.texture = texture;
     upload.image = source;
     run.textures.push_back(upload);
+#if PERIODICITY_RHI_TRACE
+    // The texture a draw samples must be the one just created for it. The
+    // first texel identifies the source image in the trace.
+    const QColor firstTexel = source.pixelColor(0, 0);
+    PERIODICITY_RHI_LOG(
+        "rhi texture: created %dx%d format=%d firstTexel=(%d,%d,%d,%d) "
+        "runTextures=%d texture=%p",
+        source.width(), source.height(), static_cast<int>(source.format()),
+        firstTexel.red(), firstTexel.green(), firstTexel.blue(), firstTexel.alpha(),
+        static_cast<int>(run.textures.size()), static_cast<void*>(texture));
+#endif
     return texture;
 }
 
@@ -1274,6 +1301,13 @@ QRhiShaderResourceBindings* RhiDevice::Impl::bindingsFor(QRhiTexture* texture,
     }
 
     run.temporaryBindings.push_back(bindings);
+#if PERIODICITY_RHI_TRACE
+    // The SRB must reference the texture created for this draw; compare this
+    // pointer with the one printed by createTexture.
+    PERIODICITY_RHI_LOG("rhi bindings: created bindings=%p texture=%p sampler=%p",
+                        static_cast<void*>(bindings), static_cast<void*>(texture),
+                        static_cast<void*>(sampler));
+#endif
     return bindings;
 }
 
@@ -1313,7 +1347,17 @@ QRhiGraphicsPipeline* RhiDevice::Impl::pipelineFor(const QString& shader,
         return nullptr;
     }
 
-    const QShader& vertex = hasOverride ? solidVertexOverride : vertexShader;
+    // 2D and image draws have no normal: they get their own vertex stage and a
+    // layout without the normal attribute, so the colour is the only four-float
+    // element and nothing else can be read in its place. The lambert program is
+    // 3D-only and keeps the 3D layout; a custom solid override does too, because
+    // its input expectations are not ours to assume.
+    const bool needsNormal =
+        hasOverride || is3D || shader == QStringLiteral("lambert");
+
+    const QShader& vertex = hasOverride
+        ? solidVertexOverride
+        : (needsNormal ? vertexShader : vertexShader2D);
     const QShader& fragmentStageShader = hasOverride ? solidFragmentOverride : fragment;
 
     QRhiShaderStage vertexStage(QRhiShaderStage::Vertex, vertex);
@@ -1322,15 +1366,35 @@ QRhiGraphicsPipeline* RhiDevice::Impl::pipelineFor(const QString& shader,
 
     QRhiVertexInputLayout layout;
     layout.setBindings({QRhiVertexInputBinding(kVertexStride)});
-    layout.setAttributes({
-        QRhiVertexInputAttribute(0, 0, QRhiVertexInputAttribute::Float3, 0),
-        QRhiVertexInputAttribute(0, 1, QRhiVertexInputAttribute::Float3,
-                                 3 * sizeof(float)),
-        QRhiVertexInputAttribute(0, 2, QRhiVertexInputAttribute::Float4,
-                                 6 * sizeof(float)),
-        QRhiVertexInputAttribute(0, 3, QRhiVertexInputAttribute::Float2,
-                                 10 * sizeof(float)),
-    });
+    if (needsNormal) {
+        // Position, colour, normal, uv — the same order as RhiVertex.
+        layout.setAttributes({
+            QRhiVertexInputAttribute(0, 0, QRhiVertexInputAttribute::Float3, 0),
+            QRhiVertexInputAttribute(0, 1, QRhiVertexInputAttribute::Float4,
+                                     3 * sizeof(float)),
+            QRhiVertexInputAttribute(0, 2, QRhiVertexInputAttribute::Float3,
+                                     7 * sizeof(float)),
+            QRhiVertexInputAttribute(0, 3, QRhiVertexInputAttribute::Float2,
+                                     10 * sizeof(float)),
+        });
+    } else {
+        // Position, colour, uv — no normal element exists for these draws.
+        layout.setAttributes({
+            QRhiVertexInputAttribute(0, 0, QRhiVertexInputAttribute::Float2, 0),
+            QRhiVertexInputAttribute(0, 1, QRhiVertexInputAttribute::Float4,
+                                     3 * sizeof(float)),
+            QRhiVertexInputAttribute(0, 3, QRhiVertexInputAttribute::Float2,
+                                     10 * sizeof(float)),
+        });
+    }
+#if PERIODICITY_RHI_TRACE
+    for (auto it = layout.cbeginAttributes(); it != layout.cendAttributes(); ++it) {
+        PERIODICITY_RHI_LOG(
+            "rhi layout: binding=%d location=%d format=%d offset=%u stride=%d",
+            it->binding(), it->location(), static_cast<int>(it->format()),
+            it->offset(), kVertexStride);
+    }
+#endif
     pipeline->setVertexInputLayout(layout);
 
     // The pipeline cache is keyed by the gfx pipeline state, including the
@@ -1518,6 +1582,25 @@ bool RhiDevice::Impl::appendDraw(Run& run, const gfx::DrawCommand& command,
     PERIODICITY_RHI_LOG("rhi appendDraw: vertices=%d clipEmpty=%d",
                         static_cast<int>(vertices.size()), clip.isEmpty() ? 1 : 0);
 
+    // Temporary instrumentation: the decisive datum for the 2D parity failures.
+    // A quarter-sized quad in the grow step must read x=[-1,-0.5] y=[0.5,1]; a
+    // stretched one reads x=[-1,1] y=[-1,1]. Remove with PERIODICITY_RHI_LOG.
+    if (!is3D) {
+        qreal minX = vertices.front().x;
+        qreal maxX = minX;
+        qreal minY = vertices.front().y;
+        qreal maxY = minY;
+        for (const RhiVertex& vertex : vertices) {
+            minX = qMin(minX, static_cast<qreal>(vertex.x));
+            maxX = qMax(maxX, static_cast<qreal>(vertex.x));
+            minY = qMin(minY, static_cast<qreal>(vertex.y));
+            maxY = qMax(maxY, static_cast<qreal>(vertex.y));
+        }
+        PERIODICITY_RHI_LOG("rhi appendDraw: NDC bounds x=[%f,%f] y=[%f,%f]",
+                            static_cast<double>(minX), static_cast<double>(maxX),
+                            static_cast<double>(minY), static_cast<double>(maxY));
+    }
+
     const bool hasTexture = texture != nullptr;
     // The unlit fragment stage always declares the sampler at binding 1, so an
     // unlit pipeline always needs the two-binding layout — the 1x1 white dummy
@@ -1678,6 +1761,14 @@ bool RhiDevice::Impl::executeRun(QImage& image, Run& run, const QSize& targetPix
         uploads->uploadTexture(texture.texture,
                                QRhiTextureUploadDescription(
                                    QRhiTextureUploadEntry(0, 0, subresource)));
+#if PERIODICITY_RHI_TRACE
+        PERIODICITY_RHI_LOG(
+            "rhi texture upload: texture=%p size=%dx%d bytes=%lld stride=%lld",
+            static_cast<void*>(texture.texture), texture.image.width(),
+            texture.image.height(),
+            static_cast<long long>(texture.image.sizeInBytes()),
+            static_cast<long long>(texture.image.bytesPerLine()));
+#endif
     }
 
     QRhiReadbackResult readback;
@@ -1762,17 +1853,19 @@ bool RhiDevice::Impl::executeRun(QImage& image, Run& run, const QSize& targetPix
         const uchar* pixels = reinterpret_cast<const uchar*>(readback.data.constData());
         const int width = readback.pixelSize.width();
         const int height = readback.pixelSize.height();
-        const int centre = ((height / 2) * width + width / 2) * 4;
-        if (readback.data.size() >= centre + 4) {
+        const int probeX[4] = {0, width / 4, width / 2, (3 * width) / 4};
+        const int probeY[4] = {0, height / 2, height / 2, height / 2};
+        for (int i = 0; i < 4; ++i) {
+            const int offset = (probeY[i] * width + probeX[i]) * 4;
+            if (offset + 4 > readback.data.size())
+                continue;
             PERIODICITY_RHI_LOG(
-                "rhi readback: format=%d %dx%d first=(%u,%u,%u,%u) centre=(%u,%u,%u,%u)",
-                static_cast<int>(readback.format), width, height,
-                static_cast<unsigned>(pixels[0]), static_cast<unsigned>(pixels[1]),
-                static_cast<unsigned>(pixels[2]), static_cast<unsigned>(pixels[3]),
-                static_cast<unsigned>(pixels[centre]),
-                static_cast<unsigned>(pixels[centre + 1]),
-                static_cast<unsigned>(pixels[centre + 2]),
-                static_cast<unsigned>(pixels[centre + 3]));
+                "rhi readback: format=%d %dx%d probe(%d,%d)=(%u,%u,%u,%u)",
+                static_cast<int>(readback.format), width, height, probeX[i],
+                probeY[i], static_cast<unsigned>(pixels[offset]),
+                static_cast<unsigned>(pixels[offset + 1]),
+                static_cast<unsigned>(pixels[offset + 2]),
+                static_cast<unsigned>(pixels[offset + 3]));
         }
     }
 #endif
