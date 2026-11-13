@@ -23,6 +23,13 @@ foreach(_src IN LISTS _test_sources)
 
   add_executable(${_name} "${_src}")
   target_link_libraries(${_name} PRIVATE periodicity::components periodicity::mathematic Qt6::Test)
+
+  # tests/render/ exercises periodicity::render directly. Every other test sees
+  # it only through the view module's private dependency, which is why this is a
+  # directory rule rather than a link on the umbrella target.
+  if(_src MATCHES "/render/")
+    target_link_libraries(${_name} PRIVATE periodicity::render)
+  endif()
   target_compile_features(${_name} PRIVATE cxx_std_20)
   set_target_properties(${_name} PROPERTIES AUTOMOC ON)
 

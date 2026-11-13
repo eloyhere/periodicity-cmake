@@ -441,6 +441,8 @@ past it is a bug in the split, not a feature of the unit.
 | `Overlay` (`view/`) | The window-level host: the stack of live surfaces, z-order, top-most input, content-root disable with exact restore, focus save/restore, teardown when the window dies | Design-system semantics, card painting, motion curves, translations |
 | `Dialog` (`components/`) | Title, text, action row, the `paintBody`/`handleBodyClick`/`handleBodyKey`/`arrangeBody` body contract, `accepted`/`rejected` | Its own scrim painting, its own `eventFilter` input interception, judging whether it is top-most |
 
+The private `view → render` edge is deliberate: `View`'s retained-layer path is implemented in `view/src/layer_backing.*`, no public `view/` header includes `md/render`, and `render/` still never includes a widget or a view header; `tools/check_layering.cmake` states the edge in `ALLOWED_view` so a public header that leaks it still fails the gate.
+
 ### Z-order contract
 
 `Overlay::forWidget()` lazily creates one Overlay per top-level window, parented

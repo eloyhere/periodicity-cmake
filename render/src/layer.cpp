@@ -234,8 +234,25 @@ QPainter* Layer::beginPaint()
     painter->setRenderHint(QPainter::TextAntialiasing, true);
     painter->scale(devicePixelRatio(), devicePixelRatio());
 
-    if (!full_)
+    // The painter is always clipped to the region this pass may touch, so the
+    // contract is the same for a partial and for a full invalidation and a
+    // caller can read the region back (QPainter::clipBoundingRect() returns an
+    // empty rectangle when no clip has been set, so "no clip" would be
+    // indistinguishable from "nothing to paint").
+    //
+    // The full case is derived from pixelSize() rather than bounds(): the
+    // allocation is ceiled, so mapping bounds() through a fractional ratio
+    // could shave a device pixel off the edge. The rectangle is installed in
+    // logical coordinates after the ratio scale, which makes it map onto
+    // exactly the whole surface.
+    if (full_) {
+        painter->setClipRect(
+            QRectF(QPointF(0.0, 0.0),
+                   QSizeF(target_.pixelSize()) / devicePixelRatio()),
+            Qt::ReplaceClip);
+    } else {
         painter->setClipRegion(damage(), Qt::ReplaceClip);
+    }
 
     painter_ = std::move(painter);
     return painter_.get();

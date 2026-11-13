@@ -14,12 +14,13 @@
 //     answer.
 //
 // Painting. beginPaint() returns a QPainter over the layer image, already
-// scaled by devicePixelRatio() and clipped to damage(). The caller runs the
-// component's paint pipeline through it and then calls markClean(). Only the
-// damaged pixels are touched, so every other pixel keeps the previous frame;
-// that is the whole point of retaining the surface. A layer that is not dirty
-// returns no painter at all, and the caller only has to composite what is
-// already there.
+// scaled by devicePixelRatio() and clipped to the region the pass may touch:
+// the damage region for a partial invalidation, the whole surface when the
+// layer is fully dirty. The caller runs the component's paint pipeline through
+// it and then calls markClean(). Only the damaged pixels are touched, so every
+// other pixel keeps the previous frame; that is the whole point of retaining
+// the surface. A layer that is not dirty returns no painter at all, and the
+// caller only has to composite what is already there.
 //
 // Coordinates. Everything a caller passes in or reads back is logical:
 // addDamage(), damage(), damageBounds() and the painter's clip. The surface is
@@ -173,8 +174,11 @@ public:
 
     // Begins a painter over the layer image. The painter is scaled by
     // devicePixelRatio() (so the caller keeps painting in logical coordinates)
-    // and clipped to damage(); antialiasing and text antialiasing are on, which
-    // is the same pair of hints the direct widget path uses.
+    // and clipped to the region the pass may touch — damage() for a partial
+    // invalidation, the whole surface when the layer is fully dirty — so
+    // QPainter::clipBoundingRect() always reports what was rasterised.
+    // Antialiasing and text antialiasing are on, which is the same pair of
+    // hints the direct widget path uses.
     //
     // Returns nullptr when the layer is invalid, not dirty, or when a painter is
     // already active. The returned pointer is owned by the layer and is only

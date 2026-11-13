@@ -83,7 +83,8 @@ struct LayerBacking
     // false when the frame must take the direct path instead: not enabled, the
     // debug mode is on, the cache refused the layer, or the layer could not be
     // allocated. `paintStages` is invoked with a painter that is already
-    // scaled to the layer's device pixel ratio and clipped to its damage.
+    // scaled to the layer's device pixel ratio and clipped to the region the
+    // pass may touch (its damage, or the whole surface for a full pass).
     template <class PaintStages>
     bool paint(QWidget* owner, const Theme& theme, const QSizeF& logicalSize,
                qreal devicePixelRatio, PaintStages&& paintStages)

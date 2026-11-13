@@ -43,8 +43,9 @@ QRect markRect()
 
 // A leaf view that paints its theme surface and one small mark. It records what
 // the current pass was allowed to rasterise: paintCount() counts content hooks,
-// lastClip() is the painter's clip (the layer's damage region on the retained
-// path) and lastDamage() is what currentDamage() reported.
+// lastClip() is the painter's clip (the region the layer allowed through: its
+// damage for a partial pass, the whole surface for a full invalidation) and
+// lastDamage() is what currentDamage() reported.
 class LayeredTestView : public md::View
 {
 public:
