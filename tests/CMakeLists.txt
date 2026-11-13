@@ -35,8 +35,18 @@ foreach(_src IN LISTS _test_sources)
 
   add_test(NAME ${_name} COMMAND $<TARGET_FILE:${_name}>)
   set_tests_properties(${_name} PROPERTIES
-    ENVIRONMENT "QT_QPA_PLATFORM=offscreen;PATH=${_qt_bin};QT_PLUGIN_PATH=${_qt_plugins}"
+    ENVIRONMENT "QT_QPA_PLATFORM=offscreen;PATH=${_qt_bin};QT_PLUGIN_PATH=${_qt_plugins};TEMP=${CMAKE_CURRENT_BINARY_DIR}/tmp;TMP=${CMAKE_CURRENT_BINARY_DIR}/tmp"
     TIMEOUT 120)
+
+  # The layer benchmarks take about 40 seconds and assert a timing ratio, so a
+  # loaded machine can fail them without anything being wrong. They are
+  # registered, but labelled so the correctness gate can run `ctest -LE benchmark`
+  # and the benchmarks can be run deliberately (`ctest -L benchmark`) with
+  # PERIODICITY_BENCH_OUT set. A timing assertion inside the default suite would
+  # eventually hide a real failure behind a false one.
+  if(_name MATCHES "benchmark")
+    set_tests_properties(${_name} PROPERTIES LABELS benchmark TIMEOUT 900)
+  endif()
 
   math(EXPR _test_count "${_test_count} + 1")
 endforeach()
