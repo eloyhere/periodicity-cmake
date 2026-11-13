@@ -280,3 +280,71 @@ hiding releases it; theme tokens reach the scene (assert a known property value)
 a broken source sets `lastError()` and keeps the widget alive; and the software
 Quick backend (`QT_QUICK_BACKEND=software`) still paints in a headless run.
 
+## Performance workstream (agreed 13 November 2026)
+
+Two decisions were taken: **attack repainted area before raw rendering speed**, and
+**go to Qt RHI directly** for the GPU backend rather than polishing the GL device
+first.
+
+### The model: retained layers with damage
+
+Today every visible widget paints itself into the backing store whenever it is
+asked to, so a window-level repaint redraws all 74 components. The change is:
+
+1. A state change marks a **damage rectangle**, not an opaque "repaint" —
+   `View::requestUpdate(QRect damage)`.
+2. The compositor blits cached layers for clean views and rasterises only the
+   damaged region of dirty ones.
+3. Charts, lists and icon-dense rows are the first candidates for a cached layer,
+   because they are the most expensive per unit of area.
+
+New pieces, all inside `render/`:
+
+| Unit | Responsibility |
+| --- | --- |
+| `cache/DamageTracker` | Accumulates and coalesces damage rectangles per view, and unions children into parents. |
+| `cache/LayerCache` | One cached surface per opted-in view, keyed by size, device pixel ratio, theme revision and a view-specific content revision. |
+| `cache/GlyphAtlas` | Caches shaped text runs as textures/bitmaps so a frame does not re-shape or re-rasterise them. |
+| `cache/IconAtlas` | Rasterises `QSvgRenderer` output per (size, colour, dpr) — SVG is never rendered per frame. |
+| `compositor/CpuCompositor` | Blits cached layers through `QPainter`; the reference path. |
+| `compositor/GpuCompositor` | Blits layers as RHI textures; the current `GpuCompositor` grows into a `RhiDevice` consumer. |
+
+### Order of work, each step ending with a measured number
+
+1. **Damage first** — `DamageTracker` plus damage-aware `requestUpdate`. No renderer
+   change; it only reduces how much gets repainted.
+2. **Layer cache** — opt-in per view class, starting with the chart, list and
+   icon-dense row subtrees. Verified by pixel equality against the uncached path.
+3. **Atlases** — glyph and SVG icon atlases; text shaping stays with Qt, only the
+   rasterised result is reused.
+4. **RHI device** — `RhiDevice` over Qt RHI behind `PERIODICITY_HAS_SHADERTOOLS`,
+   with `qsb`-compiled shaders built into the library. D3D11/12, Metal, Vulkan and
+   GL then share one shader source. The GL device stays as the fallback when
+   ShaderTools is absent, and the software device remains the reference.
+5. **Tiled threaded rasterisation** — split the software rasteriser into tiles and
+   run them on `schedule::TaskQueue`, so machines without a usable GPU still hold
+   the frame budget.
+6. **Quick3D for heavy scenes** — phase 7 above, now justified as the 3D ceiling
+   rather than a convenience.
+
+### Acceptance
+
+Every step lands with a benchmark that asserts a budget rather than a description:
+a window of 74 components, a 25-chart page, and a chart reveal animation, each
+measured for mean and p95 frame time on the software device and (where present) on
+the RHI device. A step that cannot show a lower number does not land.
+
+### Risks
+
+- **Invalidation correctness is the hard part.** Any state that affects appearance
+  must mark damage; a missed invalidation is a ghost, not a crash, so the cache
+  needs a debug mode that renders everything uncached and compares. That mode ships
+  as a test flag.
+- **Memory**: one surface per opted-in view at device resolution. The cache is
+  opt-in and capped, with an LRU eviction policy shared with `pool/`.
+- **Device-pixel-ratio, theme and font changes** must invalidate every layer;
+  those three are the only global invalidations, and each has a test.
+- **Two worlds**: RHI for compositing and Quick3D for scenes are separate contexts.
+  Neither is allowed to leak into the painted-component path, and the software
+  device must always be able to produce the same picture.
+
