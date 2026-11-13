@@ -291,12 +291,13 @@ QString PieChart::sliceLabel(int index) const
 
 qreal PieChart::revealProgress() const noexcept
 {
-    return reveal_;
+    // One animation, one owner: the sweep is the base chart's run.
+    return animation().progress();
 }
 
 bool PieChart::isRevealing() const noexcept
 {
-    return revealing_;
+    return animation().isRunning();
 }
 
 bool PieChart::rightToLeft() const
@@ -399,33 +400,14 @@ int PieChart::sliceAt(QPointF pixel) const
     return -1;
 }
 
-void PieChart::startReveal()
+void PieChart::onShown()
 {
-    if (revealStarted_)
-        return;
-
-    revealStarted_ = true;
-
-    const Theme theme = Theme::forWidget(this);
-    const MotionSpec spec = theme.motion().medium2();
-    if (theme.motion().reducedMotion || spec.duration.count() <= 0) {
-        // Snap: the finished chart is already what a paint would have produced,
-        // so no frame ever shows a partial sweep.
-        reveal_ = 1.0;
-        revealing_ = false;
-        requestUpdate();
-        return;
-    }
-
-    reveal_ = 0.0;
-    revealing_ = true;
-    animator_.start(spec, [this](qreal value) {
-        reveal_ = std::clamp(value, 0.0, 1.0);
-        if (reveal_ >= 1.0)
-            revealing_ = false;
-        requestUpdate();
-    });
-    requestUpdate();
+    // ChartBase starts its reveal from the first paint so that an offscreen
+    // render does not animate. The pie is the one chart whose sweep must already
+    // be running when show() returns (its revealProgress() is observed right
+    // after the show), so it starts the same single run here instead. The call is
+    // idempotent: the paint path sees revealStarted_ and leaves it alone.
+    startRevealIfNeeded();
 }
 
 void PieChart::measureOverride(MeasureSpec width, MeasureSpec height)
@@ -469,7 +451,10 @@ void PieChart::paintPlot(QPainter& painter, const QRectF& plot)
             const qreal inner = donut_ ? outer * std::clamp(donutRatio_, 0.0, 0.95) : 0.0;
             const bool rtl = rightToLeft();
             const qreal direction = rtl ? -1.0 : 1.0;
-            const qreal budget = 360.0 * std::clamp(reveal_, 0.0, 1.0);
+            // The sweep is the base chart's single animation run; the pie never
+            // owns a second one. Before the first show the run is settled at 1,
+            // so a chart that is only rendered paints finished.
+            const qreal budget = 360.0 * std::clamp(animation().progress(), 0.0, 1.0);
             const qreal gap = std::clamp(sliceGap_, 0.0, 120.0);
             const qreal explode = density.dp(kExplodeDp);
 
@@ -618,39 +603,6 @@ void PieChart::mouseReleaseEvent(QMouseEvent* event)
     } catch (...) {
         qWarning("md::PieChart::mouseReleaseEvent failed with an unknown exception");
         pressedSlice_ = -1;
-    }
-}
-
-void PieChart::onShown()
-{
-    try {
-        startReveal();
-    } catch (const std::exception& error) {
-        qWarning("md::PieChart::onShown failed: %s", error.what());
-        reveal_ = 1.0;
-        revealing_ = false;
-    } catch (...) {
-        qWarning("md::PieChart::onShown failed with an unknown exception");
-        reveal_ = 1.0;
-        revealing_ = false;
-    }
-}
-
-void PieChart::onThemeChanged()
-{
-    try {
-        // A theme change may turn reduced motion on mid-sweep: finish at once
-        // rather than leaving a partial chart that never completes.
-        if (revealStarted_ && reveal_ < 1.0 && Theme::forWidget(this).motion().reducedMotion) {
-            animator_.stop();
-            reveal_ = 1.0;
-            revealing_ = false;
-            requestUpdate();
-        }
-    } catch (const std::exception& error) {
-        qWarning("md::PieChart::onThemeChanged failed: %s", error.what());
-    } catch (...) {
-        qWarning("md::PieChart::onThemeChanged failed with an unknown exception");
     }
 }
 

@@ -17,6 +17,7 @@ widget, a token or a painter.
 | Component | Header | Notes | Tests | Gallery |
 | --- | --- | --- | --- | --- |
 | `Button` | `button.h` | Filled, filled tonal, elevated, outlined, text; icon + label | `tests/components/tst_basic_widgets.cpp` | Basic |
+| `ToggleButton` | `toggle_button.h` | Checkable filled, tonal, outlined or text button; animated checked state; icon-only square | `tests/components/tst_toggle_button.cpp` | — |
 | `CheckBox` | `checkbox.h` | Two-state and tri-state | same | Basic |
 | `Radio` | `radio.h` | Mutually exclusive by group id | same | Basic |
 | `Rate` | `rate.h` | Stars with half steps | same | Basic |

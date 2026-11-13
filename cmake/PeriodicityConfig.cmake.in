@@ -18,9 +18,12 @@ include(CMakeFindDependencyMacro)
 
 # The exported targets carry Qt in their public link interface: Core and Gui are
 # used by every layer, Widgets by theme/view/layout/components, and Network by
-# components (Avatar's url loader). Qt Test is only linked by the test
-# executables, which are not installed, so it is deliberately not requested.
-find_dependency(Qt6 6.8 COMPONENTS Core Gui Widgets Network)
+# components (Avatar's url loader). ShaderTools is a private dependency of
+# render's RHI device; it appears in the imported link interface because a
+# static library cannot drop a private dependency, so it is requested here. Qt
+# Test is only linked by the test executables, which are not installed, so it is
+# deliberately not requested.
+find_dependency(Qt6 6.8 COMPONENTS Core Gui Widgets Network ShaderTools)
 
 # The installed render target links Qt6::OpenGL privately for its optional
 # offscreen GlDevice, and components links Qt6::OpenGLWidgets when that module

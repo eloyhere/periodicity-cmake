@@ -1,6 +1,8 @@
 #include <md/components/theme_switcher.h>
 
-#include <md/components/modal.h>
+#include <md/components/dropdown_trigger.h>
+#include <md/components/picker_sheet.h>
+#include <md/components/switching_overlay.h>
 
 #include <QApplication>
 #include <QEvent>
@@ -12,6 +14,7 @@
 #include <QPointer>
 
 #include <algorithm>
+#include <utility>
 
 namespace md {
 namespace {
@@ -63,6 +66,7 @@ void ThemeSwitcher::addPreset(QString name, Theme theme)
     presets_.append(Preset{std::move(name), std::move(theme)});
     if (current_ < 0)
         current_ = 0;
+    syncTriggers();
     updateGeometry();
     requestUpdate();
 }
@@ -77,6 +81,7 @@ void ThemeSwitcher::setCurrentPreset(int index)
         return;
 
     current_ = clamped;
+    syncTriggers();
     requestUpdate();
 }
 
@@ -91,6 +96,7 @@ void ThemeSwitcher::applyPreset(int index)
     if (auto* application = qobject_cast<QApplication*>(QCoreApplication::instance()))
         application->setPalette(theme.toPalette());
 
+    syncTriggers();
     requestUpdate();
     Q_EMIT presetActivated(index);
     Q_EMIT themeApplied(theme);
@@ -259,7 +265,10 @@ bool ThemeSwitcher::focusable() const
 
 void ThemeSwitcher::openSelector(QWidget* anchor)
 {
-    if (selector_ != nullptr) {
+    if (overlay_ != nullptr && overlay_->isBusy())
+        return;
+
+    if (selector_ != nullptr && selector_->isOpen()) {
         selector_->close();
         return;
     }
@@ -268,37 +277,153 @@ void ThemeSwitcher::openSelector(QWidget* anchor)
     if (host == nullptr)
         return;
 
-    auto* modal = new Modal(host);
-    auto* list = new ThemeSwitcher(modal);
-    list->presets_ = presets_;
-    list->current_ = current_;
-    list->setFixedSize(sizeHint());
+    QList<PickerSheet::Option> options;
+    options.reserve(presets_.size());
+    for (int index = 0; index < presets_.size(); ++index) {
+        const Preset& preset = presets_.at(index);
+        const QString label = preset.name.isEmpty()
+                                  ? tr("Theme %1").arg(index + 1)
+                                  : preset.name;
+        options.append(PickerSheet::Option{QString::number(index), label});
+    }
 
-    QPointer<ThemeSwitcher> self(this);
-    QObject::connect(list, &ThemeSwitcher::presetActivated, this,
-                     [self, modal](int index) {
-                         if (self != nullptr)
-                             self->applyPreset(index);
-                         modal->close();
-                     });
+    auto* sheet = new PickerSheet(anchor != nullptr ? anchor : this);
+    sheet->setTitle(tr("Theme"));
+    sheet->setOptions(options, QString::number(current_));
 
-    modal->setCard(list);
-    modal->setAnchor(anchor != nullptr ? anchor : this);
-    modal->setFocusReturn(anchor != nullptr ? anchor : this);
+    auto* trigger = qobject_cast<DropdownTrigger*>(anchor);
+    if (trigger != nullptr) {
+        if (trigger->isManualAnimationClock()) {
+            sheet->setManualAnimationClock(true);
+            manualSwitchClock_ = true;
+        }
+        trigger->setOpen(true);
+        connect(sheet, &PickerSheet::confirmed, trigger,
+                [trigger] { trigger->setOpen(false); });
+        connect(sheet, &PickerSheet::cancelled, trigger,
+                [trigger] { trigger->setOpen(false); });
+        connect(sheet, &QObject::destroyed, trigger,
+                [trigger] { trigger->setOpen(false); });
+    }
 
-    selector_ = modal;
-    connect(modal, &Modal::closeFinished, modal, &QObject::deleteLater);
-    connect(modal, &QObject::destroyed, this, [this, modal] {
-        if (selector_ == modal)
+    connect(sheet, &PickerSheet::confirmed, this, [this](const QString& id) {
+        pendingPreset_ = id;
+        hasPendingPreset_ = true;
+    });
+    connect(sheet, &PickerSheet::finished, this, [this] {
+        if (hasPendingPreset_)
+            startPendingSwitch();
+    });
+    connect(sheet, &QObject::destroyed, this, [this, sheet] {
+        if (selector_ == sheet)
             selector_.clear();
     });
+    connect(sheet, &PickerSheet::finished, sheet, &QObject::deleteLater);
 
-    modal->open();
+    selector_ = sheet;
+    sheet->open();
 }
 
 bool ThemeSwitcher::isSelectorOpen() const noexcept
 {
     return selector_ != nullptr && selector_->isOpen();
+}
+
+PickerSheet* ThemeSwitcher::selector() const noexcept
+{
+    return selector_.data();
+}
+
+SwitchingOverlay* ThemeSwitcher::switchingOverlay() const noexcept
+{
+    return overlay_.data();
+}
+
+QString ThemeSwitcher::lastError() const
+{
+    return overlay_ != nullptr ? overlay_->lastError() : QString();
+}
+
+void ThemeSwitcher::setManualSwitchClock(bool enabled)
+{
+    manualSwitchClock_ = enabled;
+    if (overlay_ != nullptr)
+        overlay_->setManualAnimationClock(enabled);
+}
+
+bool ThemeSwitcher::isManualSwitchClock() const noexcept
+{
+    return manualSwitchClock_;
+}
+
+void ThemeSwitcher::startPendingSwitch()
+{
+    hasPendingPreset_ = false;
+    bool ok = false;
+    const int index = pendingPreset_.toInt(&ok);
+    pendingPreset_.clear();
+    if (!ok || index < 0 || index >= presets_.size())
+        return;
+
+    QWidget* host = window();
+    if (host == nullptr)
+        return;
+
+    if (overlay_ == nullptr) {
+        overlay_ = new SwitchingOverlay(this);
+        overlay_->setManualAnimationClock(manualSwitchClock_);
+    }
+
+    QPointer<ThemeSwitcher> self(this);
+    overlay_->run([self, index] {
+        if (self == nullptr)
+            return;
+
+        const int previous = self->current_;
+        try {
+            self->applyPreset(index);
+        } catch (...) {
+            try {
+                if (previous >= 0 && previous < self->presets_.size())
+                    self->applyPreset(previous);
+            } catch (...) {
+            }
+            throw;
+        }
+    });
+}
+
+DropdownTrigger* ThemeSwitcher::createTrigger(QWidget* parent)
+{
+    auto* trigger = new DropdownTrigger(parent);
+    trigger->setPlaceholder(tr("Theme"));
+    syncTriggers();
+
+    QPointer<ThemeSwitcher> self(this);
+    connect(trigger, &DropdownTrigger::activationRequested, this,
+            [self, trigger](bool) {
+                if (self != nullptr)
+                    self->openSelector(trigger);
+            });
+
+    triggers_.append(trigger);
+    connect(trigger, &QObject::destroyed, this, [this, trigger] {
+        triggers_.removeAll(trigger);
+    });
+    syncTriggers();
+    return trigger;
+}
+
+void ThemeSwitcher::syncTriggers()
+{
+    QString label = tr("Theme");
+    if (current_ >= 0 && current_ < presets_.size() && !presets_.at(current_).name.isEmpty())
+        label = presets_.at(current_).name;
+
+    for (const QPointer<DropdownTrigger>& trigger : std::as_const(triggers_)) {
+        if (trigger != nullptr)
+            trigger->setLabel(label);
+    }
 }
 
 int ThemeSwitcher::rowAt(const QPointF& position) const

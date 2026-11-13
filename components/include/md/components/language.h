@@ -27,6 +27,7 @@
 #include <QString>
 #include <QVariantMap>
 
+#include <chrono>
 #include <functional>
 #include <memory>
 
@@ -39,7 +40,13 @@ class QWidget;
 
 namespace md {
 
+namespace animation {
+class Animator;
+}
+
+class PickerSheet;
 class Store;
+class SwitchingOverlay;
 
 class Language : public View
 {
@@ -122,8 +129,23 @@ public:
     void closeMenu();
     [[nodiscard]] bool isMenuOpen() const;
 
-    // The selector surface, or nullptr until it has been opened once. It is a
-    // child of the Modal scrim, which is a child of the window.
+    [[nodiscard]] PickerSheet* selector() const noexcept;
+    [[nodiscard]] SwitchingOverlay* switchingOverlay() const noexcept;
+    [[nodiscard]] QString lastError() const;
+    void setManualSwitchClock(bool enabled);
+    [[nodiscard]] bool isManualSwitchClock() const noexcept;
+
+    // The chip is the dropdown trigger: 0 is the closed chevron (down) and 1
+    // the open one (up). It rotates through the same motion ladder as the
+    // sheet, and the label is the committed language, so a cancelled sheet
+    // never changes it.
+    [[nodiscard]] qreal chevronProgress() const noexcept;
+    void setManualAnimationClock(bool enabled);
+    [[nodiscard]] bool isManualAnimationClock() const noexcept;
+    void advanceAnimation(std::chrono::milliseconds delta);
+
+    // The selector surface, or nullptr until it has been opened once. It is the
+    // card of the shared PickerSheet, which is a child of the window.
     [[nodiscard]] QWidget* selectorPanel() const;
 
     // The built-in common-language list.
@@ -153,6 +175,9 @@ private:
     void syncAppearance();
     void syncAccessibleDescription();
     void notifyScope();
+    void setChevronOpen(bool open);
+    void setChevronProgress(qreal progress);
+    void startPendingSwitch();
 
     QList<LanguageEntry> languages_;
     QString current_;
@@ -161,11 +186,15 @@ private:
     std::unique_ptr<Adapter> adapter_;
     QPointer<QWidget> scopeHost_;
 
-    // modal_ is the full-window Modal scrim; panel_ is the language card drawn
-    // inside it. Neither is a layout child of the chip, and no overlay is
-    // painted above the content in this widget.
-    QPointer<QWidget> modal_;
-    QPointer<QWidget> panel_;
+    // The shared modal sheet. It owns the scrim, the card and the entrance and
+    // exit motion; the chip only supplies the locale rows and the current code.
+    QPointer<PickerSheet> picker_;
+    QPointer<SwitchingOverlay> overlay_;
+    QString pendingLanguage_;
+    bool hasPendingLanguage_ = false;
+    bool manualSwitchClock_ = false;
+    animation::Animator* chevronAnimator_ = nullptr;
+    qreal chevronProgress_ = 0.0;
     bool menuOpen_ = false;
     bool pressed_ = false;
 };

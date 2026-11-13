@@ -28,6 +28,8 @@
 #include <QPointer>
 #include <QtGlobal>
 
+#include <chrono>
+
 class QGraphicsEffect;
 class QWidget;
 
@@ -72,6 +74,14 @@ public:
     // Cancels the current run without emitting finished(). The last painted
     // value is kept; a later enter()/exit() starts from it without a jump.
     void stop();
+
+    // Deterministic clock. While enabled, enter()/exit() arm no timer and
+    // advanceAnimation() consumes exactly the time it is given; the painted
+    // values and finished() are the same as a wall-clock run. A host that
+    // renders on its own cadence, and a test, use this instead of sleeping.
+    void setManualAnimationClock(bool manual);
+    [[nodiscard]] bool isManualAnimationClock() const noexcept;
+    void advanceAnimation(std::chrono::milliseconds delta);
 
     [[nodiscard]] bool isEntered() const noexcept;
     [[nodiscard]] bool isRunning() const noexcept;

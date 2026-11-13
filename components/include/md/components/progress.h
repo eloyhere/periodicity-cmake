@@ -57,8 +57,12 @@ public:
 protected:
     void measureOverride(MeasureSpec width, MeasureSpec height) override;
     void paintContent(QPainter& painter, const QRectF& content) override;
-    void showEvent(QShowEvent* event) override;
-    void hideEvent(QHideEvent* event) override;
+    // The View lifecycle hooks, not showEvent()/hideEvent(): overriding those
+    // would bypass View's own bookkeeping (the lifecycle state, the ripple
+    // suspension and the hover/press reset on hide), which a component must not
+    // replace. onShown()/onHidden() run from View's handlers instead.
+    void onShown() override;
+    void onHidden() override;
     void onThemeChanged() override;
     [[nodiscard]] bool focusable() const override;
 

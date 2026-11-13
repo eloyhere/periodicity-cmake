@@ -27,6 +27,9 @@
 
 #pragma once
 
+#include <QElapsedTimer>
+#include <QEasingCurve>
+
 #include <md/view/view_group.h>
 
 #include <QIcon>
@@ -230,7 +233,11 @@ private:
     qreal progress_ = 0.0;
     qreal startProgress_ = 0.0;
     qreal targetProgress_ = 0.0;
-    int elapsedMs_ = 0;
+    // The transition clock and the curve resolved when it started. A real clock
+    // (not a count of assumed 16 ms ticks) keeps the token duration exact when a
+    // frame is late, and the cached curve keeps the tick allocation-free.
+    QElapsedTimer clock_;
+    QEasingCurve easing_;
 
     QTimer* timer_ = nullptr;
 };

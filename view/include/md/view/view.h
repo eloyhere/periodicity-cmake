@@ -37,6 +37,7 @@
 #include <md/ripple/ripple.h>
 #include <md/tokens/elevation.h>
 #include <md/tokens/shape.h>
+#include <md/view/damage_tracker.h>
 #include <md/view/error_guard.h>
 #include <md/view/lifecycle.h>
 #include <md/view/render_backend.h>
@@ -131,6 +132,32 @@ public:
     // the track.
     void setInteractionFeedbackEnabled(bool enabled);
     [[nodiscard]] bool isInteractionFeedbackEnabled() const noexcept;
+
+    // Damage tracking (opt-in) ---------------------------------------------
+    //
+    // Off by default, so every existing component keeps painting exactly as it
+    // did and retains nothing. A view that opts in accumulates the regions that
+    // changed; requestUpdate(QRectF) records one rectangle in this view's local
+    // coordinate space and schedules the same coalesced repaint as the
+    // protected requestUpdate(). The no-argument path keeps its meaning: it is
+    // a full repaint, so it marks the whole view through DamageTracker::addAll.
+    //
+    // paintContent() reads the accumulated regions through currentDamage().
+    // The tracker is cleared only after a paint pass that runs to completion;
+    // a pass whose hook throws — or that Qt clips to part of the widget — keeps
+    // the record for the next attempt.
+    void requestUpdate(QRectF rect);
+    void setDamageTrackingEnabled(bool enabled);
+    [[nodiscard]] bool isDamageTrackingEnabled() const noexcept;
+
+    // The damage accumulated since the last completed paint. Empty while
+    // tracking is disabled.
+    [[nodiscard]] const DamageTracker& damage() const noexcept;
+
+    // Discards the accumulated damage without painting. Called by
+    // setDamageTrackingEnabled(false); a component may also use it when its
+    // content is about to change wholesale and it knows a full repaint follows.
+    void clearDamage();
 
     // GPU acceleration (opt-in) -------------------------------------------
     //
@@ -263,6 +290,14 @@ protected:
     // foreground stages.
     virtual void paintContent(QPainter& painter, const QRectF& content) = 0;
 
+    // The damage the current paint pass is consuming, in view-local
+    // coordinates. It is the record requestUpdate(QRectF) filled; empty while
+    // tracking is disabled. Valid for the duration of paintContent() and
+    // paintChildren() and cleared only after a successful pass. Kept as an
+    // accessor instead of a parameter so the paintContent() signature — and
+    // every existing component override — stays unchanged.
+    [[nodiscard]] const DamageTracker& currentDamage() const noexcept;
+
     // Paints child widgets between the content and the foreground stages.
     // ViewGroup overrides it; a plain View has no children and does nothing.
     virtual void paintChildren(QPainter& painter) { Q_UNUSED(painter); }
@@ -299,6 +334,11 @@ protected:
 private:
     bool interactionFeedbackEnabled_ = true;
     QList<QPointer<Store>> stores_;
+
+    // The scheduling half of both requestUpdate() overloads: one coalesced
+    // repaint request, without touching the damage record. Keeping it separate
+    // is what lets the damage overload avoid the full-rect path.
+    void queueRepaint();
 
     // Re-publishes the widget rectangle and the resolved corner radius to the
     // ripple controller. Called on resize, when the shape changes and before
@@ -357,6 +397,14 @@ private:
     LifecycleState lifecycle_ = LifecycleState::Created;
     QColor backgroundColour_;
     QColor contentColour_;
+
+    // Opt-in damage record. The serial changes whenever a request records
+    // damage while tracking is on; paintEvent() snapshots it so a request made
+    // from inside a paint hook survives the post-paint clear instead of being
+    // silently consumed by the pass it was meant to schedule.
+    bool damageTrackingEnabled_ = false;
+    DamageTracker damage_;
+    quint64 damageRequestSerial_ = 0;
 
     // The last pointer position seen, used to give PointerLeave a meaningful
     // local position when Qt's leave event carries none.

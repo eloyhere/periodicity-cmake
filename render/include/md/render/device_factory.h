@@ -7,15 +7,18 @@
 // stable for the lifetime of the process; create() is the only thing a caller
 // needs to call per device.
 //
-// Phase 3 of docs/rendering-architecture.md ships the optional OpenGL device.
-// The factory still defaults to Software: OpenGL is opt-in through
-// create(Backend::OpenGL), which returns a GlDevice only when its offscreen
-// probe succeeds. Otherwise it returns SoftwareDevice carrying the precise
-// reason ("Qt6::OpenGL was not found at build time", "no QGuiApplication",
-// "QOpenGLContext::create() failed", or a shader/FBO failure).
+// Two GPU devices are opt-in:
 //
-// create() never returns null and never returns an unavailable device: a failed
-// OpenGL request degrades to SoftwareDevice with the reason in lastError().
+//   Backend::OpenGL  GlDevice, when PERIODICITY_HAS_OPENGL and the offscreen
+//                    context probe succeeds.
+//   Backend::Rhi     RhiDevice over QRhi (D3D11 first on Windows), when
+//                    PERIODICITY_HAS_RHI and a backend can be created.
+//
+// The factory still defaults to Software for both: a GPU device is a
+// capability, not the process default. A request that cannot be satisfied
+// returns a SoftwareDevice carrying the precise reason in lastError().
+//
+// create() never returns null and never returns an unavailable device.
 
 #pragma once
 
@@ -31,20 +34,23 @@ enum class Backend
 {
     Software,
     OpenGL,
+    Rhi,
 };
 
 class DeviceFactory
 {
 public:
-    // A ready-to-use device. Backend::OpenGL returns a GlDevice when the probe
-    // succeeds, and a SoftwareDevice carrying the probe reason otherwise.
+    // A ready-to-use device. Backend::OpenGL returns a GlDevice when its probe
+    // succeeds, Backend::Rhi a RhiDevice when its backend can be created, and a
+    // SoftwareDevice carrying the reason otherwise.
     static std::shared_ptr<RenderDevice> create(Backend backend);
 
-    // The backend the probe selected. Stable for the process; Software today.
+    // The backend the probe selected. Stable for the process; Software today,
+    // because the GPU devices are opt-in.
     static Backend preferredBackend();
 
-    // Stable backend identifiers: "software" and "opengl". The no-argument
-    // overload names the preferred backend.
+    // Stable backend identifiers: "software", "opengl" and "rhi". The
+    // no-argument overload names the preferred backend.
     static QString backendName(Backend backend);
     static QString backendName();
 

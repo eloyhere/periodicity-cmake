@@ -150,6 +150,10 @@ void Modal::setCard(QWidget* card)
     card_->hide();
 
     cardTransform_ = new ContainerTransform(card_, this);
+    // The transform owns its own Animator; carry the modal's current clock
+    // choice over so a host that enabled the manual clock before setCard()
+    // still gets a deterministic card.
+    cardTransform_->setManualAnimationClock(scrimAnimator_->isManualClock());
     connect(cardTransform_, &ContainerTransform::finished, this, [this](bool entered) {
         if (entered && phase_ == Phase::Opening) {
             cardDone_ = true;
@@ -238,6 +242,69 @@ bool Modal::isAnimating() const noexcept
 qreal Modal::scrimOpacity() const noexcept
 {
     return scrimOpacity_;
+}
+
+qreal Modal::cardAnimationProgress() const noexcept
+{
+    return cardTransform_ != nullptr ? cardTransform_->progress() : 1.0;
+}
+
+void Modal::setManualAnimationClock(bool manual)
+{
+    scrimAnimator_->setManualClock(manual);
+    if (cardTransform_ != nullptr)
+        cardTransform_->setManualAnimationClock(manual);
+}
+
+bool Modal::isManualAnimationClock() const noexcept
+{
+    return scrimAnimator_->isManualClock();
+}
+
+void Modal::advanceAnimation(std::chrono::milliseconds delta)
+{
+    scrimAnimator_->advanceTimeline(delta);
+    if (cardTransform_ != nullptr)
+        cardTransform_->advanceAnimation(delta);
+}
+
+void Modal::finishAnimation()
+{
+    if (phase_ == Phase::Idle)
+        return;
+
+    QPointer<Modal> self(this);
+
+    if (phase_ == Phase::Opening) {
+        scrimAnimator_->stop();
+        scrimOpacity_ = 1.0;
+        scrimDone_ = true;
+        cardDone_ = true;
+        requestUpdate();
+        if (cardTransform_ != nullptr) {
+            // snapTo() emits finished(true); the setCard() handler can finish
+            // the entrance (and delete this modal) from inside the call.
+            cardTransform_->snapTo(true);
+            if (self.isNull())
+                return;
+        }
+        maybeFinishOpen();
+        return;
+    }
+
+    if (phase_ == Phase::Closing) {
+        scrimAnimator_->stop();
+        scrimOpacity_ = 0.0;
+        scrimDone_ = true;
+        cardDone_ = true;
+        requestUpdate();
+        if (cardTransform_ != nullptr) {
+            cardTransform_->snapTo(false);
+            if (self.isNull())
+                return;
+        }
+        maybeFinishClose();
+    }
 }
 
 void Modal::open()

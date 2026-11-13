@@ -16,6 +16,7 @@
 // highlight and keep it visible. Enter commits the highlight.
 
 #include <md/components/dropdown.h>
+#include <md/components/row_feedback.h>
 #include <md/components/virtual_select.h>
 
 #include <md/core/geometry.h>
@@ -33,6 +34,7 @@
 #include <QPainterPath>
 #include <QPalette>
 #include <QPen>
+#include <QVariant>
 #include <QWidget>
 #include <QWheelEvent>
 
@@ -100,10 +102,13 @@ public:
     explicit ListContent(VirtualSelect* owner)
         : View(nullptr)
         , owner_(owner)
+        , feedback_(this)
     {
         setFocusPolicy(Qt::StrongFocus);
         setBackgroundColour(QColor(Qt::transparent));
         setMouseTracking(true);
+        setProperty("md.rowFeedback", QVariant::fromValue<QObject*>(&feedback_));
+        connect(&feedback_, &RowFeedback::repaintRequested, this, [this] { update(); });
     }
 
     [[nodiscard]] int firstRow() const noexcept { return firstRow_; }
@@ -165,6 +170,8 @@ public:
         const qreal width = std::max(qreal(0.0), qreal(this->width()) - padding * 2.0 - rightInset);
         return QRectF(padding, padding + qreal(visibleRow) * rowHeight, width, rowHeight);
     }
+
+    void clearRowFeedback() { feedback_.clear(); }
 
     [[nodiscard]] int rowAtPoint(const QPointF& point) const
     {
@@ -254,6 +261,11 @@ protected:
                 painter.fillPath(pill, colours.secondaryContainer);
             }
 
+            feedback_.paintRow(painter, index,
+                               rowBounds.adjusted(0.0, unit, 0.0, -unit),
+                               position == owner_->highlightedPosition(),
+                               radius * 0.65, colours.onSurface);
+
             const qreal textLeft = rowBounds.left() + density.dp(12.0);
             const qreal textWidth = std::max(qreal(0.0), rowBounds.right() - textLeft - density.dp(28.0));
 
@@ -315,11 +327,13 @@ protected:
 
         const int visibleRow = rowAtPoint(event->position());
         if (visibleRow >= 0) {
-            owner_->activatePosition(firstRow_ + visibleRow);
+            feedback_.pointerPressed(visibleRow, event->position(),
+                                     rowRectFor(visibleRow));
             event->accept();
             return;
         }
 
+        feedback_.pointerLeft();
         View::mousePressEvent(event);
     }
 
@@ -331,6 +345,7 @@ protected:
             return;
         }
 
+        feedback_.pointerMoved(rowAtPoint(event->position()));
         View::mouseMoveEvent(event);
     }
 
@@ -342,11 +357,39 @@ protected:
             return;
         }
 
+        const int row = rowAtPoint(event->position());
+        const int pressed = feedback_.pressedRow();
+        feedback_.pointerReleased();
+
+        if (event->button() == Qt::LeftButton && row >= 0 && pressed == row) {
+            owner_->activatePosition(firstRow_ + row);
+            event->accept();
+            return;
+        }
+
         View::mouseReleaseEvent(event);
     }
 
+    void leaveEvent(QEvent* event) override
+    {
+        feedback_.pointerLeft();
+        View::leaveEvent(event);
+    }
+
+    void onHidden() override { feedback_.clear(); }
+
     void keyPressEvent(QKeyEvent* event) override
     {
+        if (event->key() == Qt::Key_Return || event->key() == Qt::Key_Enter
+            || event->key() == Qt::Key_Space) {
+            const int position = owner_->highlightedPosition();
+            const int visibleRow = position - firstRow_;
+            if (visibleRow >= 0 && visibleRow < pageRows()) {
+                const QRectF rect = rowRectFor(visibleRow);
+                feedback_.triggerRipple(visibleRow, rect.center(), rect);
+            }
+        }
+
         QKeyEvent forwarded(event->type(), event->key(), event->modifiers(),
                             event->text(), event->isAutoRepeat());
         QCoreApplication::sendEvent(owner_, &forwarded);
@@ -384,6 +427,7 @@ private:
     }
 
     VirtualSelect* owner_ = nullptr;
+    RowFeedback feedback_;
     int firstRow_ = 0;
     bool dragging_ = false;
 };
@@ -1053,6 +1097,9 @@ int VirtualSelect::positionOfSourceIndex(int index) const
 
 void VirtualSelect::applyFilter()
 {
+    if (popup_ != nullptr)
+        static_cast<ListContent*>(popup_)->clearRowFeedback();
+
     filtered_.clear();
     labelCache_.clear();
 

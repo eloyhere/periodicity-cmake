@@ -1751,6 +1751,24 @@ void ChartBase::onStoreChanged(Store* store, const QString& key, const QVariant&
         emptyStateTextValid_ = false;
 }
 
+void ChartBase::onHidden()
+{
+    // A hidden chart must not keep animating: the animator's frame timer would
+    // keep repainting an invisible widget until the run ended, and the values it
+    // produced could never be seen. Settle on the finished frame, which is also
+    // the state the next show paints from.
+    if (animator_.isRunning()) {
+        animator_.stop();
+        animation_.finishRun();
+    }
+
+    // The repaint clock only throttles frames of a live run; a stale interval
+    // would suppress the first frame of the next run.
+    animationRepaintClock_.invalidate();
+
+    requestUpdate();
+}
+
 void ChartBase::onThemeChanged()
 {
     View::onThemeChanged();

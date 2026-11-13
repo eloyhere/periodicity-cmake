@@ -70,9 +70,12 @@ Pager::Pager(QWidget* parent)
             return;
         }
 
-        elapsedMs_ += kTickMs;
-        const qreal linear =
-            std::clamp(qreal(elapsedMs_) / qreal(duration), qreal(0.0), qreal(1.0));
+        // Measure the elapsed time instead of assuming one tick is 16 ms. A late
+        // tick must consume the time it really took; counting ticks instead
+        // stretches the token duration whenever a frame is delayed and makes the
+        // snap drift out of step with the rest of the motion on screen.
+        const qreal linear = std::clamp(
+            qreal(clock_.elapsed()) / qreal(duration), qreal(0.0), qreal(1.0));
         shift_ = animationFrom_ + (animationTo_ - animationFrom_) * easedProgress(linear);
 
         if (linear >= 1.0) {
@@ -327,7 +330,6 @@ void Pager::beginAnimation(qreal target)
 {
     animationFrom_ = shift_;
     animationTo_ = target;
-    elapsedMs_ = 0;
 
     const int duration = transitionDuration();
     if (duration <= 0 || timer_ == nullptr) {
@@ -335,6 +337,11 @@ void Pager::beginAnimation(qreal target)
         commitAnimation();
         return;
     }
+
+    // One curve for the whole snap: resolving it per tick allocated a
+    // QEasingCurve on every frame and re-read the theme inside the animation.
+    easing_ = Theme::forWidget(this).motion().medium1().easing.toEasingCurve();
+    clock_.restart();
 
     timer_->setInterval(kTickMs);
     timer_->start();
@@ -379,8 +386,8 @@ int Pager::transitionDuration() const
 
 qreal Pager::easedProgress(qreal linear) const
 {
-    const QEasingCurve curve = Theme::forWidget(this).motion().medium1().easing.toEasingCurve();
-    return curve.valueForProgress(std::clamp(linear, qreal(0.0), qreal(1.0)));
+    // The curve is resolved once per snap in beginAnimation(), never per frame.
+    return easing_.valueForProgress(std::clamp(linear, qreal(0.0), qreal(1.0)));
 }
 
 // ---------------------------------------------------------------------------

@@ -114,9 +114,12 @@ Drawer::Drawer(QWidget* parent)
             return;
         }
 
-        elapsedMs_ += kTickMs;
-        const qreal linear =
-            std::clamp(qreal(elapsedMs_) / qreal(duration), qreal(0.0), qreal(1.0));
+        // Measure the elapsed time instead of assuming one tick is 16 ms. A late
+        // tick must consume the time it really took; counting ticks instead
+        // stretches the token duration whenever a frame is delayed and makes the
+        // panel drift out of step with every other animation on screen.
+        const qreal linear = std::clamp(
+            qreal(clock_.elapsed()) / qreal(duration), qreal(0.0), qreal(1.0));
         progress_ = startProgress_ + (targetProgress_ - startProgress_) * easedProgress(linear);
 
         if (linear >= 1.0) {
@@ -419,7 +422,6 @@ void Drawer::animateTo(qreal target)
 {
     startProgress_ = progress_;
     targetProgress_ = std::clamp(target, qreal(0.0), qreal(1.0));
-    elapsedMs_ = 0;
 
     const int duration = transitionDuration();
     if (duration <= 0 || timer_ == nullptr) {
@@ -427,6 +429,11 @@ void Drawer::animateTo(qreal target)
         finishTransition();
         return;
     }
+
+    // One curve for the whole run: resolving it per tick allocated a
+    // QEasingCurve on every frame and re-read the theme inside the animation.
+    easing_ = Theme::forWidget(this).motion().emphasizedMedium2().easing.toEasingCurve();
+    clock_.restart();
 
     timer_->setInterval(kTickMs);
     timer_->start();
@@ -462,10 +469,8 @@ int Drawer::transitionDuration() const
 
 qreal Drawer::easedProgress(qreal linear) const
 {
-    const QEasingCurve curve =
-        Theme::forWidget(this).motion().emphasizedMedium2().easing.toEasingCurve();
-
-    return curve.valueForProgress(std::clamp(linear, qreal(0.0), qreal(1.0)));
+    // The curve is resolved once per run in animateTo(), never per frame.
+    return easing_.valueForProgress(std::clamp(linear, qreal(0.0), qreal(1.0)));
 }
 
 void Drawer::applyOverlayGeometry()

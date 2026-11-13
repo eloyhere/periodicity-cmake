@@ -161,12 +161,10 @@ protected:
     void mousePressEvent(QMouseEvent* event) override;
     void mouseReleaseEvent(QMouseEvent* event) override;
 
-    // The first show starts the reveal; later shows do not replay it.
+    // The sweep starts with the show, not with the first paint: a chart that has
+    // been shown but not yet painted already reports a running reveal. The run
+    // itself belongs to ChartBase, so this only asks the base to start it.
     void onShown() override;
-
-    // A theme change can turn reduced motion on while a sweep is in flight; the
-    // hook then snaps the chart to its finished state.
-    void onThemeChanged() override;
 
 private:
     // One slice in the settled angular layout. `offset` and `share` are the raw
@@ -189,11 +187,6 @@ private:
 
     [[nodiscard]] bool rightToLeft() const;
 
-    // Starts the reveal sweep, unless it already ran. Reduced motion and a
-    // zero-duration spec set the finished progress without touching the
-    // animator.
-    void startReveal();
-
     bool donut_ = false;
     qreal donutRatio_ = 0.55;
     bool showPercentages_ = true;
@@ -201,13 +194,11 @@ private:
     qreal sliceGap_ = 0.0;
     int selectedSlice_ = -1;
 
-    // Sweep state. `reveal_` starts finished so a chart that is only rendered
-    // (never shown) is complete; startReveal() rewinds it for a real reveal.
-    qreal reveal_ = 1.0;
-    bool revealStarted_ = false;
-    bool revealing_ = false;
-    animation::Animator animator_;
-
+    // The sweep is ChartBase's run, not a second animation: the pie paints
+    // animation().progress(), so the base owns the single animator, the single
+    // reduced-motion decision and the single repaint stream. A pie therefore
+    // reveals on the first show exactly like every other chart, and a data
+    // update re-runs that one animation instead of running a hidden duplicate.
     // The slice the current press landed on, so a release has to match it.
     int pressedSlice_ = -1;
 };

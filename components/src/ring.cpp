@@ -126,19 +126,15 @@ void Ring::stopAnimation()
     animator_.stop();
 }
 
-void Ring::showEvent(QShowEvent* event)
+void Ring::onShown()
 {
-    QWidget::showEvent(event);
-
     if (indeterminate_)
         startAnimation();
 }
 
-void Ring::hideEvent(QHideEvent* event)
+void Ring::onHidden()
 {
     stopAnimation();
-
-    QWidget::hideEvent(event);
 }
 
 void Ring::onThemeChanged()

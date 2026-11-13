@@ -1,6 +1,9 @@
 #include <md/components/font.h>
 
+#include <md/components/dropdown_trigger.h>
 #include <md/components/modal.h>
+#include <md/components/picker_sheet.h>
+#include <md/components/switching_overlay.h>
 #include <md/store/store.h>
 #include <md/theme/theme.h>
 #include <md/view/view.h>
@@ -599,9 +602,31 @@ QWidget* Font::createSelector(QWidget* parent)
     return selector;
 }
 
+DropdownTrigger* Font::createTrigger(QWidget* parent)
+{
+    auto* trigger = new DropdownTrigger(parent);
+    trigger->setPlaceholder(tr("System default"));
+    trigger->setLabel(family_);
+
+    QPointer<Font> self(this);
+    connect(trigger, &DropdownTrigger::activationRequested, this,
+            [self, trigger](bool) {
+                if (self != nullptr)
+                    self->openSelector(trigger);
+            });
+    connect(this, &Font::changed, trigger, [this, trigger] {
+        trigger->setLabel(family_);
+    });
+
+    return trigger;
+}
+
 void Font::openSelector(QWidget* anchor)
 {
-    if (selector_ != nullptr) {
+    if (overlay_ != nullptr && overlay_->isBusy())
+        return;
+
+    if (selector_ != nullptr && selector_->isOpen()) {
         selector_->close();
         return;
     }
@@ -610,35 +635,125 @@ void Font::openSelector(QWidget* anchor)
     if (host == nullptr)
         return;
 
-    auto* modal = new Modal(host);
-    auto* selector = static_cast<FontSelector*>(createSelector(modal));
+    QStringList families = QFontDatabase::families();
+    if (!family_.isEmpty()
+        && !families.contains(family_, Qt::CaseInsensitive)) {
+        families.prepend(family_);
+    }
 
-    QPointer<Modal> guard(modal);
-    QPointer<Font> self(this);
-    selector->setOnActivated([self, guard](const QString& family) {
-        if (self != nullptr)
-            self->setFamily(family);
-        if (guard != nullptr)
-            guard->close();
+    QList<PickerSheet::Option> options;
+    options.reserve(families.size());
+    for (const QString& family : std::as_const(families)) {
+        if (family.isEmpty())
+            continue;
+        options.append(PickerSheet::Option{family, family});
+    }
+
+    auto* sheet = new PickerSheet(anchor != nullptr ? anchor : host_.data());
+    sheet->setTitle(tr("Font family"));
+    sheet->setOptions(options, family_);
+
+    auto* trigger = qobject_cast<DropdownTrigger*>(anchor);
+    if (trigger != nullptr) {
+        if (trigger->isManualAnimationClock()) {
+            sheet->setManualAnimationClock(true);
+            manualSwitchClock_ = true;
+        }
+        trigger->setOpen(true);
+        connect(sheet, &PickerSheet::confirmed, trigger,
+                [trigger] { trigger->setOpen(false); });
+        connect(sheet, &PickerSheet::cancelled, trigger,
+                [trigger] { trigger->setOpen(false); });
+        connect(sheet, &QObject::destroyed, trigger,
+                [trigger] { trigger->setOpen(false); });
+    }
+
+    connect(sheet, &PickerSheet::confirmed, this, [this](const QString& family) {
+        pendingFamily_ = family;
+        hasPendingFamily_ = true;
     });
-
-    modal->setCard(selector);
-    modal->setAnchor(anchor != nullptr ? anchor : host_.data());
-    modal->setFocusReturn(anchor != nullptr ? anchor : host_.data());
-
-    selector_ = modal;
-    connect(modal, &Modal::closeFinished, modal, &QObject::deleteLater);
-    connect(modal, &QObject::destroyed, this, [this, modal] {
-        if (selector_ == modal)
+    connect(sheet, &PickerSheet::finished, this, [this] {
+        if (hasPendingFamily_)
+            startPendingSwitch();
+    });
+    connect(sheet, &QObject::destroyed, this, [this, sheet] {
+        if (selector_ == sheet)
             selector_.clear();
     });
+    connect(sheet, &PickerSheet::finished, sheet, &QObject::deleteLater);
 
-    modal->open();
+    selector_ = sheet;
+    sheet->open();
 }
 
 bool Font::isSelectorOpen() const noexcept
 {
     return selector_ != nullptr && selector_->isOpen();
+}
+
+PickerSheet* Font::selector() const noexcept
+{
+    return selector_.data();
+}
+
+SwitchingOverlay* Font::switchingOverlay() const noexcept
+{
+    return overlay_.data();
+}
+
+QString Font::lastError() const
+{
+    return overlay_ != nullptr ? overlay_->lastError() : QString();
+}
+
+void Font::setManualSwitchClock(bool enabled)
+{
+    manualSwitchClock_ = enabled;
+    if (overlay_ != nullptr)
+        overlay_->setManualAnimationClock(enabled);
+}
+
+bool Font::isManualSwitchClock() const noexcept
+{
+    return manualSwitchClock_;
+}
+
+void Font::startPendingSwitch()
+{
+    hasPendingFamily_ = false;
+    const QString family = pendingFamily_;
+    pendingFamily_.clear();
+
+    if (host_ == nullptr || family.isEmpty())
+        return;
+
+    QWidget* window = host_->window();
+    if (window == nullptr)
+        return;
+
+    if (overlay_ == nullptr) {
+        overlay_ = new SwitchingOverlay(host_.data());
+        overlay_->setManualAnimationClock(manualSwitchClock_);
+    }
+
+    QPointer<Font> self(this);
+    overlay_->run([self, family] {
+        if (self == nullptr)
+            return;
+
+        const QString previous = self->family_;
+        try {
+            self->setFamily(family);
+        } catch (...) {
+            // The overlay reports the exception; this lambda's job is to leave
+            // the previous value applied.
+            try {
+                self->setFamily(previous);
+            } catch (...) {
+            }
+            throw;
+        }
+    });
 }
 
 } // namespace md

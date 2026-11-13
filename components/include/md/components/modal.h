@@ -36,6 +36,8 @@
 #include <QRectF>
 #include <QString>
 
+#include <chrono>
+
 class QEvent;
 class QHideEvent;
 class QKeyEvent;
@@ -122,6 +124,23 @@ public:
     // The scrim's current strength in 0..1, after the fade. Exposed so a host
     // can paint a matching scrim, and so tests can observe the fade.
     [[nodiscard]] qreal scrimOpacity() const noexcept;
+
+    // The card transform's progress in 0..1; 1 without a card.
+    [[nodiscard]] qreal cardAnimationProgress() const noexcept;
+
+    // Deterministic clock. While enabled, open()/close() arm no timer and
+    // advanceAnimation() consumes exactly the time it is given; the scrim and
+    // card end states, openFinished() and closeFinished() are unchanged. A
+    // caller that renders on its own cadence, and a test, use this instead of
+    // sleeping.
+    void setManualAnimationClock(bool manual);
+    [[nodiscard]] bool isManualAnimationClock() const noexcept;
+    void advanceAnimation(std::chrono::milliseconds delta);
+
+    // Settles a running entrance or exit at its end state immediately. With
+    // the manual clock this is the same as advancing past the motion duration;
+    // without it the current wall-clock run is completed synchronously.
+    void finishAnimation();
 
     void open();
     void close();

@@ -29,6 +29,7 @@
 #include <QFocusEvent>
 #include <QKeyEvent>
 #include <QMouseEvent>
+#include <QPaintEvent>
 #include <QPainter>
 #include <QPointer>
 #include <QResizeEvent>
@@ -426,7 +427,7 @@ bool View::onInterceptEvent(Event&)
     return false;
 }
 
-void View::paintEvent(QPaintEvent*)
+void View::paintEvent(QPaintEvent* event)
 {
     // A content hook that throws is caught here. The background has already
     // been painted by stage 2 when that happens, the remaining stages are
@@ -434,7 +435,15 @@ void View::paintEvent(QPaintEvent*)
     // reports the failure once per entry point.
     const auto paintStarted = schedule::UiThread::Clock::now();
 
-    static_cast<void>(view::guard(
+    // The damage record this pass consumes. The serial is read before the
+    // guard and compared after it: a hook that requests damage while painting
+    // (an animation scheduling its next frame, for example) must survive the
+    // post-paint clear, or the request would be consumed by the very pass it
+    // was meant to follow.
+    const QPointer<View> alive(this);
+    const quint64 damageSerial = damageRequestSerial_;
+
+    const bool painted = view::guard(
         "View::paintEvent", kPaintSite, guardReport_, [this] {
             // Keep the ripple's clip in step with the widget even if the
             // geometry changed without a resize event reaching this path.
@@ -488,7 +497,20 @@ void View::paintEvent(QPaintEvent*)
             //    layer alone, so clicking a component never draws an outline.
             if (hasFocus() && focusable() && keyboardFocus_)
                 focusRing_.paint(painter, content, context);
-        }));
+        });
+
+    // Consume the damage only after a pass that ran to completion, and only
+    // when Qt asked for the whole widget. A hook that threw leaves the record
+    // untouched, so the next attempt still sees it; a partial paint event keeps
+    // it too, because clearing would claim regions outside Qt's clip were
+    // repainted. The QPointer covers a child that destroyed this view during
+    // painting: the members must not be touched after that.
+    if (painted && alive && damageTrackingEnabled_) {
+        const bool fullWidgetPaint =
+            event->region().rectCount() == 1 && event->rect() == rect();
+        if (fullWidgetPaint && damageRequestSerial_ == damageSerial)
+            damage_.clear();
+    }
 
     if (auto* uiThread = schedule::UiThread::instance()) {
         uiThread->recordPaint(std::chrono::duration_cast<schedule::UiThread::Duration>(
@@ -500,6 +522,16 @@ void View::resizeEvent(QResizeEvent* event)
 {
     QWidget::resizeEvent(event);
     updateRippleGeometry();
+
+    // A resize changes the reference rectangle and, with it, every pixel. Qt
+    // schedules a full repaint for the new geometry, so the damage record says
+    // the same thing; recording it keeps a damage-aware paintContent() from
+    // seeing stale coordinates once the widget is painted again.
+    if (damageTrackingEnabled_) {
+        damage_.setFullRect(QRectF(rect()));
+        damage_.addAll();
+        ++damageRequestSerial_;
+    }
 
     // A view can receive a new rectangle from Qt (a QLayout, a QSplitter, or a
     // plain resize) as well as from View::arrange(). The content has to follow
@@ -753,6 +785,29 @@ void View::setMeasuredSize(QSizeF size)
 
 void View::requestUpdate()
 {
+    // The historical no-argument meaning is a full repaint, so it marks the
+    // whole view. Components that know their changed region call the QRectF
+    // overload below instead; everything else keeps invalidating everything.
+    if (damageTrackingEnabled_) {
+        damage_.addAll();
+        ++damageRequestSerial_;
+    }
+
+    queueRepaint();
+}
+
+void View::requestUpdate(QRectF rect)
+{
+    if (damageTrackingEnabled_) {
+        damage_.add(rect);
+        ++damageRequestSerial_;
+    }
+
+    queueRepaint();
+}
+
+void View::queueRepaint()
+{
     // With a UI runtime installed, invalidation is frame work: request the
     // next frame and queue the actual QWidget::update() in its Build phase.
     // requestFrame() coalesces any number of requests in one turn into one
@@ -779,6 +834,46 @@ void View::requestUpdate()
                                                   if (guard)
                                                       guard->update();
                                               });
+}
+
+// ---------------------------------------------------------------------------
+// Damage tracking (opt-in)
+// ---------------------------------------------------------------------------
+
+void View::setDamageTrackingEnabled(bool enabled)
+{
+    if (damageTrackingEnabled_ == enabled)
+        return;
+
+    damageTrackingEnabled_ = enabled;
+
+    // Switching the feature starts from a clean record: stale damage from a
+    // previous opt-in must not be reported as this one's first frame, and
+    // turning it off must not leave state behind.
+    damage_.clear();
+
+    if (enabled)
+        damage_.setFullRect(QRectF(rect()));
+}
+
+bool View::isDamageTrackingEnabled() const noexcept
+{
+    return damageTrackingEnabled_;
+}
+
+const DamageTracker& View::damage() const noexcept
+{
+    return damage_;
+}
+
+const DamageTracker& View::currentDamage() const noexcept
+{
+    return damage_;
+}
+
+void View::clearDamage()
+{
+    damage_.clear();
 }
 
 void View::updateRippleGeometry()

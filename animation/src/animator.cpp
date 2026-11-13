@@ -140,6 +140,17 @@ void Animator::start(MotionSpec spec, std::function<void(qreal)> onValue)
                              : remainingDuration(spec.duration, activeFrom_);
 
     if (inValueCallback_) {
+        if (manualClock_) {
+            // There is no QVariantAnimation to reconfigure in manual mode; the
+            // new run simply replaces the state the next advance() will use.
+            manualDelayLeftMs_ = activeDelayMs_;
+            manualElapsedMs_ = 0;
+            manualRemainingMs_ = activeRemainingMs_;
+            progress_ = activeFrom_;
+            state_ = State::Running;
+            return;
+        }
+
         // start() came from inside onValue. Reconfiguring QVariantAnimation
         // while it is emitting is not safe, so the new run is armed on the next
         // event-loop turn; Waiting makes the outgoing animation's remaining
@@ -159,16 +170,89 @@ void Animator::stop()
     state_ = State::Idle;
     restartPending_ = false;
     delayTimer_->stop();
+    manualDelayLeftMs_ = 0;
+    manualElapsedMs_ = 0;
+    manualRemainingMs_ = 0;
     // Safe from inside the callback: the function that is executing is the copy
     // invokeValue() holds, not this member.
     onValue_ = nullptr;
     stopAnimation();
 }
 
+void Animator::setManualClock(bool manual)
+{
+    if (manualClock_ == manual)
+        return;
+
+    // A run belongs to exactly one clock. Stop it before switching so its
+    // timer and callbacks cannot survive into the other mode.
+    stop();
+    manualClock_ = manual;
+}
+
+bool Animator::isManualClock() const noexcept
+{
+    return manualClock_;
+}
+
+void Animator::advanceTimeline(std::chrono::milliseconds delta)
+{
+    if (!manualClock_ || state_ == State::Idle || state_ == State::Paused)
+        return;
+
+    qint64 remaining = std::max<qint64>(0, delta.count());
+
+    if (manualDelayLeftMs_ > 0) {
+        const qint64 used = std::min(manualDelayLeftMs_, remaining);
+        manualDelayLeftMs_ -= used;
+        remaining -= used;
+        if (manualDelayLeftMs_ > 0)
+            return;
+    }
+
+    if (manualRemainingMs_ <= 0) {
+        // A zero-duration run (or a retarget with no time left) settles on the
+        // first advance, never synchronously inside start().
+        finishRun(true);
+        return;
+    }
+
+    const quint64 generation = generation_;
+    const qreal from = activeFrom_;
+    manualElapsedMs_ += remaining;
+
+    if (manualElapsedMs_ >= manualRemainingMs_) {
+        progress_ = 1.0;
+        if (!invokeValue(progress_))
+            return; // the callback destroyed the animator
+        if (generation != generation_)
+            return; // the callback restarted or stopped the run
+
+        // The final value was delivered above; finishRun must not deliver it a
+        // second time.
+        finishRun(false);
+        return;
+    }
+
+    const qreal linear = static_cast<qreal>(manualElapsedMs_)
+                         / static_cast<qreal>(manualRemainingMs_);
+    const qreal eased = activeSpec_.easing.toEasingCurve().valueForProgress(linear);
+    progress_ = from + (1.0 - from) * eased;
+    (void)invokeValue(progress_);
+}
+
 void Animator::pause()
 {
     if (state_ == State::Idle || state_ == State::Paused)
         return;
+
+    if (manualClock_) {
+        pausedWhileWaiting_ = false;
+        pausedRemainingMs_ = std::max<qint64>(0, manualRemainingMs_ - manualElapsedMs_);
+        pausedDelayMs_ = manualDelayLeftMs_;
+        state_ = State::Paused;
+        return;
+    }
 
     pausedWhileWaiting_ = state_ == State::Waiting;
     if (pausedWhileWaiting_) {
@@ -192,6 +276,16 @@ void Animator::resume()
 {
     if (state_ != State::Paused)
         return;
+
+    if (manualClock_) {
+        // Continue the remaining interval from the value the caller last saw.
+        activeFrom_ = progress_;
+        manualRemainingMs_ = std::max<qint64>(1, pausedRemainingMs_);
+        manualElapsedMs_ = 0;
+        manualDelayLeftMs_ = pausedDelayMs_;
+        state_ = State::Running;
+        return;
+    }
 
     if (inValueCallback_) {
         // pause() and resume() were both called from onValue; the animation may
@@ -250,6 +344,15 @@ qreal Animator::progress() const noexcept
 void Animator::arm()
 {
     restartPending_ = false;
+
+    if (manualClock_) {
+        manualDelayLeftMs_ = activeDelayMs_;
+        manualElapsedMs_ = 0;
+        manualRemainingMs_ = activeRemainingMs_;
+        progress_ = activeFrom_;
+        state_ = State::Running;
+        return;
+    }
 
     if (activeDelayMs_ > 0) {
         state_ = State::Waiting;

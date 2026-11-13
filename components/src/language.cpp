@@ -2,9 +2,12 @@
 
 #include <md/components/language.h>
 
+#include <md/animation/animator.h>
 #include <md/components/font.h>
-#include <md/components/modal.h>
+#include <md/components/picker_sheet.h>
+#include <md/components/switching_overlay.h>
 #include <md/core/i18n.h>
+#include <md/tokens/motion.h>
 #include <md/store/store.h>
 #include <md/theme/theme.h>
 
@@ -467,6 +470,12 @@ Language::Language(QWidget* parent)
     setFocusPolicy(Qt::StrongFocus);
     setCursor(Qt::PointingHandCursor);
     setAccessibleName(tr("Language"));
+
+    chevronAnimator_ = new animation::Animator(this);
+    connect(chevronAnimator_, &animation::Animator::finished, this, [this] {
+        setChevronProgress(menuOpen_ ? 1.0 : 0.0);
+    });
+
     syncAccessibleDescription();
     syncAppearance();
 }
@@ -477,8 +486,12 @@ Language::~Language()
         && scopeHost_->property("md.languageScope").value<QObject*>() == this) {
         scopeHost_->setProperty("md.languageScope", QVariant());
     }
-    if (modal_ != nullptr)
-        delete modal_.data();
+    if (picker_ != nullptr) {
+        picker_->disconnect(this);
+        picker_->close();
+        picker_->deleteLater();
+        picker_.clear();
+    }
 }
 
 QList<Language::LanguageEntry> Language::defaultLanguages()
@@ -533,10 +546,6 @@ void Language::setLanguages(const QList<LanguageEntry>& languages)
     if (menuOpen_)
         closeMenu();
 
-    if (panel_ != nullptr) {
-        static_cast<LanguagePanel*>(panel_.data())->setEntries(languages_, current_);
-    }
-
     syncAccessibleDescription();
     syncAppearance();
 }
@@ -575,9 +584,6 @@ bool Language::setCurrentLanguage(const QString& code)
     else
         i18n::install(entry.code);
 
-    if (panel_ != nullptr) {
-        static_cast<LanguagePanel*>(panel_.data())->setEntries(languages_, current_);
-    }
     if (menuOpen_)
         closeMenu();
 
@@ -627,45 +633,125 @@ QIcon Language::icon() const
 
 void Language::showSelector()
 {
+    if (overlay_ != nullptr && overlay_->isBusy())
+        return;
+
     QWidget* host = window() != nullptr ? window() : parentWidget();
     if (host == nullptr)
         return;
 
-    auto* modal = static_cast<Modal*>(modal_.data());
-    if (modal == nullptr) {
-        modal = new Modal(host);
-        modal->setLevel(Modal::Level::Dialog);
-        // Modal remembers the chip as the focus return target and runs the
-        // scrim/card entrance and exit animations through ContainerTransform.
-        modal->setFocusReturn(this);
-        modal_ = modal;
+    if (isManualAnimationClock())
+        manualSwitchClock_ = true;
 
-        auto* panel = new LanguagePanel(nullptr);
-        panel->activated = [this](const QString& code) { handleSelection(code); };
-        panel->dismissed = [this] { closeMenu(); };
-        modal->setCard(panel);
-        panel_ = panel;
+    QList<PickerSheet::Option> options;
+    options.reserve(languages_.size());
+    for (const LanguageEntry& entry : std::as_const(languages_))
+        options.append(PickerSheet::Option{entry.code, entry.nativeName});
 
-        QObject::connect(modal, &Modal::closed, this, [this] {
-            // Modal keeps the card alive through the exit animation and hides
-            // it itself; do not hide it here or the transform disappears.
+    auto* sheet = new PickerSheet(this);
+    sheet->setTitle(tr("Language"));
+    sheet->setOptions(options, current_);
+
+    connect(sheet, &PickerSheet::confirmed, this, [this](const QString& code) {
+        pendingLanguage_ = code;
+        hasPendingLanguage_ = true;
+        setChevronOpen(false);
+    });
+    connect(sheet, &PickerSheet::cancelled, this, [this] {
+        if (!menuOpen_)
+            return;
+        menuOpen_ = false;
+        setChevronOpen(false);
+        syncAppearance();
+        requestUpdate();
+    });
+    connect(sheet, &PickerSheet::finished, this, [this] {
+        if (hasPendingLanguage_)
+            startPendingSwitch();
+    });
+    connect(sheet, &QObject::destroyed, this, [this, sheet] {
+        if (picker_ != sheet)
+            return;
+        picker_.clear();
+        if (menuOpen_) {
             menuOpen_ = false;
+            setChevronOpen(false);
             syncAppearance();
             requestUpdate();
-        });
-    }
+        }
+    });
+    connect(sheet, &PickerSheet::finished, sheet, &QObject::deleteLater);
 
-    if (modal->parentWidget() != host)
-        modal->setParent(host);
-
-    auto* panel = static_cast<LanguagePanel*>(panel_.data());
-    panel->setEntries(languages_, current_);
-
-    modal->open();
-
+    picker_ = sheet;
+    if (isManualAnimationClock())
+        sheet->setManualAnimationClock(true);
     menuOpen_ = true;
     syncAppearance();
     requestUpdate();
+    setChevronOpen(true);
+    sheet->open();
+}
+
+PickerSheet* Language::selector() const noexcept
+{
+    return picker_.data();
+}
+
+SwitchingOverlay* Language::switchingOverlay() const noexcept
+{
+    return overlay_.data();
+}
+
+QString Language::lastError() const
+{
+    return overlay_ != nullptr ? overlay_->lastError() : QString();
+}
+
+void Language::setManualSwitchClock(bool enabled)
+{
+    manualSwitchClock_ = enabled;
+    if (overlay_ != nullptr)
+        overlay_->setManualAnimationClock(enabled);
+}
+
+bool Language::isManualSwitchClock() const noexcept
+{
+    return manualSwitchClock_;
+}
+
+void Language::startPendingSwitch()
+{
+    hasPendingLanguage_ = false;
+    const QString code = pendingLanguage_;
+    pendingLanguage_.clear();
+    if (code.isEmpty())
+        return;
+
+    QWidget* host = window() != nullptr ? window() : parentWidget();
+    if (host == nullptr)
+        return;
+
+    if (overlay_ == nullptr) {
+        overlay_ = new SwitchingOverlay(this);
+        overlay_->setManualAnimationClock(manualSwitchClock_);
+    }
+
+    QPointer<Language> self(this);
+    overlay_->run([self, code] {
+        if (self == nullptr)
+            return;
+
+        const QString previous = self->current_;
+        try {
+            (void)self->setCurrentLanguage(code);
+        } catch (...) {
+            try {
+                (void)self->setCurrentLanguage(previous);
+            } catch (...) {
+            }
+            throw;
+        }
+    });
 }
 
 void Language::handleSelection(const QString& code)
@@ -686,32 +772,76 @@ void Language::openMenu()
 
 void Language::closeMenu()
 {
-    auto* modal = static_cast<Modal*>(modal_.data());
-    if (modal == nullptr)
-        return;
-
-    // close() emits closed() synchronously and then runs the card/scrim exit;
-    // focus is restored by Modal::restoreFocus().
-    if (modal->isOpen())
-        modal->close();
+    if (picker_ != nullptr && picker_->isOpen())
+        picker_->close();
 
     if (!menuOpen_)
         return;
 
     menuOpen_ = false;
+    setChevronOpen(false);
     syncAppearance();
+    requestUpdate();
+}
+
+qreal Language::chevronProgress() const noexcept
+{
+    return chevronProgress_;
+}
+
+void Language::setManualAnimationClock(bool enabled)
+{
+    chevronAnimator_->setManualClock(enabled);
+}
+
+bool Language::isManualAnimationClock() const noexcept
+{
+    return chevronAnimator_->isManualClock();
+}
+
+void Language::advanceAnimation(std::chrono::milliseconds delta)
+{
+    chevronAnimator_->advanceTimeline(delta);
+    if (picker_ != nullptr)
+        picker_->advanceAnimation(delta);
+}
+
+void Language::setChevronOpen(bool open)
+{
+    const Theme& theme = Theme::forWidget(this);
+    MotionSpec spec = theme.motion().level(open ? MotionLevel::Level2 : MotionLevel::Level1);
+    spec.easing = easingCurve(open ? Easing::EmphasizedDecelerate : Easing::EmphasizedAccelerate);
+
+    const qreal from = chevronProgress_;
+    const qreal target = open ? 1.0 : 0.0;
+    if (!isVisible() || spec.duration.count() <= 0
+        || qFuzzyCompare(from + 1.0, target + 1.0)) {
+        chevronAnimator_->stop();
+        setChevronProgress(target);
+        return;
+    }
+
+    chevronAnimator_->stop();
+    chevronAnimator_->start(spec, [this, from, target](qreal fraction) {
+        setChevronProgress(from + (target - from)
+                                       * std::clamp(fraction, qreal(0.0), qreal(1.0)));
+    });
+}
+
+void Language::setChevronProgress(qreal progress)
+{
+    chevronProgress_ = std::clamp(progress, qreal(0.0), qreal(1.0));
     requestUpdate();
 }
 
 bool Language::isMenuOpen() const
 {
-    const auto* modal = static_cast<const Modal*>(modal_.data());
-    return menuOpen_ && modal != nullptr && modal->isOpen();
+    return menuOpen_ && picker_ != nullptr && picker_->isOpen();
 }
 
 QWidget* Language::selectorPanel() const
 {
-    return panel_.data();
+    return picker_ != nullptr ? picker_->card() : nullptr;
 }
 
 void Language::measureOverride(MeasureSpec width, MeasureSpec height)
@@ -781,6 +911,10 @@ void Language::paintContent(QPainter& painter, const QRectF& content)
     arrowPen.setJoinStyle(Qt::RoundJoin);
     painter.setPen(arrowPen);
     painter.setBrush(Qt::NoBrush);
+    painter.save();
+    painter.translate(arrowRect.center());
+    painter.rotate(180.0 * chevronProgress_);
+    painter.translate(-arrowRect.center());
     QPainterPath chevron;
     chevron.moveTo(arrowRect.left() + arrowRect.width() * 0.3,
                    arrowRect.top() + arrowRect.height() * 0.38);
@@ -789,6 +923,7 @@ void Language::paintContent(QPainter& painter, const QRectF& content)
     chevron.lineTo(arrowRect.left() + arrowRect.width() * 0.7,
                    arrowRect.top() + arrowRect.height() * 0.38);
     painter.drawPath(chevron);
+    painter.restore();
 
     const qreal textLeft = iconRect.right() + gap;
     const qreal textRight = arrowRect.left() - gap;

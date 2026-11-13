@@ -1,8 +1,11 @@
 // Tests for the configuration containers: Font, ThemeScope and Language.
 
+#include <md/components/dropdown_trigger.h>
 #include <md/components/font.h>
 #include <md/components/language.h>
 #include <md/components/modal.h>
+#include <md/components/picker_sheet.h>
+#include <md/components/switching_overlay.h>
 #include <md/components/text.h>
 #include <md/components/theme_switcher.h>
 #include <md/store/store.h>
@@ -16,6 +19,7 @@
 #include <QTest>
 #include <QWidget>
 
+#include <chrono>
 #include <memory>
 
 namespace {
@@ -259,24 +263,40 @@ void TestConfigContainers::themeSwitcherSelectorOpensModal()
     switcher->setGeometry(40, 40, 420, 300);
     switcher->show();
 
-    switcher->openSelector();
+    auto* trigger = switcher->createTrigger(&host);
+    trigger->setManualAnimationClock(true);
+    trigger->resize(trigger->sizeHint());
+    trigger->show();
+    QTest::mouseClick(trigger, Qt::LeftButton, Qt::NoModifier, trigger->rect().center());
     QVERIFY(switcher->isSelectorOpen());
 
     auto* modal = host.findChild<md::Modal*>();
     QVERIFY(modal != nullptr);
     QVERIFY(modal->isOpen());
 
-    auto* list = qobject_cast<md::ThemeSwitcher*>(modal->card());
-    QVERIFY(list != nullptr);
-    QCOMPARE(list->presetCount(), 2);
+    auto* sheet = switcher->selector();
+    QVERIFY(sheet != nullptr);
+    QVERIFY(sheet->isOpen());
+    QVERIFY(sheet->isManualAnimationClock());
+    QCOMPARE(sheet->currentId(), QStringLiteral("0"));
+    sheet->advanceAnimation(std::chrono::milliseconds(500));
 
     QSignalSpy applied(switcher, &md::ThemeSwitcher::presetActivated);
-    list->applyPreset(1);
+    sheet->setHighlightedId(QStringLiteral("1"));
+    sheet->confirm();
+    sheet->advanceAnimation(std::chrono::milliseconds(250));
+
+    auto* overlay = switcher->switchingOverlay();
+    QVERIFY(overlay != nullptr);
+    QVERIFY(overlay->isBusy());
+    overlay->advanceAnimation(std::chrono::milliseconds(500));
     QCOMPARE(applied.count(), 1);
     QCOMPARE(switcher->currentPreset(), 1);
     QVERIFY(!switcher->isSelectorOpen());
 
-    QTRY_VERIFY_WITH_TIMEOUT(host.findChild<md::Modal*>() == nullptr, 2000);
+    overlay->advanceAnimation(std::chrono::milliseconds(400));
+    QVERIFY(!overlay->isBusy());
+    QTRY_VERIFY_WITH_TIMEOUT(switcher->selector() == nullptr, 2000);
     md::Theme::setApplicationTheme(md::Theme::baselineLight());
 }
 

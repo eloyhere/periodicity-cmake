@@ -328,6 +328,14 @@ protected:
     void paintContent(QPainter& painter, const QRectF& content) override;
     void resizeEvent(QResizeEvent* event) override;
     void onThemeChanged() override;
+    // A chart hidden mid-reveal has no frames to show: the run is settled on the
+    // finished frame instead of keeping the animator's timer alive off-screen.
+    void onHidden() override;
+
+    // Starts the reveal if it has not run yet. Called from the paint path, and
+    // from a subclass that wants the run to begin with the show instead of with
+    // the first paint (PieChart does). A hidden chart leaves the reveal pending.
+    void startRevealIfNeeded();
     void onStoreChanged(Store* store, const QString& key, const QVariant& value) override;
 
     // Paints the settled data marks. Called with the plot rectangle after the
@@ -430,10 +438,6 @@ private:
     void rebuildPalette() const;
     void rebuildSeriesColours() const;
     void refreshLegendSignature();
-
-    // Starts the reveal on the first paint of a visible chart. A hidden chart
-    // paints the settled frame and leaves the reveal pending.
-    void startRevealIfNeeded();
 
     // One progress value from the Animator: updates the state, runs the chart
     // hook and schedules the repaint. A throwing hook is contained here. The

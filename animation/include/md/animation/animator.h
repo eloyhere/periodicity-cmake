@@ -82,6 +82,26 @@ public:
     void pause();
     void resume();
 
+    // Deterministic clock -------------------------------------------------
+    // The default clock is the event loop: a run advances with wall-clock
+    // time. A manual clock is for a host that renders on its own cadence and
+    // for tests: start() records the run but arms no timer, and
+    // advanceTimeline() consumes exactly the time it is given. The progress,
+    // easing, final value and finished() signal are identical to a real run,
+    // so the caller does not need a second animation path.
+    //
+    // Enabling or disabling the manual clock stops a run that is already in
+    // flight; enable it before start(). pause()/resume() keep their meaning
+    // and do not consume timeline time.
+    void setManualClock(bool manual);
+    [[nodiscard]] bool isManualClock() const noexcept;
+
+    // Consumes `delta` of the current manual run. A run started without the
+    // manual clock, a paused run and an idle run ignore it. A zero-duration
+    // run settles on the first call. The final value and finished() are
+    // delivered when the consumed time reaches the run duration.
+    void advanceTimeline(std::chrono::milliseconds delta);
+
     // True while a run is in flight: waiting out its delay, animating, or
     // waiting for the queued snap of a zero-duration run. A paused run is not
     // running.
@@ -145,6 +165,12 @@ private:
     // QVariantAnimation from there, and it must not destroy the callback that
     // is executing.
     bool inValueCallback_ = false;
+    // Manual-clock state: how much of the delay and of the run have been
+    // consumed, where the run started, and whether the clock is manual.
+    bool manualClock_ = false;
+    qint64 manualDelayLeftMs_ = 0;
+    qint64 manualElapsedMs_ = 0;
+    qint64 manualRemainingMs_ = 0;
     // Where pause() interrupted the run and how much time was left.
     bool pausedWhileWaiting_ = false;
     qint64 pausedRemainingMs_ = 0;

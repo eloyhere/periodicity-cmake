@@ -14,6 +14,7 @@
 // what keeps paint and hit-testing in agreement.
 
 #include <md/components/dropdown.h>
+#include <md/components/row_feedback.h>
 #include <md/components/tree_select.h>
 
 #include <md/core/geometry.h>
@@ -30,6 +31,7 @@
 #include <QPainter>
 #include <QPainterPath>
 #include <QPen>
+#include <QVariant>
 #include <QWidget>
 #include <QWheelEvent>
 
@@ -119,10 +121,13 @@ public:
     explicit TreeContent(TreeSelect* owner)
         : View(nullptr)
         , owner_(owner)
+        , feedback_(this)
     {
         setFocusPolicy(Qt::StrongFocus);
         setBackgroundColour(QColor(Qt::transparent));
         setMouseTracking(true);
+        setProperty("md.rowFeedback", QVariant::fromValue<QObject*>(&feedback_));
+        connect(&feedback_, &RowFeedback::repaintRequested, this, [this] { update(); });
     }
 
     [[nodiscard]] int firstRow() const noexcept { return firstRow_; }
@@ -174,6 +179,8 @@ public:
         const qreal width = std::max(qreal(0.0), qreal(this->width()) - padding * 2.0);
         return QRectF(padding, padding + qreal(index) * rowHeight, width, rowHeight);
     }
+
+    void clearRowFeedback() { feedback_.clear(); }
 
     [[nodiscard]] int rowAtPoint(const QPointF& point) const
     {
@@ -232,12 +239,10 @@ protected:
                                    std::max(qreal(0.0), bounds.width() - padding * 2.0),
                                    rowHeight);
 
-            if (row == owner_->highlightedRow()) {
-                QPainterPath pill;
-                pill.addRoundedRect(rowBounds.adjusted(0.0, unit, 0.0, -unit),
-                                    radius * 0.65, radius * 0.65);
-                painter.fillPath(pill, withAlpha(colours.onSurface, 0.08));
-            }
+            feedback_.paintRow(painter, row,
+                               rowBounds.adjusted(0.0, unit, 0.0, -unit),
+                               row == owner_->highlightedRow(), radius * 0.65,
+                               colours.onSurface);
 
             const qreal depthOffset = qreal(owner_->rowDepth(row)) * density.dp(kIndentDp);
             const qreal expanderLeft = rowBounds.left() + density.dp(8.0) + depthOffset;
@@ -295,25 +300,55 @@ protected:
         const int row = rowAtPoint(event->position());
         if (row >= 0) {
             owner_->setHighlightedRow(row);
-            owner_->activateRow(row);
+            feedback_.pointerPressed(row, event->position(), rowRectFor(row));
             event->accept();
             return;
         }
 
+        feedback_.pointerLeft();
         View::mousePressEvent(event);
     }
 
     void mouseMoveEvent(QMouseEvent* event) override
     {
-        const int row = rowAtPoint(event->position());
-        if (row >= 0 && row != owner_->highlightedRow())
-            owner_->setHighlightedRow(row);
-
+        feedback_.pointerMoved(rowAtPoint(event->position()));
         View::mouseMoveEvent(event);
     }
 
+    void mouseReleaseEvent(QMouseEvent* event) override
+    {
+        const int row = rowAtPoint(event->position());
+        const int pressed = feedback_.pressedRow();
+        feedback_.pointerReleased();
+
+        if (event->button() == Qt::LeftButton && row >= 0 && pressed == row) {
+            owner_->activateRow(row);
+            event->accept();
+            return;
+        }
+
+        View::mouseReleaseEvent(event);
+    }
+
+    void leaveEvent(QEvent* event) override
+    {
+        feedback_.pointerLeft();
+        View::leaveEvent(event);
+    }
+
+    void onHidden() override { feedback_.clear(); }
+
     void keyPressEvent(QKeyEvent* event) override
     {
+        if (event->key() == Qt::Key_Return || event->key() == Qt::Key_Enter
+            || event->key() == Qt::Key_Space) {
+            const int row = owner_->highlightedRow();
+            if (row >= 0) {
+                const QRectF rect = rowRectFor(row);
+                feedback_.triggerRipple(row, rect.center(), rect);
+            }
+        }
+
         // The control owns the navigation rules; the menu only has the focus.
         QKeyEvent forwarded(event->type(), event->key(), event->modifiers(),
                             event->text(), event->isAutoRepeat());
@@ -353,6 +388,7 @@ private:
     }
 
     TreeSelect* owner_ = nullptr;
+    RowFeedback feedback_;
     int firstRow_ = 0;
 };
 
@@ -956,6 +992,12 @@ bool TreeSelect::focusable() const
 
 void TreeSelect::rebuildRows()
 {
+    // A rebuild can remove or reorder the row a hover/ripple belonged to. The
+    // feedback stores rectangles, not row objects, but the visible state must
+    // still be dropped so it cannot look attached to a different row.
+    if (popup_ != nullptr)
+        static_cast<TreeContent*>(popup_)->clearRowFeedback();
+
     rows_.clear();
     appendRows(QModelIndex(), 0, QString());
 }

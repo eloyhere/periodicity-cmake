@@ -242,6 +242,21 @@ void ContainerTransform::stop()
     animator_->stop();
 }
 
+void ContainerTransform::setManualAnimationClock(bool manual)
+{
+    animator_->setManualClock(manual);
+}
+
+bool ContainerTransform::isManualAnimationClock() const noexcept
+{
+    return animator_->isManualClock();
+}
+
+void ContainerTransform::advanceAnimation(std::chrono::milliseconds delta)
+{
+    animator_->advanceTimeline(delta);
+}
+
 bool ContainerTransform::isEntered() const noexcept
 {
     return entered_;

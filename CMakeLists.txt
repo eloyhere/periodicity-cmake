@@ -20,14 +20,17 @@ if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
   set(CMAKE_BUILD_TYPE Debug CACHE STRING "Build type" FORCE)
 endif()
 
-# OpenGLWidgets is optional: Context3D always has its software projection path,
-# and compiles the QOpenGLWidget backend only when Qt provides the module.
-find_package(Qt6 6.8 REQUIRED COMPONENTS Core Gui Widgets Test Network
-  OPTIONAL_COMPONENTS OpenGLWidgets)
-qt_standard_project_setup(REQUIRES 6.8)
-
+# The Qt binding lives in one file: the pinned 6.8.3 package, the required and
+# optional modules, the PERIODICITY_HAS_* definitions computed from what was
+# actually found, and the RHI include helper. Included once, before the first
+# module directory, so its global compile definitions reach every target.
+#
+# OpenGLWidgets stays optional there: Context3D always has its software
+# projection path and compiles the QOpenGLWidget backend only when Qt provides
+# the module.
 list(PREPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 include(PeriodicityModule)
+include(qt_binding)
 
 enable_testing()
 
@@ -75,9 +78,8 @@ target_link_libraries(periodicity_components PUBLIC periodicity::gfx)
 # attached to periodicity_core would be. Merging the objects keeps the archive
 # self-contained and the export set clean.
 #
-# LinguistTools stays optional: without it, md::i18n finds no catalog and the
-# source language stays in place.
-find_package(Qt6 6.8 QUIET OPTIONAL_COMPONENTS LinguistTools)
+# LinguistTools is looked up by cmake/qt_binding.cmake and stays optional:
+# without it, md::i18n finds no catalog and the source language stays in place.
 if(TARGET Qt6::lrelease)
   qt_add_lrelease(periodicity_translations
     TS_FILES translations/periodicity_zh_CN.ts

@@ -25,7 +25,9 @@ class QRectF;
 
 namespace md {
 
-class Modal;
+class DropdownTrigger;
+class PickerSheet;
+class SwitchingOverlay;
 
 class ThemeSwitcher final : public View
 {
@@ -68,6 +70,20 @@ public:
     // preset to the original switcher and closes the modal.
     void openSelector(QWidget* anchor = nullptr);
     [[nodiscard]] bool isSelectorOpen() const noexcept;
+    [[nodiscard]] PickerSheet* selector() const noexcept;
+
+    // The busy overlay used after a confirmed preset, and the reason its last
+    // switch failed (empty on success).
+    [[nodiscard]] SwitchingOverlay* switchingOverlay() const noexcept;
+    [[nodiscard]] QString lastError() const;
+    void setManualSwitchClock(bool enabled);
+    [[nodiscard]] bool isManualSwitchClock() const noexcept;
+
+    // The visible dropdown control: a row with the current preset name, a
+    // trailing chevron that rotates while the sheet is open, hover/ripple
+    // feedback and the click/Space/Enter/ArrowDown affordances. The caller
+    // owns it. The existing preset list painting and hit testing are unchanged.
+    DropdownTrigger* createTrigger(QWidget* parent = nullptr);
 
     // The attribute names this component labels its swatches with.
     [[nodiscard]] static QString swatchLabel(int swatch);
@@ -86,10 +102,17 @@ protected:
 
 private:
     [[nodiscard]] int rowAt(const QPointF& position) const;
+    void syncTriggers();
+    void startPendingSwitch();
 
     QList<Preset> presets_;
     int current_ = -1;
-    QPointer<Modal> selector_;
+    QPointer<PickerSheet> selector_;
+    QPointer<SwitchingOverlay> overlay_;
+    QList<QPointer<DropdownTrigger>> triggers_;
+    QString pendingPreset_;
+    bool hasPendingPreset_ = false;
+    bool manualSwitchClock_ = false;
 };
 
 } // namespace md

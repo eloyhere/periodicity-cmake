@@ -13,6 +13,7 @@
 // new code and locale.
 
 #include <QApplication>
+#include <QWidget>
 #include <QCoreApplication>
 #include <QEvent>
 #include <QKeyEvent>
@@ -28,10 +29,13 @@
 #include <QtTest/QtTest>
 #include <QWidget>
 
+#include <chrono>
+
 #include <md/components/alert.h>
 #include <md/components/button.h>
 #include <md/components/dialog.h>
 #include <md/components/language.h>
+#include <md/components/switching_overlay.h>
 #include <md/components/menu.h>
 #include <md/components/notification.h>
 #include <md/components/text.h>
@@ -650,6 +654,7 @@ void TestFeedbackDialog::languageMenuSelection()
                     QLocale(QStringLiteral("ja"))});
     language.setLanguages(entries);
     language.setCurrentLanguage(QStringLiteral("ja"));
+    language.setManualAnimationClock(true);
 
     language.arrange(QRect(24, 24, 180, 40));
     language.show();
@@ -665,15 +670,22 @@ void TestFeedbackDialog::languageMenuSelection()
     QVERIFY(language.selectorPanel() != nullptr);
     QVERIFY(language.selectorPanel()->isVisible());
 
-    // The selector is a modal card with a two-column list: en/zh_CN on the
-    // first row, ja on the second. "ja" is current and focused; Left moves to
-    // "zh_CN" and Enter activates it.
-    QTest::keyClick(language.selectorPanel(), Qt::Key_Left);
+    // The shared sheet highlights the committed value ("ja"); Up moves to
+    // "zh_CN" and Enter confirms it.
+    QTest::keyClick(language.selectorPanel(), Qt::Key_Up);
     QTest::keyClick(language.selectorPanel(), Qt::Key_Return);
 
+    // The sheet exits first; the value is applied while the busy overlay is up.
+    language.advanceAnimation(std::chrono::milliseconds(250));
+    auto* overlay = language.switchingOverlay();
+    QVERIFY(overlay != nullptr);
+    QVERIFY(overlay->isBusy());
+    overlay->advanceAnimation(std::chrono::milliseconds(500));
     QCOMPARE(language.currentLanguage(), QStringLiteral("zh_CN"));
     QCOMPARE(changeCount, 1);
     QCOMPARE(installedCode, QStringLiteral("zh_CN"));
+    overlay->advanceAnimation(std::chrono::milliseconds(400));
+    overlay->advanceAnimation(std::chrono::milliseconds(250));
     QVERIFY(!language.isMenuOpen());
 }
 

@@ -19,6 +19,9 @@
 
 #pragma once
 
+#include <QElapsedTimer>
+#include <QEasingCurve>
+
 #include <md/view/view_group.h>
 
 #include <QList>
@@ -147,7 +150,11 @@ private:
     QTimer* timer_ = nullptr;
     qreal animationFrom_ = 0.0;
     qreal animationTo_ = 0.0;
-    int elapsedMs_ = 0;
+    // The transition clock and the curve resolved when it started. A real clock
+    // (not a count of assumed 16 ms ticks) keeps the token duration exact when a
+    // frame is late, and the cached curve keeps the tick allocation-free.
+    QElapsedTimer clock_;
+    QEasingCurve easing_;
 
     bool pressed_ = false;
     bool dragging_ = false;

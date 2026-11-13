@@ -26,8 +26,10 @@ class QWidget;
 
 namespace md {
 
-class Modal;
+class DropdownTrigger;
+class PickerSheet;
 class Store;
+class SwitchingOverlay;
 
 class Font final : public QObject
 {
@@ -99,13 +101,32 @@ public:
     // family updates this container through setFamily() and closes the modal.
     void openSelector(QWidget* anchor = nullptr);
 
+    // The sheet currently backing the selector, or nullptr. Exposed so a host
+    // (or a test) can drive the deterministic clock of an already open sheet.
+    [[nodiscard]] PickerSheet* selector() const noexcept;
+
     // The selector content as a standalone View, parented to `parent`. The
     // caller owns the result; choosing a family still calls setFamily() on
     // this container. Exposed so a host can place the list in its own surface.
     QWidget* createSelector(QWidget* parent = nullptr);
 
+    // The visible dropdown control: a row with the current family, a trailing
+    // chevron that rotates while the sheet is open, hover/ripple feedback and
+    // the click/Space/Enter/ArrowDown affordances. The caller owns it.
+    DropdownTrigger* createTrigger(QWidget* parent = nullptr);
+
     // True while the modal opened by openSelector() is on screen.
     [[nodiscard]] bool isSelectorOpen() const noexcept;
+
+    // The busy overlay used after a confirmed choice, and the reason its last
+    // switch failed (empty on success).
+    [[nodiscard]] SwitchingOverlay* switchingOverlay() const noexcept;
+    [[nodiscard]] QString lastError() const;
+
+    // Deterministic clock for the busy overlay. It is inherited from the
+    // trigger's manual clock when one is used.
+    void setManualSwitchClock(bool enabled);
+    [[nodiscard]] bool isManualSwitchClock() const noexcept;
 
 signals:
     void changed();
@@ -117,7 +138,13 @@ private:
     std::unique_ptr<Adapter> adapter_;
     QString family_;
     qreal scale_ = 1.0;
-    QPointer<Modal> selector_;
+    QPointer<PickerSheet> selector_;
+    QPointer<SwitchingOverlay> overlay_;
+    QString pendingFamily_;
+    bool hasPendingFamily_ = false;
+    bool manualSwitchClock_ = false;
+
+    void startPendingSwitch();
 };
 
 } // namespace md

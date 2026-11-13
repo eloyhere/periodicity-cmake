@@ -154,19 +154,15 @@ void Progress::stopAnimation()
     animator_.stop();
 }
 
-void Progress::showEvent(QShowEvent* event)
+void Progress::onShown()
 {
-    QWidget::showEvent(event);
-
     if (indeterminate_)
         startAnimation();
 }
 
-void Progress::hideEvent(QHideEvent* event)
+void Progress::onHidden()
 {
     stopAnimation();
-
-    QWidget::hideEvent(event);
 }
 
 void Progress::onThemeChanged()
