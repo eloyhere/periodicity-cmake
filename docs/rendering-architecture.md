@@ -348,3 +348,81 @@ the RHI device. A step that cannot show a lower number does not land.
   Neither is allowed to leak into the painted-component path, and the software
   device must always be able to produce the same picture.
 
+## Target architecture: window-level compositor (decided 13 November 2026)
+
+The decision is to make **L2 the target**: the window is composited by this
+library instead of by the backing-store per-widget loop. This section is the
+contract for that refactor.
+
+### What changes and what does not
+
+| Stays | Changes |
+| --- | --- |
+| The `QWidget` tree, layout, focus, input, IME, accessibility, window handle | `paintEvent` no longer draws to the window; a view paints into its own **layer** |
+| The public API of every component | The frame path: layers → composite → present |
+| Hit testing (already geometric, never pixel based) | Repaint scope: damage rectangles instead of whole-widget invalidation |
+| The software device as the reference implementation | Default backend becomes the compositor's, not `QBackingStore` |
+
+### Host model
+
+Two hosts, chosen at runtime, same semantics:
+
+1. **`QRhiWidget` root** (preferred). Qt 6.7+ gives a widget whose surface is a
+   `QRhi` render target, so layers are composited on the GPU and presented without
+   an extra full-window copy. Requires `Qt6::ShaderTools`/`qsb` only for our own
+   shaders, not for the host.
+2. **Offscreen texture + blit** (fallback). `RhiDevice` renders the composited
+   frame into a texture, the host blits that single texture into the widget's
+   backing store. One full-window copy per frame; the cost is stated, not hidden.
+3. **CPU compositor** (always available). Layers are `QImage`s, composited with
+   `QPainter`, including clipping, opacity and blend modes. This is the reference
+   that the GPU paths must match.
+
+### Layer model
+
+- Every opted-in `View` owns a layer: a `RenderTarget` at device resolution, with a
+  content revision and a damage rectangle set.
+- A view paints by recording a `gfx::CommandBuffer` into its layer, never into the
+  window. `paintContent(QPainter&)` stays as a compatibility shim that records the
+  equivalent commands.
+- The compositor walks the visible tree in z-order and draws each layer with its
+  accumulated clip and opacity. A layer that is unchanged is reused verbatim; a
+  layer that only moved (scroll, drag) is reused with a different destination rect.
+- Global state that changes appearance — theme revision, font, device pixel ratio,
+  size — bumps a revision that invalidates every layer. Those four are the only
+  global invalidations, and each has a test.
+
+### Order of work
+
+1. `DamageTracker` and `View::requestUpdate(QRect damage)`; damage unions up the
+   tree. No visual change, all 109 tests must stay green.
+2. `LayerCache` with a CPU compositor for a single view class (the chart) behind a
+   flag, asserted equal to the current output pixel for pixel.
+3. `Compositor` abstraction frozen: CPU implementation first, window host wired so
+   a whole page can be composited from layers.
+4. `RhiDevice` + `RhiCompositor` behind `PERIODICITY_HAS_SHADERTOOLS`, parity-tested
+   against the CPU compositor.
+5. Coverage expands class by class, each expansion justified by the benchmark.
+
+### Acceptance
+
+- The three benchmarks (74-component window, 25-chart page, chart reveal) measured
+  on all three compositors where available; a step lands only with a lower number.
+- Visual equivalence: every migrated view compared against the pre-compositor
+  output; differences explained before any baseline is re-recorded.
+- The debug mode that renders everything uncached must produce an identical frame
+  to the cached path; it ships as a test flag, not a hidden env var.
+
+### Risks, stated plainly
+
+- **Invalidation correctness** is the dominant risk: a missed damage rectangle is a
+  ghost, not a crash. The uncached-comparison mode is the mitigation and must exist
+  before the first class is migrated.
+- **Memory**: one layer per opted-in view at device resolution; capped and LRU
+  evicted through `pool/`.
+- **Host limits**: a `QRhiWidget` root is a native child surface, so anything that
+  must paint above it (menus, tooltips, modals) stays in a normal widget layer on
+  top — that layering rule needs its own design and test.
+- **Quick3D stays outside this path**: a Quick3D scene keeps its own context and is
+  composited as one more texture, never as a participant in the layer model.
+
