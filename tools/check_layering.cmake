@@ -14,7 +14,7 @@ if(NOT DEFINED SOURCE_DIR)
   get_filename_component(SOURCE_DIR "${CMAKE_CURRENT_LIST_DIR}/.." ABSOLUTE)
 endif()
 
-set(MODULES core mathematic structure store pool schedule tokens theme event ripple drawable layer animation view layout gfx components)
+set(MODULES core mathematic structure store pool schedule tokens theme event ripple drawable layer animation view layout gfx render components)
 
 set(ALLOWED_core "")
 set(ALLOWED_mathematic "core")
@@ -34,6 +34,9 @@ set(ALLOWED_layout "core;schedule;tokens;theme;event;ripple;drawable;layer;anima
 # gfx is the backend-neutral drawing layer: geometry, textures, shaders and the
 # software rasterizer. It may not reach up into view, layout or components.
 set(ALLOWED_gfx "core;mathematic;structure")
+# render is the device layer: it drives gfx and may use the drawing-side value
+# types (drawable, layer), but never view/layout/components.
+set(ALLOWED_render "core;mathematic;structure;gfx;drawable;layer")
 set(ALLOWED_components "core;store;structure;schedule;tokens;theme;event;ripple;drawable;layer;animation;view;layout")
 
 set(_violations "")

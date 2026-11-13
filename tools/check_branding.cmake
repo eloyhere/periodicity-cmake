@@ -41,6 +41,7 @@ set(_globs
   "layout/*.h" "layout/*.cpp"
   "components/*.h" "components/*.cpp"
   "gfx/*.h" "gfx/*.cpp"
+  "render/*.h" "render/*.cpp"
   "tests/*.cpp"
   "apps/*.cpp"
   "demo/*.cpp"

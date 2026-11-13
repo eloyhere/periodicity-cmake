@@ -51,6 +51,12 @@ add_subdirectory(layout)
 # render/ (phase 2) will drive. It sits above layout and below components, and
 # links Qt Gui/Core only, so it stays usable without a window system.
 add_subdirectory(gfx)
+# render is the device layer of phase 2: RenderTarget, RenderDevice,
+# SoftwareDevice, the QPainter text bridge, the factory and the frame helper.
+# It sits between gfx and components, links Qt Gui/Core only, and depends on
+# gfx plus drawable/layer. Components does not depend on it yet, so phase 3 can
+# move Context2D over without a public-header change today.
+add_subdirectory(render)
 add_subdirectory(components)
 
 # Phase 1 of docs/rendering-architecture.md: components may use gfx (and, in
@@ -91,6 +97,22 @@ else()
 endif()
 
 add_subdirectory(tests)
+
+# The render tests (tests/render/) exercise periodicity::render directly. The
+# test driver links the umbrella components target, which deliberately does not
+# depend on render yet, so attach render to the test executables that need it.
+# This keeps the module graph honest: only tests, never components, gain the
+# dependency during phase 2.
+get_property(_periodicity_test_targets DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/tests"
+  PROPERTY BUILDSYSTEM_TARGETS)
+foreach(_periodicity_test_target IN LISTS _periodicity_test_targets)
+  if(_periodicity_test_target MATCHES "^tst_render_")
+    target_link_libraries(${_periodicity_test_target} PRIVATE periodicity::render)
+  endif()
+endforeach()
+unset(_periodicity_test_targets)
+unset(_periodicity_test_target)
+
 add_subdirectory(demo)
 add_subdirectory(apps)
 
