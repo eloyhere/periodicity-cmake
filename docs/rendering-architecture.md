@@ -193,17 +193,90 @@ open and no code above it would change.
 
 
 
+## Migration phases
+
 1. `gfx`: geometry, texture, shader, pipeline, command buffer, software
-   rasterizer, plus their tests. No change to any existing file.
+   rasterizer, plus their tests. No change to any existing file. **Done
+   (commit 64485d4).**
 2. `render`: `RenderDevice`, `SoftwareDevice`, the `QPainter` text/path bridge,
-   `DeviceFactory`, plus tests. Still no change to `Context*`.
-3. `components`: `Context2D` re-implemented on top of `gfx` commands, its public
-   API unchanged; `Canvas` submits through a device.
-4. `components`: `Context3D` re-implemented as a scene that emits commands;
-   camera, lighting, picking preserved.
-5. `effects`: post-process layer wired to `RenderTarget`.
-6. `GlDevice` behind `PERIODICITY_HAS_OPENGL`, with the parity test.
+   `DeviceFactory`, `RenderTarget`, `Renderer`, plus tests. Still no change to
+   `Context*`. **Done (commit 113001c).**
+3. `GlDevice` behind `PERIODICITY_HAS_OPENGL`, opt-in and default off, with the
+   software/GL parity test. Moved ahead of the context migration because the two
+   devices must agree before anything is built on top of them.
+4. `components`: `Context2D` re-implemented on top of `gfx` commands, its public
+   API unchanged; `Canvas` submits through a device. Followed by the additive
+   fine-drawing API (path builder, stroke/fill styles, gradients, composited
+   transforms, text alignment and measurement, images, render state).
+5. `components`: `Context3D` re-implemented as a scene that emits commands;
+   camera, lighting, picking preserved and extended.
+6. `effects`: post-process layer wired to `RenderTarget`.
+7. `Quick3DSurface`: the opt-in Quick/Quick3D component described below.
 
 Each phase must leave the tree building with `ctest` at 100 % before the next
-starts. Phases 3 and 4 are the only ones that touch public headers, and they may
+starts. Phases 4 and 5 are the only ones that touch public headers, and they may
 not change a signature.
+
+## Phase 7: Quick/Quick3D interop (opt-in, after phase 6)
+
+Approved on 13 November 2026 as a **properly integrated component**, not a
+convenience wrapper. It is sequenced last because it depends on the device layer,
+on the theme bridge and on the Quick packages being present; it must never block
+phases 3–6.
+
+**What it is.** `Quick3DSurface`, a `View` that hosts a Quick3D scene inside the
+widget tree and presents the same scene-level API the caller already knows from
+`Context3D`: camera, nodes, materials, lights. The caller writes C++ and never
+sees QML; a `setSource(QUrl)` escape hatch exists for callers who want their own
+QML, and it is documented as "you are on your own for theming and input".
+
+**Why a separate component rather than a mode of `Context3D`.** `QQuickWidget`
+owns a scene graph, a render thread and its own graphics context. Putting that
+behind the same object as a hand-written rasteriser would make every invariant in
+this document conditional. Two components, one shared C++ scene description, is
+the honest split.
+
+**Rules it must follow**
+
+- Compiled only when `PERIODICITY_HAS_QUICK3D` (`find_package(Qt6
+  OPTIONAL_COMPONENTS QuickWidgets Quick3D)`). Absent packages mean the component
+  reports unavailable; the rest of the library is untouched.
+- The QML engine is created on the first `showEvent` of a visible top-level, not
+  in the constructor. This is the rule `QOpenGLWidget` taught us when a consumer
+  application hung on startup.
+- No `QQuickWidget` exists while the widget is hidden; hiding stops the render
+  thread's animations and releases the scene.
+- Theme and language reach QML through **injected context properties** fed by
+  `Theme::forWidget(this)` and `md::i18n`, so a QML scene uses the same tokens and
+  the same translations as the painted components. Hard-coded colours in the
+  built-in scene are a defect.
+- Input: mouse and wheel are forwarded to the QML item; keyboard goes through the
+  existing `EventDispatcher` path so shortcuts stay consistent.
+- Failure: a missing module, a broken `setSource`, or a Quick3D backend failure
+  leaves the widget showing a documented "unavailable" state with `lastError()`
+  set. It never aborts the application and never half-renders.
+- Accessibility: the surface exposes a description and a fallback text, so screen
+  readers are not left with a blank rectangle.
+
+**Mapping to the existing stack**
+
+| `Context3D` concept | Quick3D equivalent |
+| --- | --- |
+| Camera (eye/target/up, perspective/orthographic) | `Quick3D.Camera` + `PerspectiveCamera`/`OrthographicCamera` |
+| Mesh node | `Model` with a procedural `Geometry` or an imported mesh |
+| `SurfaceStyle` | `PrincipledMaterial` fields mapped from the theme tokens |
+| Directional/point light | `DirectionalLight`/`PointLight` |
+| Picking | `View3D` ray picking, returned through the same `pickNode(QPointF)` signature |
+
+**Cost, stated plainly.** A Quick3D surface costs a second graphics context, a
+render thread and a QML engine per instance; it does not compose with the
+backing-store painting order the way a painted View does. It is for a small number
+of large, immersive scenes — not for many small widgets. The built-in scene is one
+QML module compiled into the library, not a file the application must ship.
+
+**Testing.** Component tests `QSKIP` when the packages are absent. When present,
+they cover: construction while hidden creates no engine; showing creates it and
+hiding releases it; theme tokens reach the scene (assert a known property value);
+a broken source sets `lastError()` and keeps the widget alive; and the software
+Quick backend (`QT_QUICK_BACKEND=software`) still paints in a headless run.
+
