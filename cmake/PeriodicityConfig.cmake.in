@@ -22,6 +22,13 @@ include(CMakeFindDependencyMacro)
 # executables, which are not installed, so it is deliberately not requested.
 find_dependency(Qt6 6.8 COMPONENTS Core Gui Widgets Network)
 
+# The installed render target links Qt6::OpenGL privately for its optional
+# offscreen GlDevice, and components links Qt6::OpenGLWidgets when that module
+# was available at build time. Both are optional dependencies: a consumer that
+# does not use the GL devices still gets the software path. Looking them up here
+# keeps the imported link interfaces resolvable when the modules are present.
+find_package(Qt6 6.8 QUIET OPTIONAL_COMPONENTS OpenGL OpenGLWidgets)
+
 # periodicity::pool links Threads::Threads publicly, so that imported target has
 # to exist before PeriodicityTargets.cmake references it.
 find_dependency(Threads)

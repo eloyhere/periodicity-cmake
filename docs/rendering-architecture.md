@@ -264,7 +264,7 @@ the honest split.
 | --- | --- |
 | Camera (eye/target/up, perspective/orthographic) | `Quick3D.Camera` + `PerspectiveCamera`/`OrthographicCamera` |
 | Mesh node | `Model` with a procedural `Geometry` or an imported mesh |
-| `SurfaceStyle` | `PrincipledMaterial` fields mapped from the theme tokens |
+| `SurfaceStyle` | Surface-material fields mapped from the theme tokens |
 | Directional/point light | `DirectionalLight`/`PointLight` |
 | Picking | `View3D` ray picking, returned through the same `pickNode(QPointF)` signature |
 

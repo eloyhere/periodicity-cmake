@@ -7,11 +7,12 @@
 // stable for the lifetime of the process; create() is the only thing a caller
 // needs to call per device.
 //
-// Phase 2 of docs/rendering-architecture.md ships the software device only. The
-// OpenGL probe still runs, and its reason is the diagnostic the software
-// fallback carries: "no Qt6::OpenGLWidgets at build time", "no QGuiApplication",
-// "the platform has no GL surface" or "QOpenGLContext::create() failed". That
-// is what the phase 3 GL device will replace, behind the same interface.
+// Phase 3 of docs/rendering-architecture.md ships the optional OpenGL device.
+// The factory still defaults to Software: OpenGL is opt-in through
+// create(Backend::OpenGL), which returns a GlDevice only when its offscreen
+// probe succeeds. Otherwise it returns SoftwareDevice carrying the precise
+// reason ("Qt6::OpenGL was not found at build time", "no QGuiApplication",
+// "QOpenGLContext::create() failed", or a shader/FBO failure).
 //
 // create() never returns null and never returns an unavailable device: a failed
 // OpenGL request degrades to SoftwareDevice with the reason in lastError().
@@ -35,8 +36,8 @@ enum class Backend
 class DeviceFactory
 {
 public:
-    // A ready-to-use device. Backend::OpenGL returns the software device with
-    // the probe reason recorded while the GL device is not built.
+    // A ready-to-use device. Backend::OpenGL returns a GlDevice when the probe
+    // succeeds, and a SoftwareDevice carrying the probe reason otherwise.
     static std::shared_ptr<RenderDevice> create(Backend backend);
 
     // The backend the probe selected. Stable for the process; Software today.

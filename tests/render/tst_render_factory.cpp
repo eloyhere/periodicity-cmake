@@ -1,10 +1,10 @@
 // render layer tests: device selection and the fallback path.
 //
 // The software device is the one every caller can depend on, so the factory
-// must always return it for Backend::Software. Backend::OpenGL is the interesting
-// case in phase 2: there is no GL device yet, and the test asserts that the
-// request degrades to software with a non-empty reason and a device that still
-// draws. preferredBackend() must be stable, because callers cache it.
+// must always return it for Backend::Software. Backend::OpenGL is opt-in: it
+// returns a working GlDevice when the probe succeeds and a SoftwareDevice with
+// the reason when it does not. preferredBackend() stays Software in both cases,
+// because an OpenGL context is a capability, not the process default.
 
 #include <md/gfx/command_buffer.h>
 #include <md/gfx/mesh.h>
@@ -51,7 +51,7 @@ class TestRenderFactory : public QObject
 
 private slots:
     void softwareIsAlwaysAvailable();
-    void openGLFallsBackToSoftwareWithAReason();
+    void openGLRequestReturnsARunnableDevice();
     void fallbackDeviceStillDraws();
     void preferredBackendIsStable();
     void backendNamesAreStable();
@@ -82,34 +82,25 @@ void TestRenderFactory::softwareIsAlwaysAvailable()
     QVERIFY(alias->isAvailable());
 }
 
-void TestRenderFactory::openGLFallsBackToSoftwareWithAReason()
+void TestRenderFactory::openGLRequestReturnsARunnableDevice()
 {
     const std::shared_ptr<RenderDevice> device = DeviceFactory::create(Backend::OpenGL);
     QVERIFY(device != nullptr);
     QVERIFY(device->isAvailable());
-    QCOMPARE(device->name(), QStringLiteral("software"));
-    QVERIFY2(!device->lastError().isEmpty(),
-             "the fallback must explain why the OpenGL device was not used");
-    QVERIFY(device->capabilities().shaders);
 
-    // The test process runs with QT_QPA_PLATFORM=offscreen (see
-    // tests/CMakeLists.txt), so the probe must have found the platform lacking
-    // a GL surface. A build without Qt6::OpenGLWidgets has its own reason, so
-    // only assert the platform detail when the platform is offscreen and the
-    // reason names a platform at all.
-    if (QGuiApplication::platformName().compare(QStringLiteral("offscreen"),
-                                                Qt::CaseInsensitive)
-        == 0) {
-        const QString reason = device->lastError();
-        const bool namesThePlatform =
-            reason.contains(QStringLiteral("offscreen"), Qt::CaseInsensitive);
-        const bool namesTheBuild =
-            reason.contains(QStringLiteral("build time"), Qt::CaseInsensitive);
-        const bool namesNoGui = reason.contains(QStringLiteral("QGuiApplication"),
-                                                Qt::CaseInsensitive);
-        QVERIFY2(namesThePlatform || namesTheBuild || namesNoGui,
-                 qPrintable(QStringLiteral("imprecise fallback reason: %1").arg(reason)));
-    }
+    // The request succeeds as a GlDevice, or degrades to the software device
+    // with the probe's explanation in lastError(). Those are the only two
+    // documented outcomes; an unavailable device is never returned.
+    const QString backend = device->name();
+    QVERIFY2(backend == QStringLiteral("opengl") || backend == QStringLiteral("software"),
+             qPrintable(QStringLiteral("unexpected backend name: %1").arg(backend)));
+    QCOMPARE(device->capabilities().backendName, backend);
+    if (backend == QStringLiteral("software"))
+        QVERIFY2(!device->lastError().isEmpty(),
+                 "the software fallback must explain why OpenGL was not used");
+    else
+        QVERIFY2(device->lastError().isEmpty(),
+                 qPrintable(device->lastError()));
 
     QCOMPARE(DeviceFactory::preferredBackend(), Backend::Software);
 }
