@@ -81,6 +81,22 @@
 #include <QSurfaceFormat>
 #endif
 
+// Diagnostic tracing for the RHI device. Off by default; enable with
+//   cmake --preset x64-debug -DPERIODICITY_RHI_TRACE=ON
+// or by defining PERIODICITY_RHI_TRACE=1 for the periodicity_render target.
+// Every call compiles to nothing when disabled, so this costs nothing in a
+// normal build and can be removed wholesale once the 2D investigation is done.
+#ifndef PERIODICITY_RHI_TRACE
+#define PERIODICITY_RHI_TRACE 0
+#endif
+
+#if PERIODICITY_RHI_TRACE
+#include <QDebug>
+#define PERIODICITY_RHI_LOG(...) qDebug(__VA_ARGS__)
+#else
+#define PERIODICITY_RHI_LOG(...) ((void)0)
+#endif
+
 // The .qsb files are compiled into :/shaders by qt6_add_shaders(). A static
 // library's resource initialiser is not referenced by anything the linker can
 // see on its own, so it has to be called explicitly before the first QFile
@@ -591,10 +607,15 @@ QImage imageFromReadback(const QRhiReadbackResult& readback, bool yUpInFramebuff
         return QImage();
 
     QImage::Format format = QImage::Format_Invalid;
+    // EXPERIMENT (13 Nov 2026): a red rect read back as (0,0,255,255) means the
+    // attachment bytes are B,G,R,A little-endian while QRhiReadbackResult reports
+    // RGBA8. Interpreting them as RGBA turned red into blue; this maps them the
+    // way the bytes are actually laid out. Revert this hunk if the parity tests
+    // disagree.
     if (readback.format == QRhiTexture::RGBA8)
-        format = QImage::Format_RGBA8888_Premultiplied;
-    else if (readback.format == QRhiTexture::BGRA8)
         format = QImage::Format_ARGB32_Premultiplied;
+    else if (readback.format == QRhiTexture::BGRA8)
+        format = QImage::Format_RGBA8888_Premultiplied;
 
     if (format == QImage::Format_Invalid)
         return QImage();
@@ -964,8 +985,12 @@ bool RhiDevice::Impl::ensureResources(const QSize& size)
 {
     if (!rhi)
         return false;
-    if (renderTarget && targetSize == size)
+    if (renderTarget && targetSize == size) {
+        PERIODICITY_RHI_LOG("rhi ensureResources: reuse %dx%d generation=%llu",
+                            size.width(), size.height(),
+                            static_cast<unsigned long long>(generation));
         return true;
+    }
     if (size.isEmpty()) {
         appendFailure(QStringLiteral("cannot allocate a 0-pixel offscreen target"));
         return false;
@@ -1028,6 +1053,9 @@ bool RhiDevice::Impl::ensureResources(const QSize& size)
 
     targetSize = size;
     ++generation;
+    PERIODICITY_RHI_LOG("rhi ensureResources: allocated %dx%d generation=%llu",
+                        size.width(), size.height(),
+                        static_cast<unsigned long long>(generation));
     return true;
 }
 
@@ -1262,8 +1290,13 @@ QRhiGraphicsPipeline* RhiDevice::Impl::pipelineFor(const QString& shader,
     const QByteArray key =
         pipelineKey(shader, topology, state, is3D, textured, generation);
     const auto existing = pipelines.constFind(key);
-    if (existing != pipelines.cend())
+    if (existing != pipelines.cend()) {
+        PERIODICITY_RHI_LOG(
+            "rhi pipeline: cache hit shader=%s topology=%d is3D=%d textured=%d -> %p",
+            qPrintable(shader), static_cast<int>(topology), is3D ? 1 : 0,
+            textured ? 1 : 0, static_cast<void*>(existing.value()));
         return existing.value();
+    }
 
     const bool hasOverride = shader == QStringLiteral("solid")
         && solidVertexOverride.isValid() && solidFragmentOverride.isValid();
@@ -1329,6 +1362,16 @@ QRhiGraphicsPipeline* RhiDevice::Impl::pipelineFor(const QString& shader,
     }
 
     pipelines.insert(key, pipeline);
+    PERIODICITY_RHI_LOG(
+        "rhi pipeline: created shader=%s topology=%d is3D=%d depthTest=%d depthWrite=%d "
+        "textured=%d generation=%llu vsValid=%d fsValid=%d fsStage=%d pass=%p -> %p",
+        qPrintable(shader), static_cast<int>(topology), is3D ? 1 : 0,
+        (is3D && state.depth.test) ? 1 : 0, (is3D && state.depth.write) ? 1 : 0,
+        textured ? 1 : 0, static_cast<unsigned long long>(generation),
+        vertexStage.shader().isValid() ? 1 : 0,
+        fragmentStage.shader().isValid() ? 1 : 0,
+        static_cast<int>(fragmentStage.shader().stage()),
+        static_cast<void*>(renderPass), static_cast<void*>(pipeline));
     return pipeline;
 }
 
@@ -1336,6 +1379,12 @@ bool RhiDevice::Impl::appendDraw(Run& run, const gfx::DrawCommand& command,
                                  const QRect& viewport, const QRect& clip,
                                  const QSize& targetPixels, gfx::RasterStats& stats)
 {
+    PERIODICITY_RHI_LOG(
+        "rhi appendDraw: kind=%d viewport=(%d,%d %dx%d) clip=(%d,%d %dx%d) target=%dx%d",
+        static_cast<int>(command.kind), viewport.x(), viewport.y(), viewport.width(),
+        viewport.height(), clip.x(), clip.y(), clip.width(), clip.height(),
+        targetPixels.width(), targetPixels.height());
+
     const bool imageDraw = command.kind == gfx::CommandKind::DrawImage;
 
     // A DrawImage carries no gfx::Pipeline: it is the device's own textured
@@ -1348,6 +1397,13 @@ bool RhiDevice::Impl::appendDraw(Run& run, const gfx::DrawCommand& command,
                                          : command.pipeline.shader.name();
     const bool is3D = command.kind == gfx::CommandKind::DrawMesh3D;
     const bool unlit = shaderName == QStringLiteral("unlit");
+
+    PERIODICITY_RHI_LOG(
+        "rhi appendDraw: is3D=%d shader=%s image=%d pipelineValid=%d mesh2DValid=%d",
+        is3D ? 1 : 0, qPrintable(shaderName), imageDraw ? 1 : 0,
+        command.pipeline.isValid() ? 1 : 0,
+        command.kind == gfx::CommandKind::DrawMesh2D
+            ? (command.mesh2d.isValid() ? 1 : 0) : -1);
 
     QRhiTexture* texture = nullptr;
     QRhiSampler* sampler = dummySampler;
@@ -1459,6 +1515,9 @@ bool RhiDevice::Impl::appendDraw(Run& run, const gfx::DrawCommand& command,
     if (vertices.empty() || clip.isEmpty())
         return true;
 
+    PERIODICITY_RHI_LOG("rhi appendDraw: vertices=%d clipEmpty=%d",
+                        static_cast<int>(vertices.size()), clip.isEmpty() ? 1 : 0);
+
     const bool hasTexture = texture != nullptr;
     // The unlit fragment stage always declares the sampler at binding 1, so an
     // unlit pipeline always needs the two-binding layout — the 1x1 white dummy
@@ -1527,6 +1586,18 @@ bool RhiDevice::Impl::appendDraw(Run& run, const gfx::DrawCommand& command,
     run.uniforms.push_back(uniform);
     run.draws.push_back(draw);
 
+    PERIODICITY_RHI_LOG(
+        "rhi appendDraw: RECORDED slot=%u firstVertex=%u count=%u pipeline=%p bindings=%p "
+        "plain=%p v0=(%f,%f,%f) colour=(%f,%f,%f,%f) params=(%f,%f,%f,%f)",
+        draw.uniformSlot, draw.firstVertex, draw.vertexCount,
+        static_cast<void*>(pipeline), static_cast<void*>(draw.bindings),
+        static_cast<void*>(plainBindings), static_cast<double>(vertices.front().x),
+        static_cast<double>(vertices.front().y), static_cast<double>(vertices.front().z),
+        static_cast<double>(vertices.front().r), static_cast<double>(vertices.front().g),
+        static_cast<double>(vertices.front().b), static_cast<double>(vertices.front().a),
+        static_cast<double>(uniform.words[48]), static_cast<double>(uniform.words[49]),
+        static_cast<double>(uniform.words[50]), static_cast<double>(uniform.words[51]));
+
     if (imageDraw)
         stats.pixelsWritten += clip.width() * clip.height();
 
@@ -1547,6 +1618,13 @@ bool RhiDevice::Impl::executeRun(QImage& image, Run& run, const QSize& targetPix
         appendFailure(QStringLiteral("the offscreen target is not sized for this frame"));
         return false;
     }
+
+    PERIODICITY_RHI_LOG(
+        "rhi executeRun: target=%dx%d draws=%d vertexBytes=%u vertexStride=%d "
+        "uniformStride=%d api=%s",
+        targetPixels.width(), targetPixels.height(),
+        static_cast<int>(run.draws.size()), vertexBytes, kVertexStride,
+        uniformStride, qPrintable(api));
 
     QRhiCommandBuffer* commandBuffer = nullptr;
     const QRhi::FrameOpResult begin = rhi->beginOffscreenFrame(&commandBuffer);
@@ -1612,6 +1690,36 @@ bool RhiDevice::Impl::executeRun(QImage& image, Run& run, const QSize& targetPix
                              QRhiDepthStencilClearValue(1.0F, 0));
 
     for (const GpuDraw& draw : run.draws) {
+#if PERIODICITY_RHI_TRACE
+        static const float zeroWords[64] = {};
+        const float* uniformWords = draw.uniformSlot < run.uniforms.size()
+            ? run.uniforms[draw.uniformSlot].words.data()
+            : zeroWords;
+        const RhiVertex emptyVertex;
+        const RhiVertex& firstVertex = draw.firstVertex < run.vertices.size()
+            ? run.vertices[draw.firstVertex]
+            : emptyVertex;
+
+        PERIODICITY_RHI_LOG(
+            "rhi draw: count=%u first=%u v0=(%f,%f,%f) vp=(%d,%d %dx%d) "
+            "sc=(%d,%d %dx%d) pipeline=%p bindings=%p vb=%p target=(%f,%f) "
+            "params=(%f,%f,%f,%f) uClipDiag=(%f,%f,%f,%f) uMvpDiag=(%f,%f,%f,%f)",
+            draw.vertexCount, draw.firstVertex, static_cast<double>(firstVertex.x),
+            static_cast<double>(firstVertex.y), static_cast<double>(firstVertex.z),
+            draw.viewport.x(), draw.viewport.y(), draw.viewport.width(),
+            draw.viewport.height(), draw.scissor.x(), draw.scissor.y(),
+            draw.scissor.width(), draw.scissor.height(),
+            static_cast<void*>(draw.pipeline), static_cast<void*>(draw.bindings),
+            static_cast<void*>(vertexBuffer), static_cast<double>(uniformWords[40]),
+            static_cast<double>(uniformWords[41]), static_cast<double>(uniformWords[48]),
+            static_cast<double>(uniformWords[49]), static_cast<double>(uniformWords[50]),
+            static_cast<double>(uniformWords[51]), static_cast<double>(uniformWords[0]),
+            static_cast<double>(uniformWords[5]), static_cast<double>(uniformWords[10]),
+            static_cast<double>(uniformWords[15]), static_cast<double>(uniformWords[16]),
+            static_cast<double>(uniformWords[21]), static_cast<double>(uniformWords[26]),
+            static_cast<double>(uniformWords[31]));
+#endif
+
         const QRhiCommandBuffer::DynamicOffset offset(
             0, draw.uniformSlot * static_cast<quint32>(uniformStride));
         const QRhiCommandBuffer::VertexInput input(
@@ -1648,6 +1756,26 @@ bool RhiDevice::Impl::executeRun(QImage& image, Run& run, const QSize& targetPix
                           .arg(static_cast<int>(finished)));
         return false;
     }
+
+#if PERIODICITY_RHI_TRACE
+    if (!readback.data.isEmpty() && !readback.pixelSize.isEmpty()) {
+        const uchar* pixels = reinterpret_cast<const uchar*>(readback.data.constData());
+        const int width = readback.pixelSize.width();
+        const int height = readback.pixelSize.height();
+        const int centre = ((height / 2) * width + width / 2) * 4;
+        if (readback.data.size() >= centre + 4) {
+            PERIODICITY_RHI_LOG(
+                "rhi readback: format=%d %dx%d first=(%u,%u,%u,%u) centre=(%u,%u,%u,%u)",
+                static_cast<int>(readback.format), width, height,
+                static_cast<unsigned>(pixels[0]), static_cast<unsigned>(pixels[1]),
+                static_cast<unsigned>(pixels[2]), static_cast<unsigned>(pixels[3]),
+                static_cast<unsigned>(pixels[centre]),
+                static_cast<unsigned>(pixels[centre + 1]),
+                static_cast<unsigned>(pixels[centre + 2]),
+                static_cast<unsigned>(pixels[centre + 3]));
+        }
+    }
+#endif
 
     const QImage result = imageFromReadback(readback, rhi->isYUpInFramebuffer());
     if (result.isNull()) {
@@ -1871,6 +1999,9 @@ gfx::RasterStats RhiDevice::submit(RenderTarget& target,
 
         const QRect viewport = viewportFor(command, targetRect);
         const QRect clip = clipFor(command, targetRect, scissor);
+        PERIODICITY_RHI_LOG("rhi submit: kind=%d clip=(%d,%d %dx%d) empty=%d",
+                            static_cast<int>(command.kind), clip.x(), clip.y(),
+                            clip.width(), clip.height(), clip.isEmpty() ? 1 : 0);
         if (clip.isEmpty())
             continue;
 

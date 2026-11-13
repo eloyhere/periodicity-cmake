@@ -5,6 +5,13 @@ periodicity_add_module(view
           periodicity::drawable periodicity::layer periodicity::animation
           Qt6::Widgets)
 
+# The retained-layer paint path. This is a PRIVATE dependency: no public view/
+# header includes md/render/, and no render/ header includes a widget, so the
+# dependency is one-way and invisible to a consumer of md::View. It is declared
+# here (rather than in the DEPENDS list above, which makes its dependencies
+# PUBLIC) because only view.cpp and layer_backing.cpp may see render/ types.
+target_link_libraries(periodicity_view PRIVATE periodicity::render)
+
 # The optional GPU compositor: GpuCompositor is a QOpenGLWidget when Qt ships
 # OpenGLWidgets. The definition is PUBLIC because the class shape in
 # md/view/gpu_compositor.h depends on it — every consumer must see the same

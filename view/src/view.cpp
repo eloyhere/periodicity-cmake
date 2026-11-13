@@ -13,6 +13,11 @@
 
 #include <md/view/view.h>
 
+// The private half of the layered paint path. This is the only include of a
+// render/ header in view/, and it is absent from every public header: a
+// consumer of md::View never sees render::Layer.
+#include "layer_backing.h"
+
 #include <md/view/error_guard.h>
 #include <md/event/event_dispatcher.h>
 #include <md/event/key_event.h>
@@ -449,10 +454,6 @@ void View::paintEvent(QPaintEvent* event)
             // geometry changed without a resize event reaching this path.
             updateRippleGeometry();
 
-            QPainter painter(this);
-            painter.setRenderHint(QPainter::Antialiasing, true);
-            painter.setRenderHint(QPainter::TextAntialiasing, true);
-
             // The theme is a snapshot, not a reference into the scope that
             // owns it: a store write in paintContent() installs a ThemeScope
             // (onStoreChanged -> ThemeScope::install), which deletes the scope
@@ -464,39 +465,19 @@ void View::paintEvent(QPaintEvent* event)
             const layer::SurfaceContext context{theme, state_, shape_, elevation_,
                                                 backgroundColour_, contentColour_};
 
-            // 1. The shadow, outside the bounds and unclipped by the layer.
-            if (elevation_ != Elevation::Level0)
-                elevationLayer_.paint(painter, content, context);
+            // The retained path paints the same pipeline into the view's layer
+            // and blits it, without touching the window itself. The direct path
+            // below is both the fallback and the reference the pixel-equality
+            // test compares against, so the two must stay one implementation:
+            // paintStages() is that implementation.
+            if (paintThroughLayer(theme, content, context))
+                return;
 
-            // 2. The container, clipped to the shape.
-            backgroundLayer_.paint(painter, content, context);
+            QPainter painter(this);
+            painter.setRenderHint(QPainter::Antialiasing, true);
+            painter.setRenderHint(QPainter::TextAntialiasing, true);
 
-            // 3. The component's content.
-            paintContent(painter, content);
-
-            // 4. The children, for a container.
-            paintChildren(painter);
-
-            // 5. The state overlay and the outline.
-            if (interactionFeedbackEnabled_)
-                foreground_.paint(painter, content, context);
-
-            // 6. Pointer feedback.
-            if (interactionFeedbackEnabled_)
-                ripple_.paint(painter);
-
-            // 7. The focus ring last, so neither the state layer nor a ripple
-            //    can obscure the keyboard indicator. FocusRingLayer itself
-            //    checks the Focused bit; the extra focusable() guard keeps a
-            //    state flag set by hand on a non-interactive view from drawing
-            //    a ring. The ring is painted inside `content` (the layer's
-            //    Inside placement): Qt clips a widget's painter to the widget
-            //    rectangle, so a ring stroked outside the bounds would show up
-            //    only as fragments of its corner arcs. It is a keyboard
-            //    indicator: a focus gained by a mouse press uses the state
-            //    layer alone, so clicking a component never draws an outline.
-            if (hasFocus() && focusable() && keyboardFocus_)
-                focusRing_.paint(painter, content, context);
+            paintStages(painter, theme, content, context);
         });
 
     // Consume the damage only after a pass that ran to completion, and only
@@ -516,6 +497,47 @@ void View::paintEvent(QPaintEvent* event)
         uiThread->recordPaint(std::chrono::duration_cast<schedule::UiThread::Duration>(
             schedule::UiThread::Clock::now() - paintStarted));
     }
+}
+
+void View::paintStages(QPainter& painter, const Theme& theme, const QRectF& content,
+                       const layer::SurfaceContext& context)
+{
+    // 1. The shadow, outside the bounds and unclipped by the layer.
+    if (elevation_ != Elevation::Level0)
+        elevationLayer_.paint(painter, content, context);
+
+    // 2. The container, clipped to the shape.
+    backgroundLayer_.paint(painter, content, context);
+
+    // 3. The component's content.
+    paintContent(painter, content);
+
+    // 4. The children, for a container. Only the paintChildren(QPainter&) hook
+    //    is part of this pass; Qt paints real child widgets separately, after
+    //    this painter is gone, so a retained layer never captures them.
+    paintChildren(painter);
+
+    // 5. The state overlay and the outline.
+    if (interactionFeedbackEnabled_)
+        foreground_.paint(painter, content, context);
+
+    // 6. Pointer feedback.
+    if (interactionFeedbackEnabled_)
+        ripple_.paint(painter);
+
+    // 7. The focus ring last, so neither the state layer nor a ripple can
+    //    obscure the keyboard indicator. FocusRingLayer itself checks the
+    //    Focused bit; the extra focusable() guard keeps a state flag set by
+    //    hand on a non-interactive view from drawing a ring. The ring is
+    //    painted inside `content` (the layer's Inside placement): Qt clips a
+    //    widget's painter to the widget rectangle, so a ring stroked outside
+    //    the bounds would show up only as fragments of its corner arcs. It is
+    //    a keyboard indicator: a focus gained by a mouse press uses the state
+    //    layer alone, so clicking a component never draws an outline.
+    if (hasFocus() && focusable() && keyboardFocus_)
+        focusRing_.paint(painter, content, context);
+
+    Q_UNUSED(theme);
 }
 
 void View::resizeEvent(QResizeEvent* event)
@@ -693,6 +715,15 @@ void View::changeEvent(QEvent* event)
         requestUpdate();
         break;
 
+    case QEvent::FontChange:
+        // Every glyph run is shaped with the current font, so a font change
+        // repaints everything. The retained layer also compares the font
+        // description on every pass, but nothing would ask for that pass
+        // without this request; the two together are what make a font change
+        // one invalidation rather than a ghost.
+        requestUpdate();
+        break;
+
     default:
         break;
     }
@@ -793,6 +824,12 @@ void View::requestUpdate()
         ++damageRequestSerial_;
     }
 
+    // A retained layer keeps its own record of which pixels are stale. A layer
+    // that does not exist yet is fully dirty when it is created, so this is a
+    // no-op until the first layered pass.
+    if (layerBacking_ != nullptr)
+        layerBacking_->addAllDamage();
+
     queueRepaint();
 }
 
@@ -802,6 +839,9 @@ void View::requestUpdate(QRectF rect)
         damage_.add(rect);
         ++damageRequestSerial_;
     }
+
+    if (layerBacking_ != nullptr)
+        layerBacking_->addDamage(rect);
 
     queueRepaint();
 }
@@ -842,6 +882,12 @@ void View::queueRepaint()
 
 void View::setDamageTrackingEnabled(bool enabled)
 {
+    // A retained layer without a damage record cannot know what changed, so
+    // turning tracking off first drops the layer-backing request. That call
+    // leaves damage tracking on; the code below is what turns it off.
+    if (!enabled && layerBacking_ != nullptr && layerBacking_->enabled)
+        setLayerBacked(false);
+
     if (damageTrackingEnabled_ == enabled)
         return;
 

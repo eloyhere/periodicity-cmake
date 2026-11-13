@@ -35,6 +35,7 @@
 #include <md/render/software_device.h>
 
 #include <QColor>
+#include <QDir>
 #include <QFont>
 #include <QImage>
 #include <QPainterPath>
@@ -54,6 +55,31 @@ using namespace md::render;
 
 namespace {
 
+// Diagnostic image dumps. Set PERIODICITY_RHI_DUMP_DIR to a directory and every
+// parity comparison (and the resize steps) writes the software and RHI images
+// there as PNG. Nothing is written unless the variable is set.
+QString dumpDirectory()
+{
+    return qEnvironmentVariable("PERIODICITY_RHI_DUMP_DIR");
+}
+
+void dumpImage(const QImage& image, const QString& name)
+{
+    const QString directory = dumpDirectory();
+    if (directory.isEmpty() || image.isNull())
+        return;
+    QDir().mkpath(directory);
+    const QString path = QStringLiteral("%1/%2.png").arg(directory, name);
+    if (image.save(path))
+        qInfo("rhi test dump: %s", qPrintable(path));
+}
+
+int nextDumpIndex()
+{
+    static int index = 0;
+    return ++index;
+}
+
 struct Tolerance
 {
     int maxChannelDelta = 0;
@@ -64,6 +90,13 @@ struct Tolerance
 bool compareWithin(const QImage& software, const QImage& rhi,
                    const Tolerance& tolerance, QString* why)
 {
+    if (!dumpDirectory().isEmpty()) {
+        const int index = nextDumpIndex();
+        const QString prefix = QStringLiteral("%1").arg(index, 2, 10, QLatin1Char('0'));
+        dumpImage(software, prefix + QStringLiteral("-software"));
+        dumpImage(rhi, prefix + QStringLiteral("-rhi"));
+    }
+
     if (software.size() != rhi.size()) {
         *why = QStringLiteral("size mismatch: software %1x%2, RHI %3x%4")
                    .arg(software.width()).arg(software.height())
@@ -543,6 +576,7 @@ void TestRenderRhi::resizedTargetReallocates()
     QCOMPARE(device_->submit(target, buffer).trianglesDrawn, 2);
     QCOMPARE(target.image().pixelColor(4, 4), QColor(Qt::red));
     QVERIFY2(device_->lastError().isEmpty(), qPrintable(device_->lastError()));
+    dumpImage(target.image(), QStringLiteral("resize-0-16x16"));
 
     // Grow: the colour/depth attachments and the pipelines are rebuilt for the
     // new pixel size, and the frame still lands in the new image.
@@ -553,6 +587,7 @@ void TestRenderRhi::resizedTargetReallocates()
     QCOMPARE(target.image().pixelColor(4, 4), QColor(Qt::red));
     QCOMPARE(target.image().pixelColor(20, 20), QColor(Qt::blue));
     QVERIFY2(device_->lastError().isEmpty(), qPrintable(device_->lastError()));
+    dumpImage(target.image(), QStringLiteral("resize-1-32x32"));
 
     // Shrink again: the previous, larger attachments must not be reused.
     QVERIFY(target.resize(QSizeF(8.0, 8.0)));
@@ -562,6 +597,7 @@ void TestRenderRhi::resizedTargetReallocates()
     QCOMPARE(target.image().size(), QSize(8, 8));
     QCOMPARE(target.image().pixelColor(4, 4), QColor(Qt::red));
     QVERIFY2(device_->lastError().isEmpty(), qPrintable(device_->lastError()));
+    dumpImage(target.image(), QStringLiteral("resize-2-8x8"));
 }
 
 QTEST_MAIN(TestRenderRhi)

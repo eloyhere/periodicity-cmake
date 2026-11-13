@@ -39,6 +39,7 @@
 #include <md/tokens/shape.h>
 #include <md/view/damage_tracker.h>
 #include <md/view/error_guard.h>
+#include <md/view/layer_debug.h>
 #include <md/view/lifecycle.h>
 #include <md/view/render_backend.h>
 
@@ -48,6 +49,7 @@
 #include <QPointer>
 #include <QRect>
 #include <QRectF>
+#include <QSize>
 #include <QSizeF>
 #include <QString>
 #include <QVariant>
@@ -64,6 +66,15 @@ class QHideEvent;
 namespace md {
 
 class Store;
+class Theme;
+
+// The private state of the layer-backed paint path. Defined in
+// view/src/layer_backing.cpp; a view that never opts in never allocates one.
+struct LayerBacking;
+
+namespace layer {
+struct SurfaceContext;
+}
 
 // The kernel every component inherits from.
 //
@@ -158,6 +169,51 @@ public:
     // setDamageTrackingEnabled(false); a component may also use it when its
     // content is about to change wholesale and it knows a full repaint follows.
     void clearDamage();
+
+    // Retained layers (opt-in) ---------------------------------------------
+    //
+    // Off by default: a view keeps painting straight into its widget exactly
+    // as before. When a view opts in, its paint pipeline renders into a
+    // retained layer owned by the process-wide LayerCache, and paintEvent()
+    // blits that layer instead of re-running the pipeline. A later repaint
+    // rasterises only the damaged region; the rest of the layer is reused.
+    //
+    // Enabling this also enables damage tracking, because the damage record is
+    // what says which part of the layer is stale. Turning layer backing off
+    // releases the layer and leaves damage tracking on; a caller that wants
+    // neither calls setDamageTrackingEnabled(false), which drops the layer
+    // first.
+    //
+    // A layer-backed view must not:
+    //   * contain a native window (a QOpenGLWidget, a QQuickWidget, a child
+    //     with Qt::WA_NativeWindow): the platform composites that surface
+    //     itself, so it can never be captured into the layer and would appear
+    //     above it, untouched by the layer's clip and opacity;
+    //   * rely on its child *widgets* being part of the layer. Child widgets
+    //     are painted by Qt after the parent's paintEvent, not by it; only
+    //     paintContent() and paintChildren(QPainter&) reach the layer. A
+    //     generic container with real child widgets must stay uncached, or its
+    //     children paint the live tree while the parent blits a stale surface;
+    //   * paint outside its own rectangle and expect that overhang to survive:
+    //     the layer is exactly rect() at the current device pixel ratio;
+    //   * forget to record damage for a visual change. A missed rectangle is a
+    //     ghost, not a crash; md::view::setLayerDebugUncached(true) is the
+    //     comparison that catches it.
+    void setLayerBacked(bool enabled);
+    [[nodiscard]] bool isLayerBacked() const noexcept;
+
+    // Diagnostics for tests, benchmarks and the debug comparison. They report
+    // the live surface, so `hasLayerSurface()` is false before the first
+    // layered paint and while the uncached debug mode is on.
+    [[nodiscard]] bool hasLayerSurface() const noexcept;
+
+    // The allocated layer size in device pixels; empty when no layer is held.
+    [[nodiscard]] QSize layerPixelSize() const noexcept;
+
+    // The theme revision the current layer was acquired with. It advances when
+    // the resolved Theme changes, which is what invalidates a layer whose
+    // owner never saw a ThemeChange event.
+    [[nodiscard]] quint64 layerThemeRevision() const noexcept;
 
     // GPU acceleration (opt-in) -------------------------------------------
     //
@@ -306,6 +362,13 @@ protected:
     // override this when they can be focused while disabled.
     [[nodiscard]] virtual bool focusable() const { return isEnabled(); }
 
+    // The device pixel ratio the retained layer is allocated at. The default is
+    // QWidget::devicePixelRatioF(), which is what a real screen reports. A host
+    // that composites at a fixed scale, or a test that simulates a screen
+    // change, overrides it; the layer sees the change as a geometry change and
+    // repaints everything.
+    [[nodiscard]] virtual qreal layerDevicePixelRatio() const;
+
     // Lifecycle hooks. They have empty defaults so that a leaf component can
     // ignore the ones it does not need; a component that owns an animation or a
     // cache overrides onShown/onHidden or onAttached/onDetached instead of
@@ -376,6 +439,20 @@ private:
     // True when this widget or one of its ancestors is a GpuCompositor.
     [[nodiscard]] bool hasGpuCompositorAncestor() const;
 
+    // Runs the fixed paint pipeline (shadow, background, content, children,
+    // foreground, ripple, focus ring) on `painter`. The direct path calls it
+    // with a painter on the widget, the layer-backed path with a painter on the
+    // retained surface; both therefore produce the same picture by
+    // construction, which is what the pixel-equality test asserts.
+    void paintStages(QPainter& painter, const Theme& theme, const QRectF& content,
+                     const layer::SurfaceContext& context);
+
+    // Paints this frame through the retained layer and blits it. Returns false
+    // when the direct path must paint instead (not layer-backed, the uncached
+    // debug mode is on, or the layer could not be acquired this frame).
+    bool paintThroughLayer(const Theme& theme, const QRectF& content,
+                           const layer::SurfaceContext& context);
+
     // How large the view asked to be. Zero until the first measurement pass.
     QSizeF measuredSize_{0.0, 0.0};
 
@@ -405,6 +482,11 @@ private:
     bool damageTrackingEnabled_ = false;
     DamageTracker damage_;
     quint64 damageRequestSerial_ = 0;
+
+    // The retained-layer state, allocated only when setLayerBacked(true) is
+    // called. Declared after the damage record because the layer is fed from
+    // it; both are destroyed with the view in reverse order.
+    std::unique_ptr<LayerBacking> layerBacking_;
 
     // The last pointer position seen, used to give PointerLeave a meaningful
     // local position when Qt's leave event carries none.

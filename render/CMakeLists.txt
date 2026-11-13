@@ -35,6 +35,14 @@ endif()
 # stub and nothing here changes.
 periodicity_enable_rhi(periodicity_render)
 
+# Diagnostic switch for the RHI device: prints what each frame records and
+# submits (see PERIODICITY_RHI_LOG in src/rhi_device.cpp). Off in normal builds;
+# configure with -DPERIODICITY_RHI_TRACE=ON to enable it.
+option(PERIODICITY_RHI_TRACE "Trace what the RHI device records and submits" OFF)
+if(PERIODICITY_RHI_TRACE)
+  target_compile_definitions(periodicity_render PRIVATE PERIODICITY_RHI_TRACE=1)
+endif()
+
 if(PERIODICITY_HAS_RHI)
   # Qt6::ShaderTools is a build-time dependency: qsb compiles shaders/*.vert and
   # shaders/*.frag into .qsb resources. No runtime GLSL compilation happens in
