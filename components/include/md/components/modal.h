@@ -10,7 +10,18 @@
 // Modal is that shared piece. It is a full-window scrim widget, and it also
 // owns a tiny per-window layer registry: a widget registers with a Level, and
 // the registry restacks the registered widgets in ascending level order so the
-// ordering is stable regardless of which widget was shown last.
+// ordering is stable regardless of which widget was shown last. That registry
+// is retained for the legacy level API and for surfaces that have not migrated
+// yet; it is not the stack Modal itself lives in.
+//
+// The window-level half — finding the window, owning the stack of live
+// surfaces, z order, blocking input below the top surface, disabling the
+// content root and restoring focus — belongs to md::Overlay
+// (md/view/overlay.h). Modal pushes itself there from open() and pops from the
+// end of its exit; it no longer installs a window event filter, disables the
+// window, saves the previous focus or owns a stack. What stays here is the
+// interaction contract: the scrim, the card and its motion, the focus trap and
+// the Escape/click dismissal policy.
 //
 // A Modal may also present a card: a child widget placed above the scrim. The
 // card is animated by ContainerTransform (fade, scale, rise) and the scrim
@@ -29,6 +40,7 @@
 
 #pragma once
 
+#include <md/view/overlay.h>
 #include <md/view/view.h>
 
 #include <QHash>
@@ -111,9 +123,32 @@ public:
 
     // Where focus goes when the modal closes. The default is the widget that
     // had focus when open() was called, which is the chip for a chip → modal
-    // interaction.
+    // interaction. An explicit target wins over that captured widget.
     void setFocusReturn(QWidget* widget);
     [[nodiscard]] QWidget* focusReturn() const noexcept;
+
+    // Where focus goes when neither setFocusReturn() nor the captured widget
+    // can take it. This is a fallback only: the captured widget keeps
+    // precedence. SwitchingOverlay uses it, because its old content guard
+    // restored the captured widget first and fell back to the invoking
+    // trigger, not the other way round.
+    void setFocusFallback(QWidget* widget);
+    [[nodiscard]] QWidget* focusFallback() const noexcept;
+
+    // When true the window's content tree is disabled while this modal is
+    // open (the value is read by open()). Overlay saves the exact state and
+    // restores it after the last pop; a descendant that was already disabled
+    // stays disabled. The busy switch surface uses this, because it covers the
+    // content opaquely and must not show disabled-token repaints underneath.
+    // An ordinary modal leaves it off: its translucent scrim blocks input
+    // without changing the paint state of what is behind it.
+    void setDisablesContent(bool disabled);
+    [[nodiscard]] bool disablesContent() const noexcept;
+
+    // The Overlay this modal is currently pushed onto, or null while closed or
+    // after its window was destroyed. Additive accessor for a host that needs
+    // to arm a deferred content disable (SwitchingOverlay).
+    [[nodiscard]] Overlay* overlay() const noexcept;
 
     // Motion -------------------------------------------------------------
     // When false every open()/close() applies its end state synchronously.
@@ -188,11 +223,11 @@ private:
         Closing,
     };
 
-    void applyWindowGeometry();
     void positionCard();
     [[nodiscard]] QRectF effectiveAnchorRect() const;
     void installFilters();
     void removeFilters();
+    void handleWindowHidden();
 
     void startEntrance();
     void startExit();
@@ -201,16 +236,13 @@ private:
     void maybeFinishClose();
     void finishClose();
     void abort();
-    void restoreFocus();
     [[nodiscard]] QList<QWidget*> focusableWidgets() const;
     bool trapFocus(QKeyEvent* event);
 
-    // The window this modal is currently attached to. A QPointer because the
-    // host can be destroyed while the modal survives: Language::showSelector()
-    // reparents an open modal to a new window before the old window goes away,
-    // and close()/removeFilters() must then skip the dead host instead of
-    // calling removeEventFilter() on freed memory.
-    QPointer<QWidget> host_;
+    // The Overlay this modal is pushed onto while open. A QPointer because the
+    // host window may be destroyed while the modal survives: then the entry is
+    // gone and close()/abort() only settle the local state.
+    QPointer<Overlay> overlay_;
     int level_ = static_cast<int>(Level::Dialog);
     qreal dim_ = 0.32;
     QColor scrimColour_;
@@ -218,11 +250,12 @@ private:
     bool dismissOnEscape_ = true;
     bool open_ = false;
     bool closeEmitted_ = false;
+    bool disableContent_ = false;
 
     QPointer<QWidget> card_;
     QPointer<QWidget> anchor_;
     QPointer<QWidget> focusReturn_;
-    QPointer<QWidget> previousFocus_;
+    QPointer<QWidget> focusFallback_;
     QRectF anchorRect_;
     bool hasAnchorRect_ = false;
     QRectF explicitCardRect_;

@@ -14,6 +14,7 @@
 #include <QPainter>
 #include <QPainterPath>
 #include <QPen>
+#include <QPoint>
 #include <QPointF>
 #include <QRect>
 #include <QRectF>
@@ -207,25 +208,52 @@ void Dialog::open()
     if (open_ || parentWidget() == nullptr)
         return;
 
-    open_ = true;
-    parentWidget()->installEventFilter(this);
+    QWidget* window = this->window();
+    if (window == nullptr || window == this)
+        return;
 
-    applyOverlayGeometry();
+    Overlay* overlay = Overlay::forWidget(window);
+    if (overlay == nullptr)
+        return;
+
+    Overlay::Options options;
+    options.blockInput = true;
+    options.disableContent = false;
+    options.restoreFocus = true;
+    options.fillWindow = true;
+
+    // push() reparents the dialog to the window's overlay layer, gives it the
+    // window rectangle and raises it above every surface that is already up.
+    // It also captures the focus that close()/accept()/reject() will restore.
+    if (!overlay->push(this, options))
+        return;
+
+    overlay_ = overlay;
+    connect(overlay, &Overlay::windowHidden, this, &Dialog::handleWindowHidden,
+            Qt::UniqueConnection);
+
+    open_ = true;
     show();
-    raise();
+    // The push already set the window rectangle; this is the local arrange the
+    // old applyOverlayGeometry() used to do, so the body and action row are
+    // placed even when the resize arrived while the dialog was hidden.
+    relayoutSurface();
     setFocus(Qt::PopupFocusReason);
 }
 
 void Dialog::close()
 {
-    if (!open_) {
-        hide();
-        return;
-    }
-
+    const bool wasOpen = open_;
     open_ = false;
-    detachParentFilter();
+
+    // Hide before the pop so a hidden dialog can never be mistaken for the
+    // content root while Overlay restores focus.
     hide();
+
+    if (wasOpen && overlay_ != nullptr) {
+        overlay_->pop(this);
+        overlay_.clear();
+    }
 }
 
 bool Dialog::isOpen() const noexcept
@@ -239,8 +267,11 @@ void Dialog::accept()
         return;
 
     open_ = false;
-    detachParentFilter();
     hide();
+    if (overlay_ != nullptr) {
+        overlay_->pop(this);
+        overlay_.clear();
+    }
 
     emit accepted();
 }
@@ -251,16 +282,19 @@ void Dialog::reject()
         return;
 
     open_ = false;
-    detachParentFilter();
     hide();
+    if (overlay_ != nullptr) {
+        overlay_->pop(this);
+        overlay_.clear();
+    }
 
     emit rejected();
 }
 
-void Dialog::detachParentFilter()
+void Dialog::handleWindowHidden()
 {
-    if (parentWidget() != nullptr)
-        parentWidget()->removeEventFilter(this);
+    if (open_)
+        close();
 }
 
 int Dialog::actionCount() const
@@ -318,15 +352,18 @@ void Dialog::relayout()
     requestUpdate();
 
     if (open_)
-        applyOverlayGeometry();
+        relayoutSurface();
 }
 
-void Dialog::applyOverlayGeometry()
+void Dialog::relayoutSurface()
 {
-    if (parentWidget() == nullptr)
+    // The window-level host owns the geometry of a fillWindow surface; this is
+    // only the local re-arrange after the body changed, using the size Overlay
+    // has already given the dialog.
+    if (!open_ || width() <= 0 || height() <= 0)
         return;
 
-    arrange(QRect(QPoint(0, 0), parentWidget()->size()));
+    arrange(QRect(QPoint(0, 0), size()));
 }
 
 qreal Dialog::surfaceWidth() const
@@ -681,20 +718,6 @@ void Dialog::keyPressEvent(QKeyEvent* event)
     }
 
     ViewGroup::keyPressEvent(event);
-}
-
-bool Dialog::eventFilter(QObject* watched, QEvent* event)
-{
-    if (parentWidget() != nullptr && watched == parentWidget()) {
-        if (event->type() == QEvent::Resize)
-            applyOverlayGeometry();
-        else if (event->type() == QEvent::Hide)
-            close();
-
-        return ViewGroup::eventFilter(watched, event);
-    }
-
-    return ViewGroup::eventFilter(watched, event);
 }
 
 void Dialog::onThemeChanged()

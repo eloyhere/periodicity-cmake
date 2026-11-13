@@ -473,7 +473,7 @@ Language::Language(QWidget* parent)
 
     chevronAnimator_ = new animation::Animator(this);
     connect(chevronAnimator_, &animation::Animator::finished, this, [this] {
-        setChevronProgress(menuOpen_ ? 1.0 : 0.0);
+        setChevronProgress(chevronTarget_);
     });
 
     syncAccessibleDescription();
@@ -814,6 +814,7 @@ void Language::setChevronOpen(bool open)
 
     const qreal from = chevronProgress_;
     const qreal target = open ? 1.0 : 0.0;
+    chevronTarget_ = target;
     if (!isVisible() || spec.duration.count() <= 0
         || qFuzzyCompare(from + 1.0, target + 1.0)) {
         chevronAnimator_->stop();

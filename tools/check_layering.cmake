@@ -14,12 +14,19 @@ if(NOT DEFINED SOURCE_DIR)
   get_filename_component(SOURCE_DIR "${CMAKE_CURRENT_LIST_DIR}/.." ABSOLUTE)
 endif()
 
-set(MODULES core mathematic structure store pool schedule tokens theme event ripple drawable layer animation view layout gfx render components)
+set(MODULES core mathematic structure syntax outline store pool schedule tokens theme event ripple drawable layer animation view layout gfx render components)
 
 set(ALLOWED_core "")
 set(ALLOWED_mathematic "core")
 set(ALLOWED_store "core;structure")
 set(ALLOWED_structure "core")
+# syntax is the lexical layer: language profiles, tokens, folding, diagnostics.
+# It may use structure for shared containers but currently does not; the outline
+# module is the structure consumer.
+set(ALLOWED_syntax "core;structure")
+# outline builds the Symbol hierarchy as a structure::SiblingForest and reads
+# the token stream and language profiles from syntax.
+set(ALLOWED_outline "core;structure;syntax")
 set(ALLOWED_pool "core")
 set(ALLOWED_schedule "core")
 set(ALLOWED_tokens "core")
@@ -65,6 +72,7 @@ foreach(_module IN LISTS MODULES)
 
     # Headless layers must not pull in widgets.
     if(_module STREQUAL "core" OR _module STREQUAL "structure"
+       OR _module STREQUAL "syntax" OR _module STREQUAL "outline"
        OR _module STREQUAL "pool" OR _module STREQUAL "tokens"
        OR _module STREQUAL "event")
       if(_content MATCHES "#include[ \t]*[<\"]QtWidgets/" OR

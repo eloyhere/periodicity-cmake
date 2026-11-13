@@ -15,12 +15,14 @@
 //
 // Coordinate conventions, chosen so the result matches the software rasterizer:
 //
-//   * 2D vertices are target pixels; the vertex shader maps them to NDC with a
-//     Y flip that matches QImage's top-left origin, then QRhi's
-//     clipSpaceCorrMatrix() maps that to the backend's clip space.
+//   * 2D vertices are converted from target pixels to OpenGL-style NDC on the
+//     CPU when the draw is recorded, and the vertex shader passes them through
+//     an identity mvp. The Y flip that matches QImage's top-left origin is part
+//     of that conversion.
 //   * 3D vertices go through the pipeline's mvp and the command viewport is
-//     applied with QRhiCommandBuffer::setViewport(); the same flip makes the
-//     top-left convention hold after the read-back.
+//     applied with QRhiCommandBuffer::setViewport().
+//   * QRhi::clipSpaceCorrMatrix() then maps the OpenGL-style clip space to the
+//     backend's (for D3D11 it only remaps z to 0..1).
 //   * depth is the same [0, 1] range, nearer is smaller, and the test is LESS.
 //
 // Nothing here compiles GLSL at run time and nothing here uses a
@@ -1334,22 +1336,37 @@ bool RhiDevice::Impl::appendDraw(Run& run, const gfx::DrawCommand& command,
                                  const QRect& viewport, const QRect& clip,
                                  const QSize& targetPixels, gfx::RasterStats& stats)
 {
-    if (!command.pipeline.isValid())
+    const bool imageDraw = command.kind == gfx::CommandKind::DrawImage;
+
+    // A DrawImage carries no gfx::Pipeline: it is the device's own textured
+    // blit, exactly like GlDevice's drawImage(), so it uses the built-in unlit
+    // program regardless of command.pipeline.
+    if (!imageDraw && !command.pipeline.isValid())
         return true;
 
-    const QString shaderName = command.pipeline.shader.name();
+    const QString shaderName = imageDraw ? QStringLiteral("unlit")
+                                         : command.pipeline.shader.name();
     const bool is3D = command.kind == gfx::CommandKind::DrawMesh3D;
     const bool unlit = shaderName == QStringLiteral("unlit");
 
     QRhiTexture* texture = nullptr;
     QRhiSampler* sampler = dummySampler;
 
+    // 2D and image vertices are converted to OpenGL-style NDC here, on the CPU,
+    // so the vertex shader has a single path. uMvp stays identity for them and
+    // no per-draw target-size uniform is involved in the transform.
+    const auto toClip = [&targetPixels](const QPointF& pixel) {
+        const qreal width = qMax(1, targetPixels.width());
+        const qreal height = qMax(1, targetPixels.height());
+        return QPointF(2.0 * pixel.x() / width - 1.0,
+                       1.0 - 2.0 * pixel.y() / height);
+    };
+
     std::vector<RhiVertex> vertices;
     QRect drawViewport = targetPixels.isEmpty()
         ? QRect()
         : QRect(QPoint(0, 0), targetPixels);
     QRect drawScissor = clip;
-    bool imageDraw = false;
 
     switch (command.kind) {
     case gfx::CommandKind::DrawMesh2D: {
@@ -1371,8 +1388,8 @@ bool RhiDevice::Impl::appendDraw(Run& run, const gfx::DrawCommand& command,
             const gfx::Vertex2D& sourceVertex =
                 command.mesh2d.vertices().at(static_cast<qsizetype>(index));
             vertices.push_back(makeVertex2D(
-                QPointF(viewport.x() + sourceVertex.position.x(),
-                        viewport.y() + sourceVertex.position.y()),
+                toClip(QPointF(viewport.x() + sourceVertex.position.x(),
+                               viewport.y() + sourceVertex.position.y())),
                 sourceVertex.colour, sourceVertex.uv));
         }
         break;
@@ -1417,11 +1434,11 @@ bool RhiDevice::Impl::appendDraw(Run& run, const gfx::DrawCommand& command,
         texture = createTexture(command.image, run);
         if (!texture)
             return false;
-        imageDraw = true;
 
-        const QPointF topLeft(destination.x(), destination.y());
-        const QPointF bottomRight(destination.x() + destination.width(),
-                                  destination.y() + destination.height());
+        const QPointF topLeft = toClip(QPointF(destination.x(), destination.y()));
+        const QPointF bottomRight = toClip(
+            QPointF(destination.x() + destination.width(),
+                    destination.y() + destination.height()));
         vertices.push_back(makeVertex2D(topLeft, QColor(Qt::white), QPointF(0.0, 0.0)));
         vertices.push_back(makeVertex2D(QPointF(bottomRight.x(), topLeft.y()),
                                         QColor(Qt::white), QPointF(1.0, 0.0)));
@@ -1474,8 +1491,11 @@ bool RhiDevice::Impl::appendDraw(Run& run, const gfx::DrawCommand& command,
 
     UniformData uniform;
     uniform.setMatrix(kUniformClip, rhi->clipSpaceCorrMatrix());
+    // 2D and image vertices are already in clip space, so their transform is the
+    // identity; Mesh3D uses the command's mvp.
     uniform.setMatrix(kUniformMvp,
-                      command.uniforms.matrix(QStringLiteral("mvp"), QMatrix4x4()));
+                      is3D ? command.uniforms.matrix(QStringLiteral("mvp"), QMatrix4x4())
+                           : QMatrix4x4());
     uniform.setColour(kUniformColour,
                       command.uniforms.colour(QStringLiteral("colour"), QColor(Qt::white)));
     uniform.setColour(kUniformBaseColour,

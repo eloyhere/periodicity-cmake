@@ -224,6 +224,31 @@ QWidget* Modal::focusReturn() const noexcept
     return focusReturn_.data();
 }
 
+void Modal::setFocusFallback(QWidget* widget)
+{
+    focusFallback_ = widget;
+}
+
+QWidget* Modal::focusFallback() const noexcept
+{
+    return focusFallback_.data();
+}
+
+void Modal::setDisablesContent(bool disabled)
+{
+    disableContent_ = disabled;
+}
+
+bool Modal::disablesContent() const noexcept
+{
+    return disableContent_;
+}
+
+Overlay* Modal::overlay() const noexcept
+{
+    return overlay_.data();
+}
+
 void Modal::setAnimated(bool animated)
 {
     animated_ = animated;
@@ -312,18 +337,44 @@ void Modal::open()
     if (open_ || phase_ == Phase::Closing)
         return;
 
-    host_ = window();
-    QWidget* host = host_.data();
-    if (host != nullptr && host != this && parentWidget() != host)
-        setParent(host);
+    QWidget* host = window();
+    const bool standalone = (host == nullptr || host == this);
+
+    // A parentless modal is its own window and has no in-window host to be
+    // pushed onto; it keeps the old standalone path (show and take focus).
+    if (!standalone) {
+        Overlay* overlay = Overlay::forWidget(host);
+        if (overlay == nullptr)
+            return;
+
+        Overlay::Options options;
+        options.blockInput = true;
+        options.disableContent = disableContent_;
+        options.restoreFocus = true;
+        options.fillWindow = true;
+        // setFocusReturn() names a preferred target and wins over the captured
+        // focus; without it the captured focus stays primary and the fallback
+        // (if any) gets the second chance before the content root.
+        options.invoker = focusReturn_ != nullptr ? focusReturn_.data()
+                                                   : focusFallback_.data();
+        options.invokerFirst = (focusReturn_ != nullptr);
+
+        // The push reparents the modal to the window, sizes it to the window
+        // and raises it above every earlier surface. It captures the focus
+        // that must come back and only then disables the content (if this
+        // modal asked for that).
+        if (!overlay->push(this, options))
+            return;
+
+        overlay_ = overlay;
+        connect(overlay, &Overlay::windowHidden, this, &Modal::handleWindowHidden,
+                Qt::UniqueConnection);
+    }
 
     open_ = true;
     closeEmitted_ = false;
     phase_ = Phase::Idle;
-    if (focusReturn_.isNull())
-        previousFocus_ = QApplication::focusWidget();
 
-    applyWindowGeometry();
     if (card_ != nullptr) {
         card_->show();
         positionCard();
@@ -331,13 +382,13 @@ void Modal::open()
 
     registerLayer(this, level_);
     show();
-    raiseWithinLayer(this);
-    installFilters();
 
     setFocus(Qt::PopupFocusReason);
     const QList<QWidget*> focusables = focusableWidgets();
     if (!focusables.isEmpty() && focusables.first() != this)
         focusables.first()->setFocus(Qt::PopupFocusReason);
+
+    installFilters();
 
     QPointer<Modal> self(this);
     emit opened();
@@ -368,8 +419,9 @@ void Modal::close()
     if (self.isNull())
         return;
 
-    restoreFocus();
-
+    // Focus and the content tree are restored by Overlay when this modal is
+    // popped, which happens at the end of the exit: re-enabling the content
+    // underneath a still-fading scrim would flash enabled-token repaints.
     if (self.isNull() || phase_ != Phase::Closing)
         return;
     startExit();
@@ -383,15 +435,6 @@ bool Modal::isOpen() const noexcept
 QRectF Modal::scrimRect() const
 {
     return QRectF(rect());
-}
-
-void Modal::applyWindowGeometry()
-{
-    QWidget* host = host_.data();
-    if (host == nullptr)
-        return;
-    setGeometry(host->rect());
-    positionCard();
 }
 
 void Modal::positionCard()
@@ -573,6 +616,17 @@ void Modal::finishClose()
     if (self.isNull())
         return;
 
+    // Pop once the exit is invisible: Overlay re-enables the content root with
+    // its exact saved state and restores the focus captured on the outermost
+    // push. Doing this at close() instead would flash an enabled repaint under
+    // the fading scrim.
+    if (overlay_ != nullptr) {
+        overlay_->pop(this);
+        overlay_.clear();
+    }
+    if (self.isNull())
+        return;
+
     emit closeFinished();
 }
 
@@ -602,30 +656,21 @@ void Modal::abort()
 
     removeFilters();
     unregisterLayer(this);
-    restoreFocus();
+
+    if (overlay_ != nullptr) {
+        overlay_->pop(this);
+        overlay_.clear();
+    }
     if (self.isNull())
         return;
 
     emit closeFinished();
 }
 
-void Modal::restoreFocus()
+void Modal::handleWindowHidden()
 {
-    QWidget* target = focusReturn_.data();
-    if (target == nullptr)
-        target = previousFocus_.data();
-
-    if (target != nullptr && (target == this || isAncestorOf(target)))
-        target = nullptr;
-
-    if (target != nullptr && target->isVisible() && target->isEnabled()) {
-        target->setFocus(Qt::OtherFocusReason);
-        return;
-    }
-
-    QWidget* host = host_.data();
-    if (host != nullptr && host != this && host->isVisible())
-        host->setFocus(Qt::OtherFocusReason);
+    if (phase_ != Phase::Idle)
+        abort();
 }
 
 QList<QWidget*> Modal::focusableWidgets() const
@@ -677,28 +722,23 @@ bool Modal::trapFocus(QKeyEvent* event)
 
 void Modal::installFilters()
 {
-    QWidget* host = host_.data();
-    if (host != nullptr && host != this)
-        host->installEventFilter(this);
+    // Only the interaction filter: Overlay owns the window plumbing (geometry,
+    // resize, hide, teardown) and the input gate below the top surface. This
+    // filter is what keeps Modal's own policy — the Tab trap and Escape —
+    // working when the focus is inside its card.
     if (QApplication::instance() != nullptr)
         QApplication::instance()->installEventFilter(this);
 }
 
 void Modal::removeFilters()
 {
-    // host_ is a QPointer: when the host window was destroyed while the modal
-    // survived (reparented to a new window), it is already null and there is
-    // no filter left to remove on it.
-    QWidget* host = host_.data();
-    if (host != nullptr && host != this)
-        host->removeEventFilter(this);
     if (QApplication::instance() != nullptr)
         QApplication::instance()->removeEventFilter(this);
 }
 
 void Modal::measureOverride(MeasureSpec width, MeasureSpec height)
 {
-    QWidget* host = host_.data();
+    QWidget* host = parentWidget();
     setMeasuredSize(QSizeF(width.resolve(host != nullptr ? host->width() : 0.0),
                            height.resolve(host != nullptr ? host->height() : 0.0)));
 }
@@ -742,7 +782,11 @@ void Modal::mousePressEvent(QMouseEvent* event)
 
 void Modal::keyPressEvent(QKeyEvent* event)
 {
-    if (event->key() == Qt::Key_Escape && dismissOnEscape_ && open_) {
+    // The interaction policy is Modal's, but the question "am I the surface
+    // that owns input" is Overlay's. A modal covered by a later surface must
+    // not consume Escape from an event delivered to it directly.
+    const bool topMost = overlay_ == nullptr || overlay_->top() == this;
+    if (event->key() == Qt::Key_Escape && dismissOnEscape_ && open_ && topMost) {
         close();
         event->accept();
         return;
@@ -763,29 +807,24 @@ void Modal::hideEvent(QHideEvent* event)
 
 bool Modal::eventFilter(QObject* watched, QEvent* event)
 {
-    if (watched == host_.data() && event->type() == QEvent::Resize
-        && phase_ != Phase::Idle) {
-        applyWindowGeometry();
-        return false;
-    }
-
+    // The window-level resize/hide handling that used to live here is
+    // Overlay's: it keeps a fillWindow surface at the window rectangle and
+    // emits windowHidden(). What remains is the interaction policy this class
+    // owns — the Tab trap and Escape — and only while this modal is the
+    // surface that owns input.
     if (open_ && event->type() == QEvent::KeyPress) {
         auto* key = static_cast<QKeyEvent*>(event);
 
-        if (trapFocus(key))
-            return true;
+        const bool topMost = overlay_ == nullptr || overlay_->top() == this;
+        if (topMost) {
+            if (trapFocus(key))
+                return true;
 
-        if (key->key() == Qt::Key_Escape && dismissOnEscape_
-            && (host_ == nullptr || topLayer(host_.data()) == this)) {
-            close();
-            return true;
+            if (key->key() == Qt::Key_Escape && dismissOnEscape_) {
+                close();
+                return true;
+            }
         }
-    }
-
-    if (watched == host_.data() && event->type() == QEvent::Hide
-        && phase_ != Phase::Idle) {
-        abort();
-        return false;
     }
 
     return View::eventFilter(watched, event);

@@ -1,17 +1,21 @@
 // Periodicity — RHI device: the vertex stage shared by every built-in program.
 //
-// The same shader serves Mesh2D, Mesh3D and the textured-image quad, exactly as
-// the OpenGL device's single vertex program does. `uParams.z` selects the path:
+// The same shader serves Mesh2D, Mesh3D and the textured-image quad. There is
+// exactly one transform path:
 //
-//   0  A Mesh2D / image vertex whose position is already in target pixels.
-//      It is mapped to OpenGL-style NDC (top-left origin) and corrected for the
-//      backend by uClip.
-//   1  A Mesh3D vertex in model space; the command's mvp produces the same
-//      OpenGL-style clip space the software rasterizer uses, then uClip maps it
-//      to the backend's clip space (Y direction, depth range).
+//     gl_Position = uClip * (uMvp * vec4(aPosition, 1.0))
 //
-// uClip is QRhi::clipSpaceCorrMatrix(). Keeping it out of the vertex data is
-// what lets one qsb file serve D3D11, Vulkan and OpenGL without a rebuild.
+//   * Mesh2D and DrawImage vertices arrive with x/y already in OpenGL-style
+//     normalised device coordinates (-1..1, y up). The RHI device bakes the
+//     pixel-to-NDC transform when it records the draw, and passes an identity
+//     uMvp, so these draws depend on no per-draw size uniform at all.
+//   * Mesh3D vertices are model space and uMvp (the command's "mvp", identity
+//     by default) produces the same OpenGL-style clip space the software
+//     rasterizer uses.
+//
+// uClip is QRhi::clipSpaceCorrMatrix(). It maps that OpenGL-style clip space to
+// the backend's (for D3D11 it only remaps z from -1..1 to 0..1), which is what
+// lets one qsb file serve D3D11, Vulkan and OpenGL without a rebuild.
 
 #version 450
 
@@ -23,10 +27,10 @@ layout(location = 3) in vec2 aUv;
 layout(std140, binding = 0) uniform RhiUniforms
 {
     mat4 uClip;            // QRhi::clipSpaceCorrMatrix()
-    mat4 uMvp;             // gfx uniform "mvp"
+    mat4 uMvp;             // gfx uniform "mvp"; identity for 2D and images
     vec4 uColour;          // gfx uniform "colour"
     vec4 uBaseColour;      // gfx uniform "baseColour"
-    vec4 uTargetSize;      // xy = target pixels
+    vec4 uTargetSize;      // xy = target pixels (fragment stages only)
     vec4 uLightDirection;  // xyz = gfx uniform "lightDirection"
     vec4 uParams;          // x = ambient, y = hasTexture, z = is3D
 } ubo;
@@ -41,11 +45,5 @@ void main()
     vColor = aColor;
     vUv = aUv;
 
-    if (ubo.uParams.z != 0.0) {
-        gl_Position = ubo.uClip * (ubo.uMvp * vec4(aPosition, 1.0));
-    } else {
-        vec2 ndc = vec2(2.0 * aPosition.x / ubo.uTargetSize.x - 1.0,
-                        1.0 - 2.0 * aPosition.y / ubo.uTargetSize.y);
-        gl_Position = ubo.uClip * vec4(ndc, 0.0, 1.0);
-    }
+    gl_Position = ubo.uClip * (ubo.uMvp * vec4(aPosition, 1.0));
 }

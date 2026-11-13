@@ -10,6 +10,13 @@
 // dismissal is disabled: the switch is not cancellable. Escape and clicks are
 // swallowed, and a second run while busy is ignored rather than queued.
 //
+// The window-level work — blocking input behind the surface, disabling the
+// content tree with an exact restore, and returning focus — is md::Overlay's.
+// The content is disabled late (setContentDisabled on the modal's Overlay once
+// the scrim is fully opaque) so the content's disabled-token repaint happens
+// behind an opaque frame, and Overlay restores the saved state when the modal
+// pops.
+//
 // Failure is not a hang: the work callback is called inside a try/catch, a
 // throwing switch still closes the overlay after the minimum hold, and
 // lastError() carries the reason. The caller is responsible for restoring the
@@ -24,7 +31,6 @@
 
 #include <chrono>
 #include <functional>
-#include <memory>
 
 class QWidget;
 
@@ -77,14 +83,10 @@ private:
     void finishClose();
     void ensureSurface();
 
-    class ContentGuard;
-
     QPointer<QWidget> invoker_;
     QPointer<Modal> modal_;
     QPointer<SwitchingCard> card_;
-    QPointer<QWidget> focusBefore_;
     animation::Animator* hold_ = nullptr;
-    std::unique_ptr<ContentGuard> contentGuard_;
     std::function<void()> work_;
 
     bool busy_ = false;

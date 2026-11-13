@@ -195,6 +195,11 @@ private:
     bool manualSwitchClock_ = false;
     animation::Animator* chevronAnimator_ = nullptr;
     qreal chevronProgress_ = 0.0;
+    // Where the chevron run is heading. The finished handler has to snap to this
+    // rather than to menuOpen_: the menu flag flips when the overlay work runs,
+    // which is after the close animation finishes, so reading it there snapped a
+    // closing chevron back to fully open.
+    qreal chevronTarget_ = 0.0;
     bool menuOpen_ = false;
     bool pressed_ = false;
 };

@@ -1,10 +1,19 @@
 // Periodicity — dialogs.
 //
-// A Dialog is an in-window overlay, not a top-level window: open() reparents
-// nothing and creates no platform window, it simply covers the parent widget,
-// paints the scrim and the centred surface, and follows the parent's resize.
-// That keeps the whole family testable under the offscreen platform and lets a
-// dialog composite inside the same backing store as its host.
+// A Dialog is an in-window overlay, not a top-level window: open() creates no
+// platform window and covers the window's surface, paints the scrim and the
+// centred card, and follows the window's resize. That keeps the whole family
+// testable under the offscreen platform and lets a dialog composite inside the
+// same backing store as its host.
+//
+// The window-level part — finding the window, stacking the dialog above what
+// is already up, blocking input below it, disabling/restoring the content root
+// and restoring focus — is md::Overlay (md/view/overlay.h). open() is a push
+// and close()/accept()/reject() are a pop plus a hide. Dialog keeps only its
+// own contract: the title, the text, the action row, the body hooks and the
+// accepted/rejected protocol. It no longer installs a parent event filter and
+// it does not decide whether it is top-most; when it is not, Overlay never
+// delivers the input to it.
 //
 // The base class owns the surface, the title, the body slot, the action row and
 // the accept/reject protocol. Subclasses supply the body: plain text for the
@@ -16,9 +25,9 @@
 // Escape rejects. A press outside the surface rejects when
 // scrimDismissible() is true. close() hides without emitting; accept() and
 // reject() hide and emit.
-
 #pragma once
 
+#include <md/view/overlay.h>
 #include <md/view/view_group.h>
 
 #include <QList>
@@ -62,7 +71,7 @@ public:
     void setScrimDismissible(bool dismissible);
     [[nodiscard]] bool isScrimDismissible() const noexcept;
 
-    // open() covers the parent and takes focus; close() only hides.
+    // open() covers the window and takes focus; close() only hides.
     void open();
     void close();
     [[nodiscard]] bool isOpen() const noexcept;
@@ -110,7 +119,6 @@ protected:
     void mousePressEvent(QMouseEvent* event) override;
     void mouseReleaseEvent(QMouseEvent* event) override;
     void keyPressEvent(QKeyEvent* event) override;
-    bool eventFilter(QObject* watched, QEvent* event) override;
     void onThemeChanged() override;
     [[nodiscard]] bool focusable() const override;
 
@@ -122,8 +130,8 @@ private:
     };
 
     void syncAppearance();
-    void applyOverlayGeometry();
-    void detachParentFilter();
+    void relayoutSurface();
+    void handleWindowHidden();
     void handleAction(int index);
 
     [[nodiscard]] qreal surfaceWidth() const;
@@ -136,6 +144,9 @@ private:
     QString title_;
     QString text_;
 
+    // The host this dialog is pushed onto while open. A QPointer because the
+    // window may die while the dialog survives (only when it was reparented).
+    QPointer<Overlay> overlay_;
     bool open_ = false;
     bool scrimDismissible_ = true;
     bool pressedScrim_ = false;

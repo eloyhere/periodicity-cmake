@@ -7,6 +7,7 @@
 #include <md/theme/theme.h>
 #include <md/tokens/motion.h>
 #include <md/tokens/state_layer.h>
+#include <md/view/overlay.h>
 #include <md/view/view.h>
 
 #include <QApplication>
@@ -181,82 +182,6 @@ private:
 };
 
 // ---------------------------------------------------------------------------
-// SwitchingOverlay::ContentGuard — QPointer-guarded RAII restore.
-//
-// The guard saves the enabled state of every direct child of the window except
-// the overlay, disables the enabled ones, and restores exactly those states on
-// destruction (success, throw, shutdown, or the overlay being deleted while
-// open). The captured focus widget is restored if it is still alive, visible
-// and enabled; otherwise focus falls back to the invoking trigger, then the
-// window.
-// ---------------------------------------------------------------------------
-class SwitchingOverlay::ContentGuard
-{
-public:
-    ContentGuard(QWidget* window, QWidget* overlay, QWidget* invoker, QWidget* focus)
-        : window_(window)
-        , fallback_(invoker)
-        , focus_(focus)
-    {
-        if (window_ == nullptr)
-            return;
-
-        const QList<QWidget*> children =
-            window_->findChildren<QWidget*>(Qt::FindDirectChildrenOnly);
-        for (QWidget* child : children) {
-            if (child == nullptr || child == overlay)
-                continue;
-            // A transient popup/tooltip that is a window of its own is not part
-            // of the content tree.
-            if (child->isWindow())
-                continue;
-
-            entries_.append(Entry{child, child->isEnabled()});
-            if (child->isEnabled())
-                child->setEnabled(false);
-        }
-    }
-
-    ~ContentGuard() { restore(); }
-
-    ContentGuard(const ContentGuard&) = delete;
-    ContentGuard& operator=(const ContentGuard&) = delete;
-
-    void restore()
-    {
-        if (restored_)
-            return;
-        restored_ = true;
-
-        for (const Entry& entry : std::as_const(entries_)) {
-            if (entry.widget != nullptr)
-                entry.widget->setEnabled(entry.enabled);
-        }
-
-        QWidget* target = focus_.data();
-        if (target == nullptr || !target->isVisible() || !target->isEnabled())
-            target = fallback_.data();
-        if (target == nullptr || !target->isVisible() || !target->isEnabled())
-            target = window_.data();
-        if (target != nullptr && target->isVisible() && target->isEnabled())
-            target->setFocus(Qt::OtherFocusReason);
-    }
-
-private:
-    struct Entry
-    {
-        QPointer<QWidget> widget;
-        bool enabled = true;
-    };
-
-    QPointer<QWidget> window_;
-    QPointer<QWidget> fallback_;
-    QPointer<QWidget> focus_;
-    QList<Entry> entries_;
-    bool restored_ = false;
-};
-
-// ---------------------------------------------------------------------------
 // SwitchingOverlay
 // ---------------------------------------------------------------------------
 
@@ -273,9 +198,9 @@ SwitchingOverlay::SwitchingOverlay(QWidget* invoker, QObject* parent)
 
 SwitchingOverlay::~SwitchingOverlay()
 {
-    // The RAII guard restores the content tree and focus even if the overlay is
-    // deleted while the transition is still open.
-    contentGuard_.reset();
+    // Destroying the modal removes its Overlay entry through the destroyed
+    // notification, which restores the content tree and focus even when the
+    // overlay is deleted mid-transition.
     if (modal_ != nullptr) {
         modal_->disconnect(this);
         delete modal_.data();
@@ -302,10 +227,6 @@ void SwitchingOverlay::run(std::function<void()> work)
     closing_ = false;
     lastError_.clear();
 
-    // Capture the focus before the overlay's Modal steals it on open. The guard
-    // is created later, once the scrim is opaque, but it must restore this
-    // widget, not the busy card that currently owns focus.
-    focusBefore_ = QApplication::focusWidget();
     work_ = std::move(work);
 
     ensureSurface();
@@ -319,11 +240,13 @@ void SwitchingOverlay::run(std::function<void()> work)
     // The scrim is deliberately opaque: disabling the content root repaints it
     // with disabled tokens, and those tokens must not flash through the busy
     // surface. The scrim is therefore a functional cover, not decoration. It
-    // is applied after the entrance reaches full opacity, so the disabled
-    // repaint happens entirely behind an opaque frame.
+    // is applied after the entrance reaches full opacity (performWork), so the
+    // disabled repaint happens entirely behind an opaque frame. Overlay saves
+    // the exact state and restores it when the modal pops.
     modal_->setDim(1.0);
     modal_->setDismissOnClick(false);
     modal_->setDismissOnEscape(false);
+    modal_->setDisablesContent(false);
     modal_->setManualAnimationClock(manualClock_);
 
     hold_->setManualClock(manualClock_);
@@ -332,8 +255,12 @@ void SwitchingOverlay::run(std::function<void()> work)
     holdSpec.easing = easingCurve(Easing::Linear);
     hold_->start(holdSpec, [](qreal) {});
 
-    card_->startProgress();
+    // The clock has to be switched before the run starts. Animator::setManualClock()
+    // stops whatever is in flight, so starting the indicator on the wall clock and
+    // only then switching would stop it at 0 with nothing left to advance it, and
+    // under a manual clock the indicator would never move at all.
     card_->setManualAnimationClock(manualClock_);
+    card_->startProgress();
 
     modal_->open();
 }
@@ -399,10 +326,14 @@ void SwitchingOverlay::performWork()
     if (!busy_ || workDone_)
         return;
 
-    if (contentGuard_ == nullptr) {
-        contentGuard_ = std::make_unique<ContentGuard>(
-            modal_ != nullptr ? modal_->window() : nullptr, modal_.data(),
-            invoker_.data(), focusBefore_.data());
+    // The entrance is complete (Modal emits openFinished only when the scrim
+    // is fully opaque). Arm the deferred content disable now: the work itself
+    // may rebuild fonts or translators and must run against a content tree
+    // that cannot take input. Overlay keeps the exact saved state and restores
+    // it when the modal pops, including a child that was already disabled.
+    if (modal_ != nullptr) {
+        if (Overlay* overlay = modal_->overlay())
+            overlay->setContentDisabled(modal_, true);
     }
 
     try {
@@ -444,9 +375,9 @@ void SwitchingOverlay::finishClose()
     if (card_ != nullptr)
         card_->stopProgress();
 
-    // Restore only after the scrim has hidden: an enabled repaint must not
-    // appear underneath the exit fade.
-    contentGuard_.reset();
+    // The content tree and focus were restored by Modal's pop, after the scrim
+    // hid and before closeFinished() reached this slot, so no enabled repaint
+    // can appear underneath the exit fade.
     emit finished();
 }
 
@@ -471,7 +402,7 @@ void SwitchingOverlay::ensureSurface()
     card_ = card;
     modal->setCard(card);
     modal->setAnchor(invoker_.data());
-    modal->setFocusReturn(invoker_.data());
+    modal->setFocusFallback(invoker_.data());
 
     connect(modal, &Modal::openFinished, this, [this] {
         if (busy_)

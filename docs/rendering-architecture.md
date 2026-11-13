@@ -426,3 +426,101 @@ Two hosts, chosen at runtime, same semantics:
 - **Quick3D stays outside this path**: a Quick3D scene keeps its own context and is
   composited as one more texture, never as a participant in the layer model.
 
+## Layer, Modal, Overlay (decided 13 November 2026)
+
+A floating surface used to solve the window-level problems itself: `Modal` found
+its window, disabled it, saved the focus and kept a layer registry; `Dialog`
+painted a private scrim and installed a parent event filter; `SwitchingOverlay`
+had its own content guard. The split is now explicit, and a unit that reaches
+past it is a bug in the split, not a feature of the unit.
+
+| Unit | Owns | Must not own |
+| --- | --- | --- |
+| `layer/` | Painting inside one widget's surface: background, surface, state layer, focus ring, ripple, elevation, scrim paint helper | Windows, stacking, input arbitration, focus, disabling |
+| `Modal` (`components/`) | The interaction contract: scrim, card, focus trap, `scrimDismissible`, Escape/dismiss policy, enter/exit motion | Finding the window, `setEnabled`, saving focus, owning a stack |
+| `Overlay` (`view/`) | The window-level host: the stack of live surfaces, z-order, top-most input, content-root disable with exact restore, focus save/restore, teardown when the window dies | Design-system semantics, card painting, motion curves, translations |
+| `Dialog` (`components/`) | Title, text, action row, the `paintBody`/`handleBodyClick`/`handleBodyKey`/`arrangeBody` body contract, `accepted`/`rejected` | Its own scrim painting, its own `eventFilter` input interception, judging whether it is top-most |
+
+### Z-order contract
+
+`Overlay::forWidget()` lazily creates one Overlay per top-level window, parented
+to the window and never leaked; its transparent host widget is created on the
+first push. The host sits above the content root and is raised once when the
+overlay stack opens. Every `push()` then reparents the surface to the window
+and raises it, so the stack order **is** the sibling order: the newest surface
+is above every older surface and above the host. `top()` is the last stack
+entry, not a scan of visible children, and nothing here depends on creation
+order or the order the window happened to add children in. Nested pushes are
+expected: a Dialog opened from a PickerSheet is pushed after the sheet's Modal
+and is therefore above it. `Modal::Level` remains for the legacy layer
+registry, but it is not the stack that `Modal` lives in.
+
+The stack is the only definition of top-most: `Modal` traps Tab and consumes
+Escape only while `overlay->top() == this`; a Dialog never asks, because a
+surface that is not on top does not receive the input at all.
+
+### Input and content
+
+While the stack is non-empty, `Overlay` is an application event filter. Events
+delivered to the top surface or its descendants are forwarded untouched, so the
+surface's own key handling and focus trap still apply. Events delivered
+anywhere else in the window are swallowed when the top surface asked for
+`blockInput`: mouse press/release/double-click/move, wheel, context menu, touch,
+tablet, drag-and-drop, key press/release, `ShortcutOverride` and `Shortcut`.
+Hover, enter/leave and focus events are forwarded because they are state
+notifications, not activation. Events for other windows are always forwarded.
+
+The filter cannot latch: it is removed on the last pop, on the last surface
+being destroyed, and in the destructor, and it returns immediately while the
+stack is empty. `blockInput = false` is therefore also the escape hatch for a
+non-modal surface.
+
+`disableContent` is a request, not a new state model. The content roots — the
+direct children of the window except the host and the pushed surfaces, and
+excluding transient popups that are windows of their own — are disabled when the
+first request appears and re-enabled with their exact saved states when the last
+one disappears. Descendants are never touched, so a child that was already
+disabled stays disabled. `setContentDisabled()` arms the same request after a
+push; the busy switch surface uses it so the disabled repaint happens behind its
+opaque scrim and not under its entrance fade.
+
+Focus is captured from `QApplication::focusWidget()` on the outermost push and
+restored on the last pop if the widget still exists, is visible and is enabled.
+An explicitly named focus-return target (Modal's `setFocusReturn()`) wins over
+the captured widget; the remaining fallbacks are the invoker
+(`setFocusFallback()`), then the content root. Inner pops restore nothing, which
+is what makes a nested stack restore focus exactly once. Restoration calls
+`QWidget::setFocus()` and does not activate the window: on an inactive window Qt
+records the focus child for activation instead of exposing it through
+`QApplication::focusWidget()`, and raising a window is the host's decision.
+
+Destroying a surface while it is pushed is the one path whose window-level
+restore is queued: the entry leaves the stack immediately, but the content
+state, focus, host and filter are settled on the next event-loop turn, after
+`~QWidget` has finished. `QWidget` emits `destroyed()` from inside its own
+destructor, before its children are gone, so restoring there would drive focus
+and enabled state through a tree that is still being taken apart.
+
+### Native-window boundary
+
+`Overlay` guarantees the top-most *in-window* surface only. Native menus,
+native tooltips, platform file dialogs and any other top-level `QWindow` are
+separate windows; the platform compositor places them above this window by
+definition, and `Overlay` neither sees nor orders them. A surface that itself
+creates a native window is outside this contract.
+
+Transitional: an in-window surface that still uses the legacy `Modal::Level`
+registry and has not been migrated (`Dropdown`, `Menu`, `Tooltip`, a modal
+`BottomSheet`) is not on the Overlay stack. Opening one above a Modal or Dialog
+therefore puts it outside the contract, and Overlay will treat its input as
+input below the top surface. Migrate such a surface to `push()`/`pop()` before
+relying on it above an Overlay surface.
+
+### The rule for new surfaces
+
+A new overlay surface must not touch the window. It pushes itself with the
+behaviour it needs, asks `Overlay` for the top-most check, and pops when its
+exit is invisible. If it needs something from the window that `Overlay` does not
+offer — another lifecycle signal, another input class, another saved state — the
+`Overlay` is missing an operation: add it there, next to the state it belongs
+to, instead of reaching for `window()` inside the component.
