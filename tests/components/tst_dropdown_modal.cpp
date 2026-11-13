@@ -13,6 +13,10 @@
 #include <QTest>
 #include <QWidget>
 
+#if defined(_MSC_VER) && defined(_DEBUG)
+#    include <crtdbg.h>
+#endif
+
 namespace {
 
 class Leaf final : public md::View
@@ -39,6 +43,36 @@ QPoint globalOf(const QWidget& widget, const QPoint& local)
 {
     return widget.mapToGlobal(local);
 }
+
+#if defined(_MSC_VER) && defined(_DEBUG)
+// Keeps freed blocks in the debug heap and fills them with the 0xDD pattern,
+// so a use-after-free of the destroyed host window faults deterministically
+// instead of depending on whether the allocator reused the block.
+class DelayedFreeScope
+{
+public:
+    DelayedFreeScope()
+        : previous_(_CrtSetDbgFlag(_CRTDBG_REPORT_FLAG))
+    {
+        _CrtSetDbgFlag(previous_ | _CRTDBG_DELAY_FREE_MEM_DF);
+    }
+
+    ~DelayedFreeScope() { _CrtSetDbgFlag(previous_); }
+
+    DelayedFreeScope(const DelayedFreeScope&) = delete;
+    DelayedFreeScope& operator=(const DelayedFreeScope&) = delete;
+
+private:
+    int previous_;
+};
+#else
+// The poisoning is a debug-CRT aid; the scenario still runs everywhere else.
+class DelayedFreeScope
+{
+public:
+    DelayedFreeScope() = default;
+};
+#endif
 
 } // namespace
 
@@ -68,6 +102,7 @@ private slots:
     void modalReducedMotionSnaps();
     void modalTrapsAndRestoresFocus();
     void modalHideStopsAnimation();
+    void modalOutlivesItsHostWindow();
 };
 
 namespace {
@@ -440,6 +475,45 @@ void TestDropdownModal::modalHideStopsAnimation()
     QTest::qWait(700);
     QVERIFY(!modal.isAnimating());
     QCOMPARE(modal.scrimOpacity(), 0.0);
+}
+
+void TestDropdownModal::modalOutlivesItsHostWindow()
+{
+    auto* oldHost = new QWidget;
+    oldHost->resize(640, 480);
+    // Deliberately not shown: a modal whose window is hidden is open but not
+    // visible, so reparenting it below does not send a Hide event. (A visible
+    // modal would be aborted by hideEvent(), which removes the filters while
+    // the old host is still alive.)
+
+    auto* modal = new md::Modal(oldHost);
+    modal->setAnimated(false);
+    modal->open();
+    QVERIFY(modal->isOpen());
+
+    // Language::showSelector() reparents an already-open modal to the new
+    // window before the old window goes away.
+    auto* newHost = new QWidget;
+    newHost->resize(800, 600);
+    newHost->show();
+    modal->setParent(newHost);
+    QVERIFY(modal->isOpen());
+
+    {
+        DelayedFreeScope poison;
+        delete oldHost; // Modal::host_ still points at this window
+
+        // host_ must have cleared with the window. close() removes the event
+        // filters and must not dereference the freed QWidget.
+        QSignalSpy closeFinished(modal, &md::Modal::closeFinished);
+        modal->close();
+        QVERIFY(!modal->isOpen());
+        QCOMPARE(closeFinished.count(), 1);
+
+        delete modal;
+    }
+
+    delete newHost;
 }
 
 QTEST_MAIN(TestDropdownModal)

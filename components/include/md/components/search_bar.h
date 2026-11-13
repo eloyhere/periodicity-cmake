@@ -112,6 +112,10 @@ private:
     QStringList filtered_;
     int highlighted_ = -1;
     bool suppressSuggestions_ = false;
+    // Set only while a key is being re-sent to the editor. Qt retries an
+    // unaccepted key on the receiving widget's parent, which is this bar, so
+    // without the flag the retry would be forwarded again and recurse.
+    bool forwardingKey_ = false;
 };
 
 } // namespace md

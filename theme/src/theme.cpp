@@ -10,6 +10,7 @@
 #include <md/theme/theme_scope.h>
 #include <md/tokens/state_layer.h>
 
+#include <QPointer>
 #include <QApplication>
 #include <QCoreApplication>
 #include <QEvent>
@@ -280,8 +281,20 @@ void Theme::setApplicationTheme(Theme theme)
     // derived scopes even when their host has not been shown yet. Derived
     // scopes must see the new application theme before their hosts process the
     // ThemeChange that follows.
+    // Snapshot through QPointer: refreshAdaptersInSubtree() emits themeChanged,
+    // and a slot that rebuilds a subtree deletes widgets that are still in
+    // allWidgets(). Iterating the raw list would then call ThemeScope::find() on
+    // freed memory.
     const QWidgetList widgets = QApplication::allWidgets();
-    for (QWidget* widget : widgets) {
+    QList<QPointer<QWidget>> snapshot;
+    snapshot.reserve(widgets.size());
+    for (QWidget* widget : widgets)
+        snapshot.append(QPointer<QWidget>(widget));
+
+    for (const QPointer<QWidget>& entry : snapshot) {
+        QWidget* widget = entry.data();
+        if (widget == nullptr)
+            continue;
         if (ThemeScope::find(widget) != nullptr)
             ThemeScope::refreshAdaptersInSubtree(widget, nullptr);
     }

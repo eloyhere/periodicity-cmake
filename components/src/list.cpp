@@ -19,6 +19,7 @@
 #include <QPainter>
 #include <QPalette>
 #include <QPixmap>
+#include <QPointer>
 #include <QRectF>
 #include <QResizeEvent>
 #include <QSizeF>
@@ -101,7 +102,7 @@ void List::setItemDelegate(QStyledItemDelegate* delegate)
 
 QStyledItemDelegate* List::itemDelegate() const
 {
-    return delegate_;
+    return delegate_.data();
 }
 
 void List::setRowHeight(qreal dp)
@@ -178,8 +179,9 @@ void List::setCurrentIndex(const QModelIndex& index)
     if (next.isValid())
         ensureVisible(next.row());
 
-    emit currentIndexChanged(currentIndex());
+    // Emit last: a currentIndexChanged handler is free to delete the List.
     requestUpdate();
+    emit currentIndexChanged(currentIndex());
 }
 
 void List::clearSelection()
@@ -190,8 +192,8 @@ void List::clearSelection()
         return;
 
     current_ = QPersistentModelIndex();
-    emit currentIndexChanged(QModelIndex());
     requestUpdate();
+    emit currentIndexChanged(QModelIndex());
 }
 
 qreal List::scrollOffset() const noexcept
@@ -323,11 +325,14 @@ void List::connectModel()
             if (selectionRemoved) {
                 current_ = QPersistentModelIndex();
                 hasSelection_ = false;
-                emit currentIndexChanged(QModelIndex());
             }
 
             clampScroll();
             requestUpdate();
+
+            // Emit last: a currentIndexChanged handler may delete the List.
+            if (selectionRemoved)
+                emit currentIndexChanged(QModelIndex());
         } catch (...) {
             // A model that throws while the view repairs itself must not break
             // the widget.
@@ -343,9 +348,11 @@ void List::connectModel()
             hoveredRow_ = -1;
             pressedRow_ = -1;
             scrollOffset_ = 0.0;
+
+            requestUpdate();
+            // Emit last: a currentIndexChanged handler may delete the List.
             if (hadCurrent)
                 emit currentIndexChanged(QModelIndex());
-            requestUpdate();
         } catch (...) {
             // A model that throws while the view repairs itself must not break
             // the widget.
@@ -412,10 +419,15 @@ void List::paintRow(QPainter& painter, int row, const QRectF& rect, bool selecte
     const Density& density = theme.density();
     const QModelIndex index = model_->index(row, 0);
 
+    // The delegate is shared and not owned. If its owner destroyed it while
+    // it was installed, the QPointer is null and the row falls back to the
+    // default painting instead of calling a dead object.
+    QStyledItemDelegate* delegate = delegate_.data();
+
     painter.save();
     painter.setClipRect(rect);
 
-    if (selected && delegate_ == nullptr)
+    if (selected && delegate == nullptr)
         painter.fillRect(rect, colours.secondaryContainer);
     else if (hovered)
         painter.fillRect(rect, colours.stateLayer(colours.onSurface, ViewState::Hovered));
@@ -424,7 +436,7 @@ void List::paintRow(QPainter& painter, int row, const QRectF& rect, bool selecte
     const QRectF itemRect = rect.adjusted(padding, 0.0, -padding, 0.0);
     const bool rightToLeft = layoutDirection() == Qt::RightToLeft;
 
-    if (delegate_ != nullptr) {
+    if (delegate != nullptr) {
         QStyleOptionViewItem option;
         option.rect = itemRect.toRect();
         option.widget = this;
@@ -453,7 +465,7 @@ void List::paintRow(QPainter& painter, int row, const QRectF& rect, bool selecte
         if (hovered)
             option.state |= QStyle::State_MouseOver;
 
-        delegate_->paint(&painter, option, index);
+        delegate->paint(&painter, option, index);
     } else {
         paintDefaultRow(painter, index, itemRect, selected);
     }
@@ -523,10 +535,17 @@ void List::mousePressEvent(QMouseEvent* event)
     if (event->button() != Qt::LeftButton)
         return;
 
+    // setFocus() can run application event filters that delete the List.
+    QPointer<List> self(this);
     setFocus(Qt::MouseFocusReason);
+    if (self.isNull())
+        return;
+
     pressedRow_ = rowAtPosition(event->position());
     if (pressedRow_ >= 0)
         setCurrentIndex(indexAt(pressedRow_));
+    if (self.isNull())
+        return;
 
     requestUpdate();
 }
@@ -542,10 +561,10 @@ void List::mouseReleaseEvent(QMouseEvent* event)
     const int pressed = pressedRow_;
     pressedRow_ = -1;
 
+    // Emit last: a clicked handler is free to delete the List.
+    requestUpdate();
     if (pressed >= 0 && pressed == released)
         emit clicked(indexAt(released));
-
-    requestUpdate();
 }
 
 void List::mouseDoubleClickEvent(QMouseEvent* event)

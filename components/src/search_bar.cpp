@@ -446,11 +446,25 @@ void SearchBar::mousePressEvent(QMouseEvent* event)
 
 void SearchBar::keyPressEvent(QKeyEvent* event)
 {
-    // The editor is the focus proxy, so keys normally arrive there. A host may
-    // still deliver a key to the bar itself (or a test may type into it), so
-    // the editing engine receives it either way.
+    // The editor is the focus proxy in normal use, so keys arrive there
+    // directly. A key delivered to the bar itself (a host, an accessibility
+    // tool, or Qt's retry of a key the editor did not accept) is forwarded to
+    // the editing engine exactly once. The retry matters: QApplication retries
+    // an unaccepted key on the receiver's parentWidget(), which is this bar, so
+    // forwarding the in-flight event again would re-enter this handler until
+    // the stack overflows. The copy plus the flag mirrors Mention.
+    if (forwardingKey_) {
+        event->ignore();
+        return;
+    }
+
     if (editor_ != nullptr) {
-        QCoreApplication::sendEvent(editor_, event);
+        QKeyEvent forwarded(event->type(), event->key(), event->modifiers(), event->text(),
+                            event->isAutoRepeat(), event->count());
+        forwardingKey_ = true;
+        QCoreApplication::sendEvent(editor_, &forwarded);
+        forwardingKey_ = false;
+        event->accept();
         return;
     }
 

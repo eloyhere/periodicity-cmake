@@ -127,7 +127,12 @@ private:
                          bool selected);
 
     QPointer<QAbstractItemModel> model_;
-    QStyledItemDelegate* delegate_ = nullptr;
+    // The delegate is shared and never owned by the List. A QPointer because
+    // the owner can destroy it while it is still installed; the pointer then
+    // clears and paintRow() falls back to the default row instead of calling
+    // into freed memory. setItemDelegate(nullptr) restores the default row
+    // before the owner goes away, but it is not required for safety.
+    QPointer<QStyledItemDelegate> delegate_;
     QPersistentModelIndex current_;
     // beginResetModel() invalidates current_ before modelReset() is emitted,
     // so the reset notification needs the selection state cached here.

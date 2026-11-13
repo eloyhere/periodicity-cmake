@@ -10,6 +10,7 @@
 #include <QMouseEvent>
 #include <QPainter>
 #include <QPen>
+#include <QPointer>
 #include <QWheelEvent>
 
 #include <algorithm>
@@ -358,8 +359,17 @@ void NavigationView::activate(int index)
     if (entry.kind != Entry::Kind::Item || !entry.enabled)
         return;
 
+    // Copy everything read after the notification before causing it: a
+    // selectionChanged handler may call setEntries()/clearEntries(), which
+    // frees the entry this reference points into.
+    const QString label = entry.label;
+
+    QPointer<NavigationView> guard(this);
     setSelectedIndex(index);
-    emit itemActivated(index, entry.label);
+    if (guard.isNull())
+        return;
+
+    emit itemActivated(index, label);
 }
 
 // ---------------------------------------------------------------------------

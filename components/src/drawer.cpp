@@ -752,14 +752,21 @@ void Drawer::activateItem(int index)
     if (index < 0 || index >= itemCount())
         return;
 
+    // Guards are created before the first signal: applySelection() emits
+    // selectionChanged, and a slot that deletes the drawer would make every step
+    // below a use-after-free. The old code only armed the guard after the emit.
+    const QPointer<Drawer> guard(this);
+
     applySelection(index, true);
+    if (guard.isNull())
+        return;
+
     ensureItemVisible(index);
 
     const QString label = itemLabel(index);
 
     // A slot may close the host, or delete the drawer; the guard turns the
     // follow-up close() into a no-op instead of a dangling call.
-    const QPointer<Drawer> guard(this);
     emit itemActivated(index, label);
 
     if (!guard.isNull() && isModal() && open_)

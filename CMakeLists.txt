@@ -47,7 +47,17 @@ add_subdirectory(animation)
 add_subdirectory(ripple)
 add_subdirectory(view)
 add_subdirectory(layout)
+# gfx is the software drawing substrate: data types plus the rasterizer that
+# render/ (phase 2) will drive. It sits above layout and below components, and
+# links Qt Gui/Core only, so it stays usable without a window system.
+add_subdirectory(gfx)
 add_subdirectory(components)
+
+# Phase 1 of docs/rendering-architecture.md: components may use gfx (and, in
+# phase 3, Context2D will emit its CommandBuffers), but no components header is
+# changed yet. Linking here keeps the module graph correct without editing the
+# components module declaration.
+target_link_libraries(periodicity_components PUBLIC periodicity::gfx)
 
 # Translations. The .ts sources are compiled to .qm and embedded under
 # :/i18n, which is exactly where md::i18n::install() looks them up.

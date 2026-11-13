@@ -29,6 +29,7 @@
 #include <QSignalSpy>
 #include <QSize>
 #include <QStringList>
+#include <QStyledItemDelegate>
 #include <QTest>
 #include <QVariant>
 #include <QWheelEvent>
@@ -186,6 +187,7 @@ private slots:
 
     void listSelectionAndKeyboard();
     void listClicksAndScrolling();
+    void listSurvivesItsDelegateBeingDestroyed();
     void firstVisibleRowStaysInsideModel();
 
     void recyclerVirtualisation();
@@ -772,6 +774,36 @@ private:
 };
 
 } // namespace
+
+void TestDisplayControls::listSurvivesItsDelegateBeingDestroyed()
+{
+    StringModel model(8);
+
+    md::List list;
+    list.setModel(&model);
+    list.setRowHeight(40.0);
+    list.arrange(QRect(0, 0, 240, 200));
+
+    auto* delegate = new QStyledItemDelegate;
+    list.setItemDelegate(delegate);
+    QCOMPARE(list.itemDelegate(), delegate);
+
+    // The delegate is shared and not owned by the List. Destroying it must
+    // clear the List's pointer instead of leaving a dangling one.
+    delete delegate;
+    QVERIFY(list.itemDelegate() == nullptr);
+
+    // Painting now falls back to the default row; it must not call the dead
+    // delegate. The result matches a list that never had a delegate.
+    md::List plain;
+    plain.setModel(&model);
+    plain.setRowHeight(40.0);
+    plain.arrange(QRect(0, 0, 240, 200));
+
+    const QImage painted = renderWidget(list);
+    QVERIFY(paintedPixels(painted) > 0);
+    QVERIFY(painted == renderWidget(plain));
+}
 
 void TestDisplayControls::firstVisibleRowStaysInsideModel()
 {

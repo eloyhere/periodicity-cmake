@@ -14,6 +14,7 @@
 
 #include <md/theme/theme.h>
 
+#include <cmath>
 #include <QLinearGradient>
 #include <QPainter>
 #include <QPen>
@@ -166,7 +167,10 @@ void Affix::arrangeChildren(const QRectF& content)
     content_->measure(MeasureSpec::exactly(width), MeasureSpec::atMost(available));
 
     const qreal height = std::min(available, std::max<qreal>(0.0, content_->measuredSize().height()));
-    const qreal top = content.top() + offset();
+    // A non-finite offset would reach qRound() below, and a non-finite
+    // double-to-int conversion is undefined behaviour.
+    const qreal rawTop = content.top() + offset();
+    const qreal top = std::isfinite(rawTop) ? rawTop : content.top();
 
     content_->arrange(QRect(qRound(content.left()), qRound(top), qRound(width), qRound(height)));
 }

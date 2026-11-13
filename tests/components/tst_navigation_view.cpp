@@ -55,6 +55,7 @@ private slots:
     void keyboardSkipsSectionsAndDisabled();
     void scrollingIsClamped();
     void entriesCanBeReplacedAndCleared();
+    void selectionHandlerMayReplaceEntries();
     void rendersWithoutCrashing();
 };
 
@@ -246,6 +247,38 @@ void TestNavigationView::entriesCanBeReplacedAndCleared()
     QCOMPARE(nav.itemCount(), 0);
     QCOMPARE(nav.selectedIndex(), -1);
     QCOMPARE(nav.scrollOffset(), 0.0);
+}
+
+void TestNavigationView::selectionHandlerMayReplaceEntries()
+{
+    md::NavigationView nav;
+    // Heap-backed labels: a QStringLiteral would keep its payload in static
+    // storage and hide a dangling read behind perfectly valid memory.
+    nav.addItem(QStringLiteral("Inbox ") + QString::number(1));
+    nav.addItem(QStringLiteral("Starred ") + QString::number(2));
+    nav.resize(320, 400);
+
+    QSignalSpy activated(&nav, &md::NavigationView::itemActivated);
+
+    // A selection handler may replace the entry list. activate() must report
+    // the label it copied before the notification, not a reference into
+    // entries_ that the handler just freed.
+    QObject::connect(&nav, &md::NavigationView::selectionChanged, &nav,
+                     [&nav](int) {
+                         md::NavigationView::Entry first;
+                         first.label = QStringLiteral("Archive ") + QString::number(3);
+                         md::NavigationView::Entry second;
+                         second.label = QStringLiteral("Starred ") + QString::number(4);
+                         nav.setEntries({first, second});
+                     });
+
+    clickAt(nav, nav.entryRect(0).center());
+
+    QCOMPARE(activated.count(), 1);
+    QCOMPARE(activated.at(0).at(0).toInt(), 0);
+    QCOMPARE(activated.at(0).at(1).toString(), QStringLiteral("Inbox 1"));
+    QCOMPARE(nav.entryCount(), 2);
+    QCOMPARE(nav.entry(0).label, QStringLiteral("Archive 3"));
 }
 
 void TestNavigationView::rendersWithoutCrashing()

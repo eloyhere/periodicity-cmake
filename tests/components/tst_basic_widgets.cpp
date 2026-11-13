@@ -15,6 +15,7 @@
 #include <QKeyEvent>
 #include <QMouseEvent>
 #include <QPainter>
+#include <QPointer>
 #include <QRectF>
 #include <QRegion>
 #include <QSignalSpy>
@@ -143,6 +144,7 @@ private slots:
     void checkBoxIndeterminate();
 
     void radioGroupIsExclusive();
+    void radioSiblingDeletionDuringUncheck();
 
     void rateClickSetsValue();
     void rateKeyboardAdjusts();
@@ -366,6 +368,36 @@ void TestBasicWidgets::radioGroupIsExclusive()
     clickAt(third, QPointF(24.0, 24.0));
     QVERIFY(third.isChecked());
     QVERIFY(second.isChecked());
+}
+
+void TestBasicWidgets::radioSiblingDeletionDuringUncheck()
+{
+    QWidget parent;
+    auto* first = new md::Radio(&parent);
+    auto* second = new md::Radio(&parent);
+    auto* third = new md::Radio(&parent);
+    first->setGroupId(2);
+    second->setGroupId(2);
+    third->setGroupId(2);
+
+    QPointer<md::Radio> thirdGuard(third);
+
+    // Checking `second` first leaves it the only checked sibling. When `first`
+    // is checked, uncheckSiblings() unchecks `second`; that handler deletes
+    // `third`, which is still ahead in the copied child list.
+    second->setChecked(true);
+    QVERIFY(second->isChecked());
+
+    QObject::connect(second, &md::Radio::toggled, [&](bool checked) {
+        if (!checked)
+            delete third;
+    });
+
+    first->setChecked(true);
+
+    QVERIFY(first->isChecked());
+    QVERIFY(!second->isChecked());
+    QVERIFY(thirdGuard.isNull());
 }
 
 void TestBasicWidgets::rateClickSetsValue()

@@ -15,6 +15,7 @@
 
 #include <md/theme/theme.h>
 
+#include <QPointer>
 #include <QFont>
 #include <QFontMetricsF>
 #include <QKeyEvent>
@@ -159,8 +160,16 @@ void Anchor::activate(int index)
     if (index < 0 || index >= anchorCount())
         return;
 
-    setActiveIndex(index);
+    // Copy before the signal: setActiveIndex() emits activeAnchorChanged, and a
+    // slot that rebuilds the list would invalidate this index.
     const AnchorItem item = anchors_.at(index);
+    const QPointer<Anchor> guard(this);
+
+    setActiveIndex(index);
+
+    if (guard.isNull())
+        return;
+
     emit anchorActivated(item.key, item.offset);
 }
 

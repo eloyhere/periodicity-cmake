@@ -9,6 +9,7 @@
 #include <QImage>
 #include <QLineEdit>
 #include <QPainter>
+#include <QPointer>
 #include <QRegion>
 #include <QSignalSpy>
 #include <QTest>
@@ -118,6 +119,7 @@ private slots:
     void suggestionActivationFillsText();
     void clickingSuggestionActivatesIt();
     void escapeClosesPopupBeforeFocusLoss();
+    void unhandledKeyDoesNotReenterKeyPressEvent();
     void accessibleNameAndPillSurface();
 };
 
@@ -399,6 +401,34 @@ void TestSearchBar::escapeClosesPopupBeforeFocusLoss()
     // The second Escape clears focus.
     QTest::keyClick(bar->editor(), Qt::Key_Escape);
     QTRY_VERIFY(!bar->editor()->hasFocus());
+}
+
+void TestSearchBar::unhandledKeyDoesNotReenterKeyPressEvent()
+{
+    QWidget host;
+    host.resize(520, 320);
+
+    auto* bar = new md::SearchBar(&host);
+    bar->setGeometry(20, 20, 360, 56);
+    showHost(host);
+
+    bar->editor()->setFocus(Qt::OtherFocusReason);
+    QTRY_VERIFY(bar->editor()->hasFocus());
+
+    QPointer<md::SearchBar> guard(bar);
+
+    // QLineEdit does not accept F5. Qt retries the unaccepted key on the
+    // editor's parent (the bar), which must forward it at most once instead of
+    // bouncing it back into its own keyPressEvent() until the stack overflows.
+    QTest::keyClick(bar->editor(), Qt::Key_F5);
+    QVERIFY(!guard.isNull());
+    QVERIFY(bar->editor() != nullptr);
+    QVERIFY(bar->text().isEmpty());
+
+    // Down with no filtered rows is likewise left unaccepted by the editor.
+    QTest::keyClick(bar->editor(), Qt::Key_Down);
+    QVERIFY(!guard.isNull());
+    QVERIFY(!bar->isPopupVisible());
 }
 
 void TestSearchBar::accessibleNameAndPillSurface()

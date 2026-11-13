@@ -28,6 +28,7 @@
 #include <md/view/view_group.h>
 
 #include <QList>
+#include <QPointer>
 #include <Qt>
 
 #include <memory>
@@ -164,6 +165,13 @@ private:
     };
 
     void forgetGoneChildren();
+
+    // The children of the behaviours that take part in dispatch, in
+    // registration order, guarded so that a callback which deletes a child is
+    // observable before that child's behaviour would be called. The behaviour
+    // itself is re-read from entries_ immediately before each call instead of
+    // being held across a callback, because a callback may remove it.
+    [[nodiscard]] QList<QPointer<View>> dispatchChildren() const;
 
     std::vector<Entry> entries_;
     bool scrolling_ = false;

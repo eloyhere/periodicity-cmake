@@ -15,12 +15,15 @@
 // covers software output; GPU output is covered by the capability branch here.
 
 #include <QApplication>
+#include <QCoreApplication>
+#include <QEvent>
 #include <QList>
 #include <QPainter>
 #include <QRectF>
 #include <QSizeF>
 #include <QString>
 #include <QTest>
+#include <QWidget>
 #include <QtGlobal>
 
 #include <md/components/chart_common.h>
@@ -67,6 +70,8 @@ private slots:
     void disablingRestoresSoftware();
     void compositorFallsBackWithoutGpu();
     void compositorCanHostAView();
+    void compositorDetachesAReparentedView();
+    void compositorDestroysWithAnInvalidContext();
     void gpuCanvasFallsBackWithoutGpu();
     void chartCanOptInThroughTheKernel();
     void backendNamesAreStable();
@@ -185,6 +190,62 @@ void TestRenderBackend::compositorCanHostAView()
     compositor.removeView(view);
     QVERIFY(!compositor.views().contains(view));
     delete view;
+}
+
+void TestRenderBackend::compositorDetachesAReparentedView()
+{
+    auto* compositor = new md::GpuCompositor;
+    auto* view = new TestView;
+    compositor->addView(view);
+    QVERIFY(compositor->views().contains(view));
+
+    // Reparenting the view out of the compositor drops its layer in the queued
+    // syncViews() pass. The event-filter registration has to go with it: the
+    // view outlives the compositor below.
+    QWidget newParent;
+    view->setParent(&newParent);
+    QCoreApplication::processEvents();
+    QVERIFY(!compositor->views().contains(view));
+
+    delete compositor;
+
+    // The view's next event must not be routed through a filter that lives in
+    // the destroyed compositor.
+    QEvent event(QEvent::UpdateRequest);
+    QCoreApplication::sendEvent(view, &event);
+    QCOMPARE(view->parentWidget(), &newParent);
+
+    // removeView() is the other removal path and must detach as well.
+    auto* second = new md::GpuCompositor;
+    auto* secondView = new TestView;
+    second->addView(secondView);
+    QVERIFY(second->views().contains(secondView));
+    second->removeView(secondView);
+    QVERIFY(secondView->parentWidget() == nullptr);
+
+    delete second;
+    QCoreApplication::sendEvent(secondView, &event);
+    delete secondView;
+}
+
+void TestRenderBackend::compositorDestroysWithAnInvalidContext()
+{
+    if (md::GpuCompositor::isAvailable())
+        QSKIP("A GL surface is available; the invalid-context teardown is not exercised here.");
+
+    // Showing the widget forces QOpenGLWidget to attempt context creation. On
+    // this platform that yields a context object that never becomes valid,
+    // which is the state the destructor must survive: makeCurrent() is not
+    // trusted, no texture or blitter is deleted without a current context, and
+    // the still-registered child view is detached before QWidget deletes it.
+    auto* compositor = new md::GpuCompositor;
+    auto* view = new TestView(compositor);
+    compositor->addView(view);
+    compositor->show();
+    QCoreApplication::processEvents();
+    QVERIFY(!compositor->isUsingGpu());
+
+    delete compositor;
 }
 
 void TestRenderBackend::gpuCanvasFallsBackWithoutGpu()

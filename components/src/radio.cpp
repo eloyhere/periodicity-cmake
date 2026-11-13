@@ -19,6 +19,7 @@
 #include <QMouseEvent>
 #include <QPainter>
 #include <QPen>
+#include <QPointer>
 #include <QRectF>
 
 #include <algorithm>
@@ -124,11 +125,24 @@ void Radio::uncheckSiblings()
     if (parent == nullptr)
         return;
 
-    const QObjectList siblings = parent->children();
-    for (QObject* child : siblings) {
-        auto* radio = qobject_cast<Radio*>(child);
-        if (radio != nullptr && radio != this && radio->groupId_ == groupId_)
-            radio->setChecked(false);
+    // Snapshot through QPointers before toggling anything: a toggled(false)
+    // handler may delete a sibling that is still ahead in the copied child
+    // list, and a raw pointer would make the next iteration dereference freed
+    // memory. A null guard means the sibling is gone and is simply skipped.
+    QList<QPointer<Radio>> siblings;
+    const QObjectList children = parent->children();
+    siblings.reserve(children.size());
+    for (QObject* child : children) {
+        if (auto* radio = qobject_cast<Radio*>(child))
+            siblings.append(radio);
+    }
+
+    for (const QPointer<Radio>& sibling : siblings) {
+        if (sibling.isNull() || sibling.data() == this)
+            continue;
+
+        if (sibling->groupId_ == groupId_)
+            sibling->setChecked(false);
     }
 }
 

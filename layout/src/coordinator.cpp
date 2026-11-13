@@ -107,10 +107,27 @@ bool Coordinator::startNestedScroll(Qt::Orientation axis)
 
     forgetGoneChildren();
 
+    // A callback may add, remove or destroy behaviours (or delete a child,
+    // which destroys its behaviour through the destroyed() connection), so
+    // dispatch from a guarded snapshot and look the behaviour up again right
+    // before calling it. No reference into entries_ may outlive a callback.
+    const QList<QPointer<View>> targets = dispatchChildren();
+    QPointer<Coordinator> self(this);
+
     bool accepted = false;
-    for (Entry& entry : entries_) {
-        if (entry.behaviour != nullptr && entry.behaviour->onStartNestedScroll(axis))
-            accepted = true;
+    for (const QPointer<View>& target : targets) {
+        if (target.isNull())
+            continue;
+
+        CoordinatorBehaviour* behaviour = this->behaviour(target.data());
+        if (behaviour == nullptr)
+            continue;
+
+        const bool acceptedByBehaviour = behaviour->onStartNestedScroll(axis);
+        if (self.isNull())
+            return accepted || acceptedByBehaviour;
+
+        accepted = accepted || acceptedByBehaviour;
     }
 
     if (!accepted)
@@ -131,9 +148,20 @@ void Coordinator::dispatchNestedPreScroll(const QPointF& delta, QPointF* consume
     }
 
     QPointF total;
-    for (Entry& entry : entries_) {
-        if (entry.behaviour != nullptr)
-            entry.behaviour->onNestedPreScroll(delta, &total);
+    const QList<QPointer<View>> targets = dispatchChildren();
+    QPointer<Coordinator> self(this);
+
+    for (const QPointer<View>& target : targets) {
+        if (target.isNull())
+            continue;
+
+        CoordinatorBehaviour* behaviour = this->behaviour(target.data());
+        if (behaviour == nullptr)
+            continue;
+
+        behaviour->onNestedPreScroll(delta, &total);
+        if (self.isNull())
+            break;
     }
 
     if (consumed != nullptr)
@@ -145,9 +173,20 @@ void Coordinator::dispatchNestedScroll(const QPointF& consumed, const QPointF& u
     if (!scrolling_)
         return;
 
-    for (Entry& entry : entries_) {
-        if (entry.behaviour != nullptr)
-            entry.behaviour->onNestedScroll(consumed, unconsumed);
+    const QList<QPointer<View>> targets = dispatchChildren();
+    QPointer<Coordinator> self(this);
+
+    for (const QPointer<View>& target : targets) {
+        if (target.isNull())
+            continue;
+
+        CoordinatorBehaviour* behaviour = this->behaviour(target.data());
+        if (behaviour == nullptr)
+            continue;
+
+        behaviour->onNestedScroll(consumed, unconsumed);
+        if (self.isNull())
+            return;
     }
 }
 
@@ -158,9 +197,20 @@ void Coordinator::stopNestedScroll()
 
     scrolling_ = false;
 
-    for (Entry& entry : entries_) {
-        if (entry.behaviour != nullptr)
-            entry.behaviour->onStopNestedScroll();
+    const QList<QPointer<View>> targets = dispatchChildren();
+    QPointer<Coordinator> self(this);
+
+    for (const QPointer<View>& target : targets) {
+        if (target.isNull())
+            continue;
+
+        CoordinatorBehaviour* behaviour = this->behaviour(target.data());
+        if (behaviour == nullptr)
+            continue;
+
+        behaviour->onStopNestedScroll();
+        if (self.isNull())
+            return;
     }
 
     emit nestedScrollStopped();
@@ -244,6 +294,19 @@ void Coordinator::forgetGoneChildren()
     std::erase_if(entries_, [&members](const Entry& entry) {
         return !members.contains(entry.child);
     });
+}
+
+QList<QPointer<View>> Coordinator::dispatchChildren() const
+{
+    QList<QPointer<View>> children;
+    children.reserve(static_cast<qsizetype>(entries_.size()));
+
+    for (const Entry& entry : entries_) {
+        if (entry.behaviour != nullptr && entry.child != nullptr)
+            children.append(entry.child);
+    }
+
+    return children;
 }
 
 } // namespace md

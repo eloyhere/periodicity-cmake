@@ -246,8 +246,9 @@ void Modal::open()
         return;
 
     host_ = window();
-    if (host_ != nullptr && host_ != this && parentWidget() != host_)
-        setParent(host_);
+    QWidget* host = host_.data();
+    if (host != nullptr && host != this && parentWidget() != host)
+        setParent(host);
 
     open_ = true;
     closeEmitted_ = false;
@@ -319,9 +320,10 @@ QRectF Modal::scrimRect() const
 
 void Modal::applyWindowGeometry()
 {
-    if (host_ == nullptr)
+    QWidget* host = host_.data();
+    if (host == nullptr)
         return;
-    setGeometry(host_->rect());
+    setGeometry(host->rect());
     positionCard();
 }
 
@@ -401,10 +403,16 @@ void Modal::startEntrance()
     requestUpdate();
 
     const bool animate = animated_;
+    // A reduced-motion (or setAnimated(false)) entrance settles the transform
+    // synchronously and openFinished() can delete this modal from its handler.
+    QPointer<Modal> self(this);
     animateScrim(true, animate);
+    if (self.isNull())
+        return;
     if (cardTransform_ != nullptr)
         cardTransform_->enter(animate);
-
+    if (self.isNull())
+        return;
     maybeFinishOpen();
 }
 
@@ -417,10 +425,16 @@ void Modal::startExit()
     cardDone_ = (cardTransform_ == nullptr);
 
     const bool animate = animated_;
+    // Same synchronous-finish hazard as startEntrance(): closeFinished() runs
+    // inside ContainerTransform::exit(false) and may delete this modal.
+    QPointer<Modal> self(this);
     animateScrim(false, animate);
+    if (self.isNull())
+        return;
     if (cardTransform_ != nullptr)
         cardTransform_->exit(animate);
-
+    if (self.isNull())
+        return;
     maybeFinishClose();
 }
 
@@ -484,7 +498,13 @@ void Modal::finishClose()
 
     removeFilters();
     unregisterLayer(this);
+
+    // hide() runs application event filters, and any of them may delete the
+    // modal (for example a handler reacting to the scrim disappearing).
+    QPointer<Modal> self(this);
     hide();
+    if (self.isNull())
+        return;
 
     emit closeFinished();
 }
@@ -503,14 +523,21 @@ void Modal::abort()
     scrimOpacity_ = 0.0;
     open_ = false;
 
+    // Emit with a QPointer guard: a closed() handler is free to delete the
+    // modal, and the cleanup below would then run on freed memory.
+    QPointer<Modal> self(this);
     if (!closeEmitted_) {
         closeEmitted_ = true;
         emit closed();
     }
+    if (self.isNull())
+        return;
 
     removeFilters();
     unregisterLayer(this);
     restoreFocus();
+    if (self.isNull())
+        return;
 
     emit closeFinished();
 }
@@ -529,8 +556,9 @@ void Modal::restoreFocus()
         return;
     }
 
-    if (host_ != nullptr && host_ != this && host_->isVisible())
-        host_->setFocus(Qt::OtherFocusReason);
+    QWidget* host = host_.data();
+    if (host != nullptr && host != this && host->isVisible())
+        host->setFocus(Qt::OtherFocusReason);
 }
 
 QList<QWidget*> Modal::focusableWidgets() const
@@ -582,24 +610,30 @@ bool Modal::trapFocus(QKeyEvent* event)
 
 void Modal::installFilters()
 {
-    if (host_ != nullptr && host_ != this)
-        host_->installEventFilter(this);
+    QWidget* host = host_.data();
+    if (host != nullptr && host != this)
+        host->installEventFilter(this);
     if (QApplication::instance() != nullptr)
         QApplication::instance()->installEventFilter(this);
 }
 
 void Modal::removeFilters()
 {
-    if (host_ != nullptr && host_ != this)
-        host_->removeEventFilter(this);
+    // host_ is a QPointer: when the host window was destroyed while the modal
+    // survived (reparented to a new window), it is already null and there is
+    // no filter left to remove on it.
+    QWidget* host = host_.data();
+    if (host != nullptr && host != this)
+        host->removeEventFilter(this);
     if (QApplication::instance() != nullptr)
         QApplication::instance()->removeEventFilter(this);
 }
 
 void Modal::measureOverride(MeasureSpec width, MeasureSpec height)
 {
-    setMeasuredSize(QSizeF(width.resolve(host_ != nullptr ? host_->width() : 0.0),
-                           height.resolve(host_ != nullptr ? host_->height() : 0.0)));
+    QWidget* host = host_.data();
+    setMeasuredSize(QSizeF(width.resolve(host != nullptr ? host->width() : 0.0),
+                           height.resolve(host != nullptr ? host->height() : 0.0)));
 }
 
 void Modal::paintContent(QPainter& painter, const QRectF& content)
@@ -629,8 +663,11 @@ void Modal::mousePressEvent(QMouseEvent* event)
     if (event->button() != Qt::LeftButton)
         return;
 
+    QPointer<Modal> self(this);
     emit clicked();
     event->accept();
+    if (self.isNull())
+        return;
 
     if (dismissOnClick_)
         close();
@@ -659,7 +696,8 @@ void Modal::hideEvent(QHideEvent* event)
 
 bool Modal::eventFilter(QObject* watched, QEvent* event)
 {
-    if (watched == host_ && event->type() == QEvent::Resize && phase_ != Phase::Idle) {
+    if (watched == host_.data() && event->type() == QEvent::Resize
+        && phase_ != Phase::Idle) {
         applyWindowGeometry();
         return false;
     }
@@ -671,13 +709,14 @@ bool Modal::eventFilter(QObject* watched, QEvent* event)
             return true;
 
         if (key->key() == Qt::Key_Escape && dismissOnEscape_
-            && (host_ == nullptr || topLayer(host_) == this)) {
+            && (host_ == nullptr || topLayer(host_.data()) == this)) {
             close();
             return true;
         }
     }
 
-    if (watched == host_ && event->type() == QEvent::Hide && phase_ != Phase::Idle) {
+    if (watched == host_.data() && event->type() == QEvent::Hide
+        && phase_ != Phase::Idle) {
         abort();
         return false;
     }

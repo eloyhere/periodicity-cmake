@@ -181,11 +181,44 @@ GpuCompositor::GpuCompositor(QWidget* parent)
 
 GpuCompositor::~GpuCompositor()
 {
+    // Lifetime rule: every GL call — deleting a texture or the blitter included
+    // — must run with this widget's context current. QOpenGLWidget keeps the
+    // context alive until after this destructor, but it can be null (the widget
+    // was never shown) or already invalid (the surface was lost), and
+    // makeCurrent() can fail even when the context still looks valid. In that
+    // case the GL objects must not be destroyed, because their destructors
+    // would issue GL calls with no current context. They are deliberately
+    // leaked instead: once the context is gone, leaking on teardown is the
+    // only safe option. Nothing below may touch GL after doneCurrent().
+    //
+    // Event filters are not detached by Qt when the filter object dies, so
+    // every still-registered view must drop this compositor before it goes
+    // away. This runs before the layers are cleared, on every path.
+    for (GpuLayer& layer : d_->layers) {
+        if (layer.view != nullptr)
+            layer.view->removeEventFilter(this);
+    }
+
 #if defined(PERIODICITY_HAS_OPENGL) && PERIODICITY_HAS_OPENGL
-    // Texture and blitter destruction must happen with the context current.
-    // The base QOpenGLWidget destroys the context only after this destructor.
-    if (d_->gpuReady && context() != nullptr && context()->isValid()) {
+    if (d_->gpuReady) {
+        QOpenGLContext* glContext = context();
+        if (glContext == nullptr || !glContext->isValid()) {
+            // No usable context: release the whole private state without
+            // destroying it. ~Private would destroy the textures and the
+            // blitter, and both issue GL calls.
+            (void)d_.release();
+            return;
+        }
+
+        // QOpenGLWidget::makeCurrent() returns void, so success is checked by
+        // asking whether the context actually became current.
         makeCurrent();
+        if (QOpenGLContext::currentContext() != glContext) {
+            (void)d_.release();
+            return;
+        }
+
+        // The context is current for the teardown of every GL-owned object.
         d_->layers.clear();
         if (d_->blitter.isCreated())
             d_->blitter.destroy();
@@ -193,10 +226,9 @@ GpuCompositor::~GpuCompositor()
     }
 #endif
 
-    for (GpuLayer& layer : d_->layers) {
-        if (layer.view != nullptr)
-            layer.view->removeEventFilter(this);
-    }
+    // Either there is no GL path in this build, or nothing ever reached the
+    // GPU path, so there are no GL objects left to destroy.
+    d_->layers.clear();
 }
 
 bool GpuCompositor::isAvailable()
@@ -219,13 +251,21 @@ void GpuCompositor::addView(View* view)
     if (view == nullptr)
         return;
 
+    // show()/setParent() deliver events through the application filter chain;
+    // an observer may delete the compositor from one of them.
+    QPointer<GpuCompositor> self(this);
+
     if (view->parentWidget() != this) {
         view->setParent(this);
+        if (self.isNull())
+            return;
         view->move(QPoint(0, 0));
     }
 
     syncViews();
     view->show();
+    if (self.isNull())
+        return;
     requestRepaint();
 }
 
@@ -234,9 +274,13 @@ void GpuCompositor::removeView(View* view)
     if (view == nullptr)
         return;
 
+    // Detach on every removal path. A view can outlive the compositor, and a
+    // filter registration pointing at a destroyed compositor is a dangling
+    // pointer on the view; removing it twice is harmless.
+    view->removeEventFilter(this);
+
     for (auto it = d_->layers.begin(); it != d_->layers.end(); ++it) {
         if (it->view == view) {
-            view->removeEventFilter(this);
             d_->layers.erase(it);
             break;
         }
@@ -245,8 +289,11 @@ void GpuCompositor::removeView(View* view)
     if (d_->root == view)
         d_->root = nullptr;
 
+    QPointer<GpuCompositor> self(this);
     if (view->parentWidget() == this)
         view->setParent(nullptr);
+    if (self.isNull())
+        return;
     requestRepaint();
 }
 
@@ -257,7 +304,10 @@ void GpuCompositor::setRootView(View* view)
         return;
     }
 
+    QPointer<GpuCompositor> self(this);
     addView(view);
+    if (self.isNull())
+        return;
     d_->root = view;
     view->setGeometry(rect());
 }
@@ -297,13 +347,22 @@ void GpuCompositor::syncViews()
 {
     const QList<View*> direct = findChildren<View*>(Qt::FindDirectChildrenOnly);
 
-    // Drop layers whose view was destroyed or reparented away.
-    d_->layers.erase(
-        std::remove_if(d_->layers.begin(), d_->layers.end(),
-                       [&direct](const GpuLayer& layer) {
-            return layer.view == nullptr || !direct.contains(layer.view.data());
-        }),
-        d_->layers.end());
+    // Drop layers whose view was destroyed or reparented away. A reparented
+    // view is still alive and would otherwise stay registered as a filter of
+    // this compositor after the layer is gone; detach it here as well, so every
+    // removal path (removeView(), reparenting and destruction) removes the
+    // filter. A destroyed view needs no removal — its filter list died with it.
+    for (auto it = d_->layers.begin(); it != d_->layers.end();) {
+        View* view = it->view.data();
+        if (view == nullptr) {
+            it = d_->layers.erase(it);
+        } else if (!direct.contains(view)) {
+            view->removeEventFilter(this);
+            it = d_->layers.erase(it);
+        } else {
+            ++it;
+        }
+    }
 
     for (View* view : direct) {
         const bool known = std::any_of(
@@ -358,8 +417,10 @@ void GpuCompositor::setUsingGpu(bool usingGpu)
         }
     }
 
-    emit gpuStateChanged(d_->usingGpu);
+    // Emit last: a gpuStateChanged handler may delete the compositor, so the
+    // repaint is scheduled before any observer can run.
     update();
+    emit gpuStateChanged(d_->usingGpu);
 }
 
 void GpuCompositor::markDirty(View* view)

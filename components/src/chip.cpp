@@ -18,6 +18,7 @@
 #include <md/theme/theme.h>
 #include <md/tokens/state_layer.h>
 
+#include <QPointer>
 #include <QEvent>
 #include <QFont>
 #include <QFontMetricsF>
@@ -552,9 +553,18 @@ void Chip::toggleSelected()
 
 void Chip::activate()
 {
+    // clicked() is emitted first so a toggle does not precede the notification,
+    // but that means a slot may delete the chip. Decide the toggle up front and
+    // stop touching 	his once the signal has gone out.
+    const bool selectable = isSelectable();
+    const QPointer<Chip> guard(this);
+
     emit clicked();
 
-    if (isSelectable())
+    if (guard.isNull())
+        return;
+
+    if (selectable)
         toggleSelected();
 }
 

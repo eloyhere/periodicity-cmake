@@ -186,7 +186,12 @@ private:
     [[nodiscard]] QList<QWidget*> focusableWidgets() const;
     bool trapFocus(QKeyEvent* event);
 
-    QWidget* host_ = nullptr;
+    // The window this modal is currently attached to. A QPointer because the
+    // host can be destroyed while the modal survives: Language::showSelector()
+    // reparents an open modal to a new window before the old window goes away,
+    // and close()/removeFilters() must then skip the dead host instead of
+    // calling removeEventFilter() on freed memory.
+    QPointer<QWidget> host_;
     int level_ = static_cast<int>(Level::Dialog);
     qreal dim_ = 0.32;
     QColor scrimColour_;
